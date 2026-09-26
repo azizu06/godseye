@@ -1,4 +1,4 @@
-import type { SurfacePatch } from "./surfaceTypes";
+import type { SurfacePatch, SurfaceTileUpdate } from "./surfaceTypes";
 import type { CloudBounds } from "./pointCloud";
 
 type Tile = {
@@ -7,7 +7,12 @@ type Tile = {
   indices: number[];
   vertices: Map<string, number>;
   faces: Set<string>;
+  revision: number;
+  min: number[];
+  max: number[];
 };
+
+type Changes = { vertices: number[]; indexStart: number };
 
 function faceKey(a: number, b: number, c: number) {
   // Canonicalize a triangle without allocating/sorting an array per observation.
@@ -47,7 +52,7 @@ export class SurfaceTiles {
     };
   }
 
-  add(patch: SurfacePatch): SurfacePatch[] {
+  add(patch: SurfacePatch): SurfaceTileUpdate[] {
     const { positions: p, colors, indices } = patch;
     if (
       !colors ||
@@ -59,7 +64,12 @@ export class SurfaceTiles {
       !indices.every((i) => i < p.length / 3)
     )
       throw Error("Invalid observed surface");
-    const dirty = new Set<string>();
+    const dirty = new Map<string, Changes>();
+    const mark = (id: string, tile: Tile): Changes => {
+      const changes = { vertices: [], indexStart: tile.indices.length };
+      dirty.set(id, changes);
+      return changes;
+    };
     // Each measured vertex participates in several faces. Calculate its spatial
     // key once per frame while retaining the original measured coordinates.
     const keys = new Array<string>(p.length / 3);
@@ -108,12 +118,17 @@ export class SurfaceTiles {
           indices: [],
           vertices: new Map(),
           faces: new Set(),
+          revision: 0,
+          min: [Infinity, Infinity, Infinity],
+          max: [-Infinity, -Infinity, -Infinity],
         };
         this.tiles.set(id, tile);
       }
-      let changed = false;
+      let changes = dirty.get(id);
       for (let j = 0; j < 3; j++) {
         let index = mapped[j];
+        let changed = index === undefined;
+        let moved = changed;
         if (index === undefined) {
           index = tile.vertices.size;
           tile.vertices.set(keys[corners[j]], index);
@@ -129,27 +144,74 @@ export class SurfaceTiles {
             tile.colors[to] !== colors[from]
           )
             changed = true;
+          if (tile.positions[to] !== p[from]) moved = true;
           tile.positions[to] = p[from];
           tile.colors[to] = colors[from];
-          this.min[axis] = Math.min(this.min[axis], p[from]);
-          this.max[axis] = Math.max(this.max[axis], p[from]);
         }
+        // Shared vertices are revisited by adjacent faces; only changed
+        // coordinates can expand either bound.
+        if (moved)
+          for (let axis = 0; axis < 3; axis++) {
+            const value = p[corners[j] * 3 + axis];
+            this.min[axis] = Math.min(this.min[axis], value);
+            this.max[axis] = Math.max(this.max[axis], value);
+            tile.min[axis] = Math.min(tile.min[axis], value);
+            tile.max[axis] = Math.max(tile.max[axis], value);
+          }
+        if (changed) (changes ??= mark(id, tile)).vertices.push(index);
       }
       if (!existing) {
+        changes ??= mark(id, tile);
         tile.indices.push(...face);
         tile.faces.add(faceKey(face[0], face[1], face[2]));
         this.triangles++;
-        changed = true;
       }
-      if (changed) dirty.add(id);
     }
-    return [...dirty].map((id) => {
+    return [...dirty].map(([id, changes]) => {
       const tile = this.tiles.get(id)!;
+      const ranges: { start: number; count: number }[] = [];
+      for (const vertex of changes.vertices.sort((a, b) => a - b)) {
+        const start = vertex * 3,
+          last = ranges.at(-1);
+        // A small unchanged gap is cheaper than many tiny GPU writes.
+        if (last && start <= last.start + last.count + 96)
+          last.count = start + 3 - last.start;
+        else ranges.push({ start, count: 3 });
+      }
+      const length = ranges.reduce((sum, r) => sum + r.count, 0);
+      const positions = new Float32Array(length),
+        colors = new Float32Array(length);
+      const spans = new Uint32Array(ranges.length * 2);
+      let offset = 0;
+      ranges.forEach(({ start, count }, i) => {
+        spans.set([start, count], i * 2);
+        for (let j = 0; j < count; j++) {
+          positions[offset + j] = tile.positions[start + j];
+          colors[offset + j] = tile.colors[start + j];
+        }
+        offset += count;
+      });
       return {
         id,
-        positions: new Float32Array(tile.positions),
-        colors: new Float32Array(tile.colors),
-        indices: new Uint32Array(tile.indices),
+        revision: ++tile.revision,
+        vertexCount: tile.positions.length / 3,
+        indexCount: tile.indices.length,
+        spans,
+        positions,
+        colors,
+        indexStart: changes.indexStart,
+        indices: new Uint32Array(tile.indices.slice(changes.indexStart)),
+        bounds: {
+          center: tile.min.map((v, i) => (v + tile.max[i]) / 2) as [
+            number,
+            number,
+            number,
+          ],
+          radius: Math.max(
+            0.1,
+            Math.hypot(...tile.max.map((v, i) => v - tile.min[i])) / 2,
+          ),
+        },
       };
     });
   }

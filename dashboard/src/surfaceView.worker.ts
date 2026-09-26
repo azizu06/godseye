@@ -2,11 +2,11 @@ import { decodeCaptureSurface } from "./captureSurface";
 import { bakeSurfaceColors } from "./surfaceColor";
 import { SurfaceTiles } from "./surfaceTiles";
 import { SurfaceFeed } from "./surfaceFeed";
-import type { CapturedSurface, SurfacePatch } from "./surfaceTypes";
+import type { CapturedSurface, SurfaceTileUpdate } from "./surfaceTypes";
 import type { CloudBounds } from "./pointCloud";
 
 export type SurfaceUpdate = {
-  tiles: SurfacePatch[];
+  tiles: SurfaceTileUpdate[];
   recent?: CapturedSurface;
   triangles: number;
   capacity: boolean;
@@ -80,8 +80,9 @@ async function poll() {
     ];
     for (const tile of tiles)
       transfer.push(
+        tile.spans.buffer,
         tile.positions.buffer,
-        tile.colors!.buffer,
+        tile.colors.buffer,
         tile.indices.buffer,
       );
     worker.postMessage(

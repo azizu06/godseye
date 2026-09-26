@@ -48,14 +48,25 @@ hidden between the coarse vertices.
 
 ## Accumulation and limits
 
-The retained colored mesh is divided into one-meter spatial tiles. Only tiles
-touched by a frame are rebuilt and uploaded; other GPU meshes remain intact and
-can be culled independently. Coincident vertices are associated using 2 mm cells;
+The retained colored mesh is divided into one-meter spatial tiles. A worker sends
+only changed vertex ranges and newly appended triangle indices for each touched
+tile. Existing GPU buffers are reused; color/position refinements do not reupload
+unchanged topology. Other tiles remain intact and can be culled independently.
+Coincident vertices are associated using 2 mm cells;
 their stored coordinates remain actual measurements. Only observed triangle
 topology is retained, and repeated matching faces update rather than duplicate.
 There is no repeated global mesh coarsening or full-map transfer.
 Vertex spatial keys are calculated once per frame and reused by adjacent faces;
 triangle identity and measured positions are unchanged.
+
+Each renderer tile has a persistent typed-array mirror. Capacity grows by doubling
+up to the global vertex/index limits, so allocation and full uploads happen only
+on growth or surface remount. Spare capacity can approach the used array size
+(with a 64-entry minimum); worker storage, the mirror, and GPU storage are separate.
+Only the populated index count is drawn, and worker-computed bounds exclude unused
+capacity. Dirty ranges coalesce while rendering is paused. Returning from **P**
+mode rebuilds the complete view from the mirror, including updates received while
+surfaces were hidden. Map changes release the old buffers and restart tile revisions.
 
 The retained mesh is capped at **500,000 vertices**, **500,000 triangles**, and
 **2,048 tiles**. At capacity, existing faces can still refine; extra retained
@@ -84,6 +95,7 @@ npm run format:check
 npm test
 node tools/benchmark-surfaces.mjs
 node tools/benchmark-surfaces.mjs --baseline 6517382
+node tools/benchmark-surfaces.mjs --baseline a70d948 --captures ../backend/captures
 # From the repository root, inspect a local recording without replaying it:
 python3 tools/benchmark_capture_preview.py path/to/frame.capture
 ```
@@ -99,3 +111,15 @@ resolution, JPEG content, and optional sensors. This saves backend-to-dashboard
 bandwidth; it does not reduce the phone's full-sensor upload. The surface benchmark
 also exercises a 97,410-triangle frame, alongside sparse updates to a retained
 450,000-triangle map. Timings measure CPU work, not physical-device FPS.
+
+The optional `--captures` comparison reads the newest 60 local frame packets without
+uploading or replaying them into a server. It respects map identity, reports rejected
+frames, uses constant vertex colors to isolate geometry work, and verifies each
+updated tile's complete reconstructed arrays against the requested baseline.
+In a 54-valid-frame sample, worker-to-renderer surface transfer fell from 39.1 MB
+to 11.3 MB (71% less), and the largest update fell from 1.86 MB to 0.40 MB.
+A small refinement in the synthetic dense map fell from 104,232 bytes to 80 bytes.
+These are internal geometry transfers, not network or GPU-FPS measurements.
+Dirty-range bookkeeping adds some worker work (about 6% in the dense color-update
+case in one run); it avoids rebuilding and uploading complete tiles on the main
+thread. The benchmark reports integration and mirror-copy costs separately.

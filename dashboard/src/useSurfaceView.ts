@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
-import type { CapturedSurface, SurfacePatch } from "./surfaceTypes";
+import type { CapturedSurface } from "./surfaceTypes";
+import {
+  SurfaceTileBuffer,
+  type RetainedSurfaceTile,
+} from "./surfaceTileBuffer";
 import type { SurfaceUpdate } from "./surfaceView.worker";
 import type { CloudBounds } from "./pointCloud";
 
 type View = {
   key: string;
-  tiles: SurfacePatch[];
+  tiles: RetainedSurfaceTile[];
   recent: CapturedSurface[];
   triangles: number;
   capacity: boolean;
@@ -37,7 +41,7 @@ export function useSurfaceView(
       new URL("./surfaceView.worker.ts", import.meta.url),
       { type: "module" },
     );
-    const tiles = new Map<string, SurfacePatch>();
+    const tiles = new Map<string, RetainedSurfaceTile>();
     let recent: CapturedSurface[] = [];
     let disposed = false;
     worker.onmessage = ({ data }: MessageEvent<SurfaceUpdate>) => {
@@ -45,7 +49,12 @@ export function useSurfaceView(
         data.recent?.image?.close();
         return;
       }
-      for (const tile of data.tiles) tiles.set(tile.id, tile);
+      for (const tile of data.tiles) {
+        const buffer =
+          tiles.get(tile.id)?.buffer ?? new SurfaceTileBuffer(tile.id);
+        buffer.apply(tile);
+        tiles.set(tile.id, { buffer, revision: buffer.revision });
+      }
       if (data.recent) {
         const incoming = data.recent;
         // Replace a redundant camera view, retain fine textures from other views.

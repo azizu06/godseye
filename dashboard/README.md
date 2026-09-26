@@ -55,7 +55,9 @@ grid is a viewing aid, not measured geometry or a calibrated rover ground plane.
 When calibrated RGB-D capture is available, the default view shows observed
 triangles textured with their matching camera image. A background worker refines
 curves and depth edges while leaving missing readings open. Persistent geometry
-updates in spatial tiles, and recent high-resolution textures preserve image detail.
+updates through changed vertex ranges and appended triangles within spatial tiles.
+Stable GPU buffers avoid rebuilding a whole tile for a small refinement, and
+recent high-resolution textures preserve image detail.
 Updated backends serve a compact, conditional RGB-D preview so the dashboard
 does not repeatedly download unused sensor sections. Older backends automatically
 use the original capture routes; full phone capture and recording stay intact.
@@ -110,6 +112,8 @@ object removal, and calibration between the phone and rover remain future work.
 `src/cloudWorker.ts` bounds pending work and transfers updates to the renderer;
 `src/usePointCloud.ts` handles the live connection, reconnects, and status.
 `src/surfaceView.worker.ts` decodes RGB-D and updates `src/surfaceTiles.ts`;
+`src/surfaceTileBuffer.ts` mirrors incremental tile updates and coalesces pending
+uploads; `src/surfaceTileGeometry.ts` updates persistent GPU geometry and bounds.
 `src/SurfaceLayer.tsx` renders retained color tiles and recent textured views.
 
 ```sh

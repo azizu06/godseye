@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo } from "react";
 import { useThree } from "@react-three/fiber";
 import {
   BufferGeometry,
@@ -10,14 +10,40 @@ import {
   DoubleSide,
 } from "three";
 import type { SurfacePatch } from "./surfaceTypes";
+import type { RetainedSurfaceTile } from "./surfaceTileBuffer";
+import { createTileGeometry, syncTileGeometry } from "./surfaceTileGeometry";
 
-const Patch = memo(function Patch({
-  patch,
-  retained,
+const RetainedTile = memo(function RetainedTile({
+  tile,
 }: {
-  patch: SurfacePatch;
-  retained: boolean;
+  tile: RetainedSurfaceTile;
 }) {
+  const { buffer } = tile;
+  const invalidate = useThree((state) => state.invalidate);
+  const geometry = useMemo(
+    () => createTileGeometry(buffer),
+    [buffer.positions, buffer.colors, buffer.indices],
+  );
+  useLayoutEffect(() => {
+    syncTileGeometry(geometry, buffer);
+    invalidate();
+  }, [tile, geometry, buffer, invalidate]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <mesh geometry={geometry} raycast={() => {}}>
+      <meshBasicMaterial
+        vertexColors
+        side={DoubleSide}
+        toneMapped={false}
+        polygonOffset
+        polygonOffsetFactor={2}
+        polygonOffsetUnits={2}
+      />
+    </mesh>
+  );
+});
+
+const Patch = memo(function Patch({ patch }: { patch: SurfacePatch }) {
   const { gl, invalidate } = useThree();
   const geometry = useMemo(() => {
     const mesh = new BufferGeometry();
@@ -53,8 +79,8 @@ const Patch = memo(function Patch({
         side={DoubleSide}
         toneMapped={false}
         polygonOffset
-        polygonOffsetFactor={retained ? 2 : -1}
-        polygonOffsetUnits={retained ? 2 : -1}
+        polygonOffsetFactor={-1}
+        polygonOffsetUnits={-1}
       />
     </mesh>
   );
@@ -64,16 +90,16 @@ export default function SurfaceLayer({
   tiles,
   recent,
 }: {
-  tiles: SurfacePatch[];
+  tiles: RetainedSurfaceTile[];
   recent: SurfacePatch[];
 }) {
   return (
     <group name="observed-surfaces">
       {tiles.map((tile) => (
-        <Patch key={`tile:${tile.id}`} patch={tile} retained />
+        <RetainedTile key={`tile:${tile.buffer.id}`} tile={tile} />
       ))}
       {recent.map((patch) => (
-        <Patch key={`view:${patch.id}`} patch={patch} retained={false} />
+        <Patch key={`view:${patch.id}`} patch={patch} />
       ))}
     </group>
   );

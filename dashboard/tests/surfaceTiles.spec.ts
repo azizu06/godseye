@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { SurfaceTiles } from "../src/surfaceTiles";
+import { SurfaceTileBuffer } from "../src/surfaceTileBuffer";
 import type { SurfacePatch } from "../src/surfaceTypes";
 
 const triangle = (x = 0, color = 0.5): SurfacePatch => ({
@@ -59,6 +60,8 @@ test("shared measured vertices preserve topology, winding-independent identity a
     indices: new Uint32Array([0, 2, 1, 1, 2, 3]),
   };
   const first = map.add(patch)[0];
+  const buffer = new SurfaceTileBuffer(first.id);
+  buffer.apply(first);
   expect(first.positions.length).toBe(12);
   expect(map.triangles).toBe(2);
   expect(
@@ -69,8 +72,10 @@ test("shared measured vertices preserve topology, winding-independent identity a
     positions: patch.positions.map((v, i) => (i % 3 === 2 ? v + 0.0005 : v)),
   };
   const update = map.add(refined)[0];
+  buffer.apply(update);
   expect(map.triangles).toBe(2);
-  expect(update.indices).toEqual(first.indices);
+  expect(update.indices).toHaveLength(0);
+  expect(buffer.indices.subarray(0, buffer.indexCount)).toEqual(first.indices);
   for (let i = 2; i < update.positions.length; i += 3)
     expect(update.positions[i]).toBeCloseTo(0.1005, 6);
   expect(map.capacity).toBe(false);

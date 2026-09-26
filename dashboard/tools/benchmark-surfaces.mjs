@@ -1,14 +1,17 @@
 // CPU/transfer costs of updating one observed region in a large retained map.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, basename } from "node:path";
+import { createHash } from "node:crypto";
+import assert from "node:assert/strict";
 import { transform } from "esbuild";
 import { execFileSync } from "node:child_process";
-async function load(source) {
+async function load(source, exported = "SurfaceTiles") {
   const { code } = await transform(source, { loader: "ts", format: "esm" });
   return (
     await import(
       "data:text/javascript;base64," + Buffer.from(code).toString("base64")
     )
-  ).SurfaceTiles;
+  )[exported];
 }
 const implementations = new Map();
 const baseline = process.argv.indexOf("--baseline");
@@ -53,7 +56,10 @@ function patch(id, color = 0.5) {
   };
 }
 const bytes = (tile) =>
-  tile.positions.byteLength + tile.colors.byteLength + tile.indices.byteLength;
+  tile.positions.byteLength +
+  tile.colors.byteLength +
+  tile.indices.byteLength +
+  (tile.spans?.byteLength ?? 0);
 function densePatch() {
   const positions = [],
     indices = [];
@@ -84,7 +90,10 @@ for (const [label, SurfaceTiles] of implementations) {
   for (let i = 0; i < 1000; i++)
     retainedBytes += map
       .add(patch(i))
-      .reduce((sum, tile) => sum + bytes(tile), 0);
+      .reduce(
+        (sum, tile) => sum + bytes(tile) - (tile.spans?.byteLength ?? 0),
+        0,
+      );
   const samples = [];
   let touched = [],
     changedBytes = 0;
@@ -105,6 +114,10 @@ for (const [label, SurfaceTiles] of implementations) {
     dense.add(input);
     if (i >= 10) denseTimes.push(performance.now() - start);
   }
+  input.colors.fill(0.9);
+  const smallObservationBytes = dense
+    .add({ ...input, indices: input.indices.slice(0, 3) })
+    .reduce((sum, tile) => sum + bytes(tile), 0);
   console.log(
     JSON.stringify(
       {
@@ -117,9 +130,130 @@ for (const [label, SurfaceTiles] of implementations) {
         denseTriangles: dense.triangles,
         denseUpdateP50Ms: percentile(denseTimes, 0.5),
         denseUpdateP95Ms: percentile(denseTimes, 0.95),
+        smallObservationBytes,
       },
       null,
       2,
     ),
   );
+}
+
+// Optional local-only replay: never connects to a backend or publishes imagery.
+const captureArg = process.argv.indexOf("--captures");
+if (captureArg !== -1) {
+  const folder = process.argv[captureArg + 1];
+  if (!folder) throw Error("--captures needs a capture directory");
+  const decode = await load(
+    readFileSync(new URL("../src/captureSurface.ts", import.meta.url), "utf8"),
+    "decodeCaptureSurface",
+  );
+  const TileBuffer = await load(
+    readFileSync(
+      new URL("../src/surfaceTileBuffer.ts", import.meta.url),
+      "utf8",
+    ),
+    "SurfaceTileBuffer",
+  );
+  const files = readdirSync(folder, { recursive: true })
+    .filter((p) => basename(p).startsWith("frame-") && p.endsWith(".capture"))
+    .map((p) => ({
+      path: join(folder, p),
+      time: statSync(join(folder, p)).mtimeMs,
+    }))
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 60)
+    .reverse();
+  const frames = [],
+    skipped = {};
+  for (const file of files) {
+    try {
+      const bytes = readFileSync(file.path);
+      const frame = decode(
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ),
+      );
+      // Isolate geometry costs; actual image decoding/color baking is separate.
+      frames.push({
+        ...frame,
+        colors: new Float32Array(frame.positions.length).fill(0.5),
+      });
+    } catch (error) {
+      skipped[error.message] = (skipped[error.message] ?? 0) + 1;
+    }
+  }
+  let expected;
+  for (const [label, SurfaceTiles] of implementations) {
+    let map,
+      identity,
+      mirrors = new Map(),
+      transferBytes = 0,
+      maxUpdateBytes = 0;
+    const hashes = [],
+      times = [],
+      mirrorTimes = [];
+    for (const frame of frames) {
+      const next = JSON.stringify([frame.sessionId, frame.mapEpoch]);
+      if (identity !== next) {
+        map = new SurfaceTiles();
+        identity = next;
+        mirrors = new Map();
+      }
+      const start = performance.now();
+      const updates = map.add(frame);
+      times.push(performance.now() - start);
+      const size = updates.reduce((sum, u) => sum + bytes(u), 0);
+      transferBytes += size;
+      maxUpdateBytes = Math.max(maxUpdateBytes, size);
+      const hash = createHash("sha256"),
+        mirrorStart = performance.now();
+      for (const update of updates)
+        if (update.spans) {
+          const buffer = mirrors.get(update.id) ?? new TileBuffer(update.id);
+          buffer.apply(update);
+          mirrors.set(update.id, buffer);
+        }
+      mirrorTimes.push(performance.now() - mirrorStart);
+      for (const update of updates.sort((a, b) => a.id.localeCompare(b.id))) {
+        hash.update(update.id);
+        const buffer = mirrors.get(update.id);
+        const arrays = buffer
+          ? [
+              buffer.positions.subarray(0, buffer.vertexCount * 3),
+              buffer.colors.subarray(0, buffer.vertexCount * 3),
+              buffer.indices.subarray(0, buffer.indexCount),
+            ]
+          : [update.positions, update.colors, update.indices];
+        for (const array of arrays)
+          hash.update(
+            new Uint8Array(array.buffer, array.byteOffset, array.byteLength),
+          );
+      }
+      hashes.push(hash.digest("hex"));
+    }
+    if (expected)
+      assert.deepEqual(
+        hashes,
+        expected,
+        "Retained geometry differs from baseline",
+      );
+    else expected = hashes;
+    console.log(
+      JSON.stringify(
+        {
+          label,
+          recordedFrames: frames.length,
+          skipped,
+          transferBytes,
+          maxUpdateBytes,
+          integrationP95Ms: percentile(times, 0.95),
+          mirrorP95Ms: percentile(mirrorTimes, 0.95),
+          geometryMatchesBaseline: implementations.size > 1,
+        },
+        null,
+        2,
+      ),
+    );
+  }
 }
