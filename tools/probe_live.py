@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print what a dashboard would receive on /live: message counts, points chunk shape, objects."""
+"""Print what a dashboard would receive on /live: message counts, points chunk shape, objects, events."""
 import argparse
 import asyncio
 import json
@@ -12,6 +12,7 @@ async def run(url, seconds):
     counts = {}
     last_points = None
     last_objects = None
+    events = []
     async with connect(url) as websocket:
         end = time.monotonic() + seconds
         while time.monotonic() < end:
@@ -22,10 +23,15 @@ async def run(url, seconds):
                 last_points = (message, len(raw))
             elif message["type"] == "objects":
                 last_objects = message
+            elif message["type"] == "event":
+                events.append(message)
     print("messages:", counts)
     if last_objects is not None:
-        print("latest objects:", [(o["class"], o["id"][:8], o["observations"], o["confidence"])
+        print("latest objects:", [(o["class"], o["id"][:8], o["observations"], o["confidence"], o["state"])
                                   for o in last_objects["objects"]])
+    for event in events:
+        print("event:", event["kind"], event["object_id"][:8], event["old_position"], "->",
+              event["new_position"], f"displacement_m={event['displacement_m']}")
     if last_points is None:
         raise SystemExit("no points chunk received: is a phone (or tools/fake_phone.py) connected?")
     message, size = last_points

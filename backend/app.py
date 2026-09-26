@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from backend.changes import ChangeTracker
 from backend.drive import drive
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
@@ -167,6 +168,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         db.executescript(Path(__file__).with_name('schema.sql').read_text())
         app.state.db = db
         app.state.objects = ObjectMemory(db)
+        app.state.changes = ChangeTracker(db, app.state.objects)
         if detector is None and weights:
             from backend.detector import MPSDetector
             app.state.detector = await asyncio.to_thread(MPSDetector, weights)
@@ -237,6 +239,10 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         return dict(version=1, type='objects', session_id=session_id, map_epoch=map_epoch,
                     objects=app.state.objects.snapshot(session))
 
+    def event_message(session, record):
+        session_id, map_epoch = session
+        return dict(version=1, type='event', session_id=session_id, map_epoch=map_epoch, **record)
+
     def shown_session():
         """The active map, else the newest stored one (restart-safe reads)."""
         return app.state.session or app.state.objects.latest_session()
@@ -248,7 +254,9 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                 # the worker then counts the None as discarded_reset.
                 if app.state.phone is not owner:
                     return None
-                return detect_objects(app.state.detector, payload, session_id, map_epoch)
+                # Depth-probe the active rescan's unseen remembered positions in the same frame.
+                return detect_objects(app.state.detector, payload, session_id, map_epoch,
+                                      app.state.changes.watching)
         return locate
 
     async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
@@ -293,10 +301,14 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     def accept_objects(result):
         session = (result.session_id, result.map_epoch)
-        changed = app.state.objects.record(session, result.frame_id, result.t_wall_ms / 1000, result.found)
+        seen_at = result.t_wall_ms / 1000
+        sightings = app.state.objects.record(session, result.frame_id, seen_at, result.found)
         app.state.detected_at = time.monotonic()
-        if changed:
+        events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
+        if sightings or changed:
             publish(objects_message(session))
+        for record in events:
+            publish(event_message(session, record))
 
     async def watchdog():
         ticks = 0
@@ -319,6 +331,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         app.state.db.execute('INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
                              (*session, int(time.time()*1000)))
         app.state.db.commit()
+        app.state.changes.activate(session)
         publish(objects_message(session))
         publish(dict(version=1, type='path', points=[]))
 
@@ -365,7 +378,15 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     @app.post('/rescan')
     async def rescan():
-        raise HTTPException(501, 'Baseline/revisit is not implemented')
+        session = app.state.session
+        if session is None:
+            raise HTTPException(409, 'No active map; connect the phone or create a session first')
+        started = app.state.changes.start(session, int(time.time()*1000))
+        if started is None:
+            raise HTTPException(409, 'No remembered objects in this map to rescan')
+        publish(objects_message(session))
+        return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
+                    baseline_objects=len(started.baseline))
 
     @app.post('/ask')
     async def ask(body: Ask):
@@ -379,7 +400,10 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     @app.get('/events')
     async def events():
-        return dict(version=1, events=[])
+        session = shown_session()
+        session_id, map_epoch = session or (None, None)
+        return dict(version=1, session_id=session_id, map_epoch=map_epoch,
+                    events=app.state.changes.events(session))
 
     @app.websocket('/phone')
     async def phone(ws: WebSocket):

@@ -76,6 +76,39 @@ def localize_detection(frame: FrameBundle, detection: Detection, *,
                               count, frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture)
 
 
+def view_status(frame: FrameBundle, position, *, margin_m: float = .15, max_depth_m: float = 5.,
+                min_samples: int = 3) -> str:
+    """How this frame's depth sees a remembered world point, with `localize_detection` geometry.
+
+    'clear': the median high-confidence depth in the 3x3 cells around its pixel lies more than
+    `margin_m` beyond it, so nothing solid stands there now (a surface point cannot be seen
+    through). 'surface': depth ends within `margin_m` of it. 'occluded': something nearer
+    blocks the view. 'out_of_view': behind the camera, off the image, too far, or too few
+    reliable samples. Pose error larger than `margin_m` makes this unreliable.
+    """
+    camera = np.linalg.inv(frame.transform) @ np.array([*position, 1.])
+    depth = -camera[2]  # ARKit camera looks along -Z
+    if not .05 < depth <= max_depth_m:
+        return 'out_of_view'
+    k = frame.intrinsics
+    u = k[0, 2] + camera[0] * k[0, 0] / depth
+    v = k[1, 2] - camera[1] * k[1, 1] / depth
+    iw, ih = frame.image.size
+    if not (0 <= u < iw and 0 <= v < ih):
+        return 'out_of_view'
+    dh, dw = frame.depth.shape
+    row, col = int(v * dh / ih), int(u * dw / iw)
+    cells = np.s_[max(row - 1, 0):row + 2, max(col - 1, 0):col + 2]
+    depths = frame.depth[cells]
+    reliable = depths[(frame.confidence[cells] == 2) & np.isfinite(depths) & (depths > 0)]
+    if reliable.size < min_samples:
+        return 'out_of_view'
+    measured = float(np.median(reliable))
+    if measured < depth - margin_m:
+        return 'occluded'
+    return 'clear' if measured > depth + margin_m else 'surface'
+
+
 def localize_all(frame: FrameBundle, detections, *, min_detection_confidence: float = .25,
                  **thresholds) -> list[LocalizedDetection]:
     """Localize each detection; skip boxes with inadequate depth, never fabricate positions."""
