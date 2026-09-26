@@ -1,4 +1,4 @@
-"""God's Eye v1 transport skeleton; all motion is logging-only."""
+"""God's Eye v1 transport skeleton; the default car adapter only logs motion."""
 import asyncio
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
@@ -23,12 +23,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
-from backend.drive import drive
+from backend.drive import LoggingCar
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import MappingError, PointChunk, build_point_chunk, points_message
+from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
@@ -183,6 +184,7 @@ class LatestFrame:
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
+               car: CarAdapter | None = None, motion_limits: MotionLimits | None = None,
                audio_provider=None, calibration=None, label_provider=None,
                label_timeout_s: float = 6.) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
@@ -196,10 +198,14 @@ def create_app(db_path: str | None = None, build_points=None,
 
     `calibration` (backend.calibration.RoverCalibration) is the measured rover
     geometry; without a complete, verified one the map is never motion-ready.
+
+    `car` is the drive adapter (`backend.drive`); the default only logs and
+    reports the car down, so /arm stays refused. Only the 20 Hz pump sends motion.
     """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
     point_settings = point_settings or PointSettings.from_env()
     build_points = build_points or partial(build_point_chunk, max_points=point_settings.samples)
+    car = LoggingCar() if car is None else car
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
 
     @asynccontextmanager
@@ -224,6 +230,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.armed = False
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
+        app.state.motion = Motion(car, motion_check, stop, limits=motion_limits or MotionLimits())
         app.state.listeners = set()
         app.state.capture = CaptureBuffer()
         app.state.rich_capture = RichCapture(capture_directory if capture_directory is not None else
@@ -235,7 +242,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
         app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
-                                  occupancy=lambda: app.state.occupancy, drive=lambda v, w: drive(v, w),
+                                  occupancy=lambda: app.state.occupancy, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None)
         app.state.labels = ObjectLabels(db, label_provider,
@@ -250,11 +257,13 @@ def create_app(db_path: str | None = None, build_points=None,
             with suppress(asyncio.CancelledError):
                 await label_task
             task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            await app.state.nav.aclose()
-            stop('shutdown')
-            db.close()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+                await app.state.nav.aclose()
+            finally:  # zero even if the watchdog or a navigation run died with an error
+                stop('shutdown')
+                db.close()
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
@@ -267,7 +276,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
             app.state.nav.halt()  # end any goal/explore run and clear its path first
-        drive(0.0, 0.0)
+        app.state.motion.halt()  # drops every held command, then an explicit zero
         session = app.state.session or (None, None)
         app.state.db.execute(
             'INSERT INTO health_events(t_wall_ms,session_id,map_epoch,component,reason,mode,armed) VALUES(?,?,?,?,?,?,?)',
@@ -295,9 +304,33 @@ def create_app(db_path: str | None = None, build_points=None,
             detector = 'stale'
             if app.state.detected_at is not None and time.monotonic() - app.state.detected_at <= DETECTOR_OK_S:
                 detector = 'ok'
-        return dict(version=1, type='health', phone=phone, car='down', detector=detector,
+        return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
                     stop_reason=app.state.stop_reason)
+
+    def car_health():
+        try:
+            state = car.health()
+        except Exception:
+            logger.exception('car health check failed')
+            return 'down'
+        return state if state in ('ok', 'stale', 'down') else 'down'
+
+    def hazard():
+        """Why the rover must not move now, e.g. 'car_stale'; None when phone, car and detector are ok."""
+        current = health()
+        for key in ('phone', 'car', 'detector'):
+            if current[key] != 'ok':
+                return f'{key}_{current[key]}'
+        return None
+
+    def motion_check(command):
+        """Rechecked before every send; stop, reset, loss and shutdown already cut the generation."""
+        if not app.state.armed:
+            return 'disarmed'
+        if command.mode != app.state.mode:
+            return 'mode_change'
+        return hazard()
 
     def publish(message):
         for listener in app.state.listeners:
@@ -477,9 +510,12 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
                 if app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
-            # Explore runs whenever the rover is armed in explore mode; arming is unchanged.
+            if app.state.armed and (reason := hazard()) is not None:
+                stop(reason)
+            # Explore runs whenever the rover is armed in explore mode, under the current generation.
             if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
-                app.state.nav.start_explore()
+                app.state.nav.start_explore(app.state.motion.generation)
+            app.state.motion.tick()  # the 20 Hz dispatch pump
             ticks += 1
             if ticks % 10 == 0:
                 publish(health())
@@ -565,8 +601,11 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/arm')
     async def arm():
-        if any(health()[key] != 'ok' for key in ('phone', 'car', 'detector')):
-            raise HTTPException(409, 'Health must all be ok; car and detector are unavailable in this skeleton')
+        if hazard() is not None:
+            raise HTTPException(409, 'Health must all be ok; the default logging car always reports down')
+        app.state.nav.halt()  # a run from before this arm must not continue under it
+        if app.state.motion.begin() is None:  # a fresh generation: nothing from before this arm can move
+            raise HTTPException(409, 'The car did not accept a zero command')
         app.state.armed = True
         app.state.stop_reason = None
         return health()
@@ -579,9 +618,11 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/manual')
     async def manual(body: Manual):
-        if not app.state.armed or app.state.mode != 'manual':
+        motion = app.state.motion
+        if (not app.state.armed or app.state.mode != 'manual'
+                or not motion.submit(motion.generation, 'manual', body.v_mps, body.yaw_rate_rps)):
             raise HTTPException(409, 'Disarmed or not in manual mode')
-        raise HTTPException(501, 'Motion is not implemented; drive adapter only logs')
+        return health()
 
     @app.post('/goal')
     async def goal(body: Goal):
@@ -589,8 +630,10 @@ def create_app(db_path: str | None = None, build_points=None,
         if not app.state.armed or app.state.mode != 'navigate':
             raise HTTPException(409, 'Arm in navigate mode before choosing a goal')
         session = app.state.session
+        generation = app.state.motion.generation  # before the await: a stop and re-arm meanwhile must not revive it
         result = await app.state.nav.plan_once((body.x, body.z))
-        if not app.state.armed or app.state.mode != 'navigate' or app.state.session != session:
+        if (not app.state.armed or app.state.mode != 'navigate' or app.state.session != session
+                or app.state.motion.generation != generation):
             raise HTTPException(409, 'Stopped while planning')
         if result is None:
             nav_stop('pose_stale')
@@ -599,7 +642,7 @@ def create_app(db_path: str | None = None, build_points=None,
             reason = PLAN_STOP_REASONS.get(result.reason, 'no_path')
             nav_stop(reason)
             raise HTTPException(409, reason)
-        app.state.nav.start_goal((body.x, body.z), result)
+        app.state.nav.start_goal((body.x, body.z), result, generation)
         return dict(version=1, goal=[body.x, body.z], points=result.points)
 
     @app.post('/rescan')

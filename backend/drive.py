@@ -1,4 +1,11 @@
-"""Logging-only drive adapter. No network, serial, or hardware access."""
+"""Car adapters. No network, serial, vendor or hardware access lives here.
+
+An adapter sends one command, sends an explicit zero, and reports `health()`
+as 'ok', 'stale' or 'down'. A real adapter may only report 'ok' from verified
+car feedback, never because a write succeeded. Every call runs on the event
+loop, so it must return promptly (do blocking I/O on the adapter's own thread)
+and raise when a command or zero was not handed off.
+"""
 import logging
 
 logger = logging.getLogger(__name__)
@@ -6,3 +13,38 @@ logger = logging.getLogger(__name__)
 
 def drive(v_mps: float, yaw_rate_rps: float) -> None:
     logger.info('DRIVE STUB v_mps=%s yaw_rate_rps=%s (not transmitted)', v_mps, yaw_rate_rps)
+
+
+class LoggingCar:
+    """Production default: logs through drive() and reports the car down, so arming stays refused."""
+
+    def send(self, v_mps, yaw_rate_rps):
+        drive(v_mps, yaw_rate_rps)
+
+    def zero(self):
+        drive(0., 0.)
+
+    def health(self):
+        return 'down'
+
+
+class FakeCar:
+    """Records every call and reports whatever health a test or smoke run sets; moves nothing."""
+
+    def __init__(self, health='ok'):
+        self.state = health
+        self.calls = []  # ('send', v_mps, yaw_rate_rps) or ('zero',)
+        self.error = None  # raised from send() and zero() when set, like a dropped link
+
+    def send(self, v_mps, yaw_rate_rps):
+        if self.error is not None:
+            raise self.error
+        self.calls.append(('send', v_mps, yaw_rate_rps))
+
+    def zero(self):
+        if self.error is not None:
+            raise self.error
+        self.calls.append(('zero',))
+
+    def health(self):
+        return self.state
