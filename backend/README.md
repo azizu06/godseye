@@ -153,10 +153,12 @@ exercised in this slice; the shared checkpoint passes only when both are.
 ## Occupancy
 
 The same back-projected candidates (up to `GODSEYE_POINT_SAMPLES`, default
-10000, per mapped frame, before voxel dedupe, in the mapping worker thread) also
-feed a 2D grid (`backend/occupancy.py`, pure and
-hardware-free). A separate task snapshots it in a worker thread at most once per
-second and publishes only when the picture changed:
+10000, per mapped frame, before voxel dedupe) also feed a 2D grid
+(`backend/occupancy.py`, pure and hardware-free). The mapping worker thread only
+voxelizes them; the event loop commits that evidence under the same checks as the
+frame's points chunk, including frames whose chunk had no new points. A separate
+task snapshots the grid in a worker thread at most once per second and publishes
+only when the picture changed:
 
 ```json
 { "version": 1, "type": "occupancy", "session_id": "uuid", "map_epoch": 1,
@@ -185,9 +187,16 @@ second and publishes only when the picture changed:
   voxels (about 6 MB) per map; new voxels beyond that are dropped.
 - The grid belongs to one session/epoch: a map reset starts an empty one, a
   phone rejoining the same map keeps it, and a grid finished after the session or
-  phone changed is counted and dropped. New `/live` viewers and map resets get
-  the current grid, if any, after the objects and path snapshot. A slow viewer
-  holds only the newest pending grid.
+  phone changed is counted and dropped. A frame still mapping when its phone left
+  or its map reset, or finished more than 1 s after it arrived, adds nothing to
+  any grid, so a resumed map holds only accepted frames. New `/live` viewers and
+  map resets get the current grid, if any, after the objects and path snapshot. A
+  slow viewer holds only the newest pending grid.
+- `OccupancyGrid.revision` bumps whenever an accepted frame adds evidence
+  (navigation's blocked-path check keys on it). `accepted_at` is the event loop's
+  monotonic time of the newest accepted frame, even one that adds nothing, so a
+  planner can tell fresh sensing from a stale map without waiting for a new
+  `occupancy` message.
 - **Limitations:** not calibrated to the rover (the 8 cm to 1.5 m band is a
   generic guess, not its clearance); the handheld floor estimate can shift by a
   slice as evidence grows; there is no free-space ray carving (cells are only
