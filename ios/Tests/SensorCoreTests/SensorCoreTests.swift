@@ -60,6 +60,27 @@ final class SensorCoreTests: XCTestCase {
         XCTAssertEqual(queue.next(now: 1)?.capture, 1)
     }
 
+    func testFullSensorUploadDefaultsOnAlongsideLiveStream() {
+        let uploads = LaptopUploads(streamToLaptop: true, fullSensorUpload: true)
+        XCTAssertTrue(uploads.live)
+        XCTAssertTrue(uploads.fullSensor)
+    }
+
+    func testTurningFullSensorUploadOffKeepsLiveStream() {
+        // Busy Wi-Fi: dropping the heavy v2 upload must not stop poses and RGB-D bundles.
+        let uploads = LaptopUploads(streamToLaptop: true, fullSensorUpload: false)
+        XCTAssertTrue(uploads.live)
+        XCTAssertFalse(uploads.fullSensor)
+    }
+
+    func testFullSensorUploadNeedsTheLaptopStream() {
+        // The v2 endpoint is derived from the /phone URL; without streaming nothing leaves the phone.
+        let uploads = LaptopUploads(streamToLaptop: false, fullSensorUpload: true)
+        XCTAssertFalse(uploads.live)
+        XCTAssertFalse(uploads.fullSensor)
+        XCTAssertEqual(uploads, LaptopUploads(streamToLaptop: false, fullSensorUpload: false))
+    }
+
     func testNonfiniteMetadataFailsExplicitly() {
         XCTAssertThrowsError(try WireProtocol.json(["depth": Double.nan]))
     }

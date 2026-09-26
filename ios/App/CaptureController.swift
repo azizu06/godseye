@@ -8,6 +8,8 @@ import UIKit
 struct CaptureOptions {
     var endpoint = ""
     var stream = true
+    /// Heavy v2 upload beside the live stream; off keeps poses and RGB-D bundles fresh on busy Wi-Fi.
+    var fullSensorUpload = true
     var record = true
     var mesh = true
     var losslessColor = true
@@ -43,6 +45,9 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private var epoch = 0
     private var frameID = 0
     private var options = CaptureOptions()
+    private var uploads: LaptopUploads {
+        LaptopUploads(streamToLaptop: options.stream, fullSensorUpload: options.fullSensorUpload)
+    }
     private var archive: CaptureArchive?
     private var encoding = false
     private var stillPending = false
@@ -177,11 +182,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
         if let archive { publish { $0.archiveStatus = "Recording · \(archive.directory.lastPathComponent.prefix(8))" } }
         else if !requested.record { publish { $0.archiveStatus = "Recording off" } }
-        if requested.stream, let url = try? WireProtocol.endpoint(requested.endpoint),
+        if uploads.live, let url = try? WireProtocol.endpoint(requested.endpoint),
            let hello = try? WireProtocol.json(WireProtocol.hello(current, device: device,
                 sceneDepth: hasDepth, mesh: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh))) {
             stream.connect(url: url, hello: hello)
-            rich.start(phoneURL: url)
+            // The only gate for v2 data: every frame, telemetry, geometry and still packet goes
+            // through `rich`, which drops offers until started.
+            if uploads.fullSensor { rich.start(phoneURL: url) }
+            else { publish { $0.fullCaptureStatus = "Full sensor upload off · live stream only" } }
         }
         sensors.start()
         let timer = DispatchSource.makeTimerSource(queue: captureQueue)
@@ -191,7 +199,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         session.delegate = self
         session.delegateQueue = captureQueue
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        let availableStill = stillSupported && (archive != nil || requested.stream)
+        let availableStill = stillSupported && (archive != nil || uploads.fullSensor)
         publish {
             $0.canTakeStill = availableStill
             $0.status = hasDepth ? "Capturing camera + LiDAR" : "Capturing RGB + pose; this device has no scene depth"
@@ -231,10 +239,10 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
         let frameHz = thermal == .serious ? 5 : options.frameHz
         let normal = tracking(frame.camera.trackingState) == "normal"
-        let wantBundle = options.stream && normal && frame.sceneDepth != nil && frame.timestamp - lastBundle >= 1 / frameHz - 0.001
+        let wantBundle = uploads.live && normal && frame.sceneDepth != nil && frame.timestamp - lastBundle >= 1 / frameHz - 0.001
         let archiveInterval = thermal == .serious ? 1 : 1 / options.archiveHz
         let wantArchive = archive != nil && frame.timestamp - lastArchive >= archiveInterval - 0.001
-        let wantRich = options.stream && frame.timestamp - lastRichFrame >= (thermal == .serious ? 0.5 : 0.2)
+        let wantRich = uploads.fullSensor && frame.timestamp - lastRichFrame >= (thermal == .serious ? 0.5 : 0.2)
         if wantBundle || wantArchive || wantRich {
             if encoding { droppedCaptures += 1 }
             else {

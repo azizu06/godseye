@@ -4,6 +4,11 @@ This inspection/recording channel supplements the frozen [v1 interface](INTERFAC
 `/phone`, `/live`, mapping, detection, and drive health still use v1. Additional
 sensor packets never refresh pose freshness or arm hardware.
 
+The phone's **Upload full sensor data** switch (on by default) turns this channel
+off while the v1 stream keeps running. Both share the phone's Wi-Fi uplink, and
+the backend rejects v1 poses and bundles that arrive more than 250 ms after
+capture, so turn it off when a busy network makes live data go stale.
+
 ## Transport and envelope
 
 First connect `/phone` with the session's v1 hello. Send full packets using

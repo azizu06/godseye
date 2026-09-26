@@ -8,7 +8,7 @@ One `ARSession` owns the rear camera. Images, calibration, depth, confidence, an
 
 The laptop receives native camera images, lossless color planes, raw and smoothed depth/confidence, feature points, scene meshes/planes, optional people masks/body landmarks, exposure/lighting/calibration, and high-resolution stills. It also receives timestamped raw and fused motion, pressure/altitude, location/heading with accuracy, and device/permission status.
 
-See [the full capture contract](../docs/CAPTURE.md) for the complete inventory, units, rates, availability, binary format and recording limits. The frozen v1 stream continues alongside this separate v2 upload; full data is visible at `http://<laptop IP>:8765/capture`.
+See [the full capture contract](../docs/CAPTURE.md) for the complete inventory, units, rates, availability, binary format and recording limits. The frozen v1 stream continues alongside this separate v2 upload; full data is visible at `http://<laptop IP>:8765/capture`. **Upload full sensor data** turns the v2 upload off without stopping the v1 stream.
 
 Rates are targets, not guaranteed throughput. The app requests both raw and smoothed depth when the combined semantics are supported. "Raw" here means ARKit's unsmoothed scene depth, not access to the LiDAR's underlying laser returns. Confidence is preserved so mapping can reject weak depth measurements. ARKit exposes the camera stream selected by its world-tracking configuration; this app does not claim simultaneous capture from every iPhone lens.
 
@@ -20,7 +20,7 @@ The highest-resolution compatible 4:3 video format is used, preferring a format 
 2. Build and run. Allow camera, local network, motion, and location access when requested.
 3. Put the laptop and phone on the same private network. Start the backend using [its setup instructions](../backend/README.md), listening on `0.0.0.0:8765`.
 4. Enter `ws://<laptop IP>:8765/phone`. Use the laptop's network IP, not `localhost`. Keep the phone and laptop clocks synchronized; the backend rejects wall-clock skew over 250 ms.
-5. Choose streaming, recording, mesh reconstruction, and optional lossless color, then tap **Start capture**. Move the phone gently until tracking becomes normal. Use **High-res photo** for occasional detailed stills.
+5. Choose streaming, full sensor upload, recording, mesh reconstruction, and optional lossless color, then tap **Start capture**. On busy Wi-Fi, turn off **Upload full sensor data**: it shares the uplink with live poses and bundles, which the backend rejects when they arrive more than 250 ms after capture. Move the phone gently until tracking becomes normal. Use **High-res photo** for occasional detailed stills.
 6. Stop capture before exporting through **Files → On My iPhone → God's Eye → Captures**, or Xcode/Finder file sharing. Delete old captures there when no longer needed.
 
 For capture without a laptop, turn off **Stream to laptop**. Settings apply when starting a new session. Every start creates a new session UUID and increments the map epoch. Backgrounding or an AR interruption stops capture; restart explicitly when ready.
@@ -67,7 +67,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-The Python check needs the backend dependencies plus NumPy and Pillow. It runs the Swift tests and passes an actual Swift-generated JPEG/depth bundle through both backend decoders, checking calibration, session identity, endianness, and same-frame alignment. It also verifies a real Swift v2 packet preserves depth NaNs, image bytes, timestamps and null landmarks. Swift tests also cover row padding, endpoint validation, nonfinite metadata, queue replacement, stale drops, and timestamp ordering.
+The Python check needs the backend dependencies plus NumPy and Pillow. It runs the Swift tests and passes an actual Swift-generated JPEG/depth bundle through both backend decoders, checking calibration, session identity, endianness, and same-frame alignment. It also verifies a real Swift v2 packet preserves depth NaNs, image bytes, timestamps and null landmarks. Swift tests also cover row padding, endpoint validation, nonfinite metadata, queue replacement, stale drops, timestamp ordering, and turning the full sensor upload off without stopping the live stream.
 
 An unsigned build verifies compilation, not camera behavior. Physical-device checks still required: RGB/depth registration against a flat surface; all supported archive files; mesh updates/removals; stop/start and background behavior; network loss/reconnect; a sustained capture with measured frame rate, battery, and temperature. Simulator runs cannot validate LiDAR.
 
