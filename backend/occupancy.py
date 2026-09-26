@@ -25,7 +25,10 @@ Bounds: cells cover x, z in [-HALF_EXTENT_M, HALF_EXTENT_M) around the AR origin
 store holds at most MAX_VOXELS entries; new voxels beyond that are dropped.
 """
 import base64
+from dataclasses import dataclass
+import math
 import threading
+import time
 
 import numpy as np
 
@@ -37,6 +40,9 @@ MAX_VOXELS = 500_000  # 6 MB of keys and counts
 FLOOR_TOL_M = .04
 OBSTACLE_MIN_M = .08
 OBSTACLE_MAX_M = 1.5
+# A voxel's height is its slice center minus a floor estimate built from slice centers,
+# so it can read up to one slice below the true surface. Calibrated thresholds allow for it.
+HEIGHT_MARGIN_M = VOXEL_H_M
 FREE_MIN_HITS = 2
 OCCUPIED_MIN_HITS = 3
 OCCUPIED_FREE_RATIO = .1
@@ -49,14 +55,76 @@ _SIDE = round(2 * HALF_EXTENT_M * _PER_M)
 _SLICES_PER_M = round(1 / VOXEL_H_M)
 _LEVELS = round((Y_MAX_M - Y_MIN_M) * _SLICES_PER_M)
 _EPS = 1e-9
+UNKNOWN, FREE, OCCUPIED = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class OccupancySnapshot:
+    """One session's classified evidence, for the navigation owner.
+
+    `cells[row, col]` is laid out like the `/live` message: row along +z from
+    origin[1], column along +x from origin[0]. `cells` is None before a floor is found.
+    `revision` changes only when the classified picture or floor does; `sensed_at`
+    (the grid clock, monotonic seconds) advances with every accepted frame, even
+    one that changes nothing. How stale is too stale is the consumer's policy.
+    """
+    session: tuple
+    revision: int
+    sensed_at: float | None  # last accepted frame, None before the first
+    blockers: tuple  # empty only when the map may be used for motion
+    inflation_m: float | None  # rover footprint disc plus margin, from the calibration
+    origin: tuple | None
+    cell_m: float
+    cells: np.ndarray | None
+    floor_y: float | None
+
+    @property
+    def ready(self) -> bool:
+        return not self.blockers
+
+    def _index(self, x, z):
+        return math.floor((z - self.origin[1]) / self.cell_m), math.floor((x - self.origin[0]) / self.cell_m)
+
+    def cell(self, x: float, z: float) -> int:
+        """State of the cell holding world (x, z); UNKNOWN outside the grid."""
+        if self.cells is None:
+            return UNKNOWN
+        row, col = self._index(x, z)
+        if 0 <= row < self.cells.shape[0] and 0 <= col < self.cells.shape[1]:
+            return int(self.cells[row, col])
+        return UNKNOWN
+
+    def traversable(self, x: float, z: float) -> bool:
+        """Whether the rover may stand at world (x, z): only on a motion-ready map, and
+        only when every cell within `inflation_m` of that cell's center is known free.
+        Unknown, occupied and off-grid cells all block."""
+        if not self.ready or self.cells is None:
+            return False
+        row, col = self._index(x, z)
+        reach = self.inflation_m / self.cell_m
+        r = math.floor(reach + _EPS)
+        height, width = self.cells.shape
+        if row - r < 0 or col - r < 0 or row + r >= height or col + r >= width:
+            return False  # part of the footprint disc is off the known grid
+        dr, dc = np.ogrid[-r:r + 1, -r:r + 1]
+        disc = dr * dr + dc * dc <= reach * reach + _EPS
+        return bool(np.all(self.cells[row - r:row + r + 1, col - r:col + r + 1][disc] == FREE))
 
 
 class OccupancyGrid:
-    """Evidence for one session/epoch. `add` and `message_if_due` are thread-safe."""
+    """Evidence for one session/epoch. `add`, `message_if_due` and `snapshot` are thread-safe.
 
-    def __init__(self, session, max_voxels: int = MAX_VOXELS):
+    `calibration` is a backend.calibration.RoverCalibration or None. Only a complete,
+    verified, supported one replaces the generic OBSTACLE_MIN_M, with the rover's
+    measured threshold less HEIGHT_MARGIN_M, for `/live` and the snapshot alike.
+    """
+
+    def __init__(self, session, max_voxels: int = MAX_VOXELS, calibration=None, clock=time.monotonic):
         self.session = tuple(session)
         self.max_voxels = max_voxels
+        self.calibration = calibration
+        usable = calibration is not None and not calibration.blockers
+        self.obstacle_from_m = calibration.obstacle_min_m - HEIGHT_MARGIN_M if usable else OBSTACLE_MIN_M
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.last_message = None
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
@@ -64,6 +132,10 @@ class OccupancyGrid:
         self._dirty = False
         self._last_at = None
         self._last_picture = None
+        self._clock = clock
+        self._sensed_at = None
+        self._revision = 0
+        self._snapshot_picture = None
         self._lock = threading.Lock()
 
     @property
@@ -71,7 +143,11 @@ class OccupancyGrid:
         return len(self._keys)
 
     def add(self, positions) -> None:
-        """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
+        """Fold one accepted frame's world points ((N, 3) ARKit meters) into the evidence.
+
+        Each call is one accepted sensing, so it advances `sensed_at` even when the
+        points change nothing. Callers gate on phone, session and frame age first.
+        """
         p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
         with np.errstate(invalid='ignore'):
             ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
@@ -82,6 +158,7 @@ class OccupancyGrid:
         keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                          + iy[inside].astype(np.int64))
         with self._lock:
+            self._sensed_at = self._clock()
             self.dropped += int(len(p) - inside.sum())
             if not len(keys):
                 return
@@ -111,7 +188,7 @@ class OccupancyGrid:
                 return None
             self._dirty = False
             keys, hits = self._keys.copy(), self._hits.copy()
-        picture = classify(keys, hits)
+        picture = classify(keys, hits, self.obstacle_from_m)
         if picture is None:
             return None
         col0, row0, cells, floor_y = picture
@@ -127,6 +204,30 @@ class OccupancyGrid:
                            floor_y=round(floor_y, 3))
             self._last_picture, self._last_at, self.last_message = fingerprint, now, message
             return message
+
+    def snapshot(self) -> OccupancySnapshot:
+        """Classified picture of all evidence so far; blocking like `message_if_due`."""
+        with self._lock:
+            keys, hits, sensed_at = self._keys.copy(), self._hits.copy(), self._sensed_at
+        picture = classify(keys, hits, self.obstacle_from_m)
+        origin = cells = floor_y = fingerprint = None
+        if picture is not None:
+            col0, row0, cells, floor_y = picture
+            origin = ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M)
+            cells.setflags(write=False)
+            fingerprint = (col0, row0, cells.shape, cells.tobytes(), round(floor_y, 2))
+        with self._lock:
+            if fingerprint != self._snapshot_picture:
+                self._snapshot_picture = fingerprint
+                self._revision += 1
+            revision = self._revision
+        calibration = self.calibration
+        blockers = ('calibration_missing',) if calibration is None else calibration.blockers
+        if picture is None:
+            blockers += ('no_floor',)
+        return OccupancySnapshot(self.session, revision, sensed_at, blockers,
+                                 None if calibration is None else calibration.inflation_m,
+                                 origin, CELL_M, cells, floor_y)
 
 
 def estimate_floor(levels: np.ndarray):
@@ -151,7 +252,7 @@ def estimate_floor(levels: np.ndarray):
     return float(np.average(centers, weights=area[lo:hi]))
 
 
-def classify(keys: np.ndarray, hits: np.ndarray):
+def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M):
     """(first column, first row, uint8 cells[rows=z, cols=x], floor_y) of the known area, or None."""
     if not len(keys):
         return None
@@ -163,7 +264,7 @@ def classify(keys: np.ndarray, hits: np.ndarray):
     height = Y_MIN_M + (levels + .5) / _SLICES_PER_M - floor_y
     free = np.bincount(columns, np.where(np.abs(height) <= FLOOR_TOL_M + _EPS, hits, 0),
                        minlength=_SIDE * _SIDE)
-    blocked = np.bincount(columns, np.where((height >= OBSTACLE_MIN_M - _EPS)
+    blocked = np.bincount(columns, np.where((height >= obstacle_from_m - _EPS)
                                             & (height <= OBSTACLE_MAX_M + _EPS), hits, 0),
                           minlength=_SIDE * _SIDE)
     state = np.zeros(_SIDE * _SIDE, np.uint8)
