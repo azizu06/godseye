@@ -1,5 +1,11 @@
+import {
+  simulator,
+  panel,
+  workspace,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect } from "@playwright/test";
-import { panel } from "./helpers";
 for (const interrupt of ["release", "stop"] as const) {
   test(`Standard handoff cannot move after ${interrupt} while Arm is pending`, async ({
     page,
@@ -63,12 +69,11 @@ for (const interrupt of ["release", "stop"] as const) {
       if (path === "/manual") motion.push(route.request().postDataJSON());
       await route.fulfill({ json: { version: 1, armed, mode } });
     });
-    await page.goto("/");
+    await simulator(page);
     await page.getByRole("button", { name: "2D", exact: true }).click();
-    await page
-      .getByRole("button", { name: "Connection settings", exact: true })
-      .click();
+    await workspaceAction(page, "Connection settings");
     await page.getByRole("button", { name: /External feed Connect/ }).click();
+    await page.getByLabel("Enable REST commands").check();
     await page
       .getByLabel("Telemetry WebSocket")
       .fill("ws://localhost:9876/live");
@@ -76,12 +81,21 @@ for (const interrupt of ["release", "stop"] as const) {
     await page
       .getByRole("button", { name: "Connect source", exact: true })
       .click();
+    await closeWorkspace(page);
     await page.getByRole("button", { name: "Arm rover", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "Disarm rover", exact: true }),
+      page.getByRole("button", { name: "STOP ROVER", exact: true }),
     ).toBeEnabled();
+    // Stop is intentionally available before the Arm acknowledgement/health
+    // arrives. Wait for actual armed telemetry before requesting the handoff.
+    await expect(page.locator(".operator-panel .state-pill")).toHaveText(
+      "Armed",
+    );
     await page.keyboard.down("ArrowDown");
     await armStarted;
+    await expect(
+      page.getByRole("button", { name: "STOP ROVER", exact: true }),
+    ).toBeEnabled();
     if (interrupt === "release") await page.keyboard.up("ArrowDown");
     else
       await page
@@ -101,7 +115,7 @@ for (const interrupt of ["release", "stop"] as const) {
 test("map fills the viewport, retained panels are optional, and search does not steer", async ({
   page,
 }) => {
-  await page.goto("/");
+  await simulator(page);
   await expect(page.locator(".workspace-drawer")).toHaveCount(0);
   const viewport = page.viewportSize()!;
   const bounds = (await page.locator(".scene-canvas").boundingBox())!;
@@ -130,6 +144,7 @@ test("map fills the viewport, retained panels are optional, and search does not 
   await expect(page.locator(".inspector-empty")).toBeVisible();
   await page.getByRole("button", { name: "Close panel", exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
+  await workspace(page);
   await expect(
     page.getByRole("button", { name: "Export snapshot", exact: true }),
   ).toBeVisible();
@@ -191,19 +206,69 @@ test("failed Arm response reasserts Stop after the backend applied it", async ({
     }
     return route.fulfill({ json: { version: 1, armed } });
   });
-  await page.goto("/");
+  await simulator(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await closeWorkspace(page);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await expect.poll(() => stops).toBe(1);
   expect(armed).toBe(false);
   await expect(page.getByRole("status")).toContainText("Arm response failed");
+});
+
+test("compact Stop remains available while reconnect has no current health", async ({
+  page,
+}) => {
+  let connections = 0,
+    stops = 0;
+  let disconnect = () => {};
+  await page.routeWebSocket("ws://localhost:9876/live", (ws) => {
+    connections++;
+    disconnect = () => ws.close();
+    if (connections === 1)
+      ws.send(
+        JSON.stringify({
+          version: 1,
+          type: "health",
+          phone: "ok",
+          car: "ok",
+          detector: "ok",
+          pose_age_ms: 0,
+          mode: "explore",
+          armed: true,
+          stop_reason: null,
+        }),
+      );
+  });
+  await page.route("http://localhost:9876/stop", (route) => {
+    stops++;
+    return route.fulfill({ json: { version: 1, armed: false } });
+  });
+  await simulator(page);
+  await workspaceAction(page, "Connection settings");
+  await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
+  await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
+  await page.getByLabel("Backend API base").fill("http://localhost:9876");
+  await page
+    .getByRole("button", { name: "Connect source", exact: true })
+    .click();
+  await closeWorkspace(page);
+  const stop = page.getByRole("button", { name: "STOP ROVER", exact: true });
+  await expect(stop).toBeEnabled();
+  disconnect();
+  await expect.poll(() => connections).toBe(2);
+  await expect(stop).toBeEnabled();
+  await stop.click();
+  await expect.poll(() => stops).toBe(1);
+  await expect(
+    page.getByRole("button", { name: "Arm rover", exact: true }),
+  ).toBeDisabled();
 });
