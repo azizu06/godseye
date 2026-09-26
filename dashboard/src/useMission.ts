@@ -38,7 +38,6 @@ export function useMission() {
   const [steeringDirection, setSteeringDirection] =
     useState<SteeringDirection | null>(null);
   const directional = useRef<DirectionalSteering | null>(null);
-  const viewYaw = useRef(0);
   const motionState = useRef({ ready: false, healthy: false, yaw: 0 });
   const latchStop = useCallback((value: boolean) => {
     stopLatchRef.current = value;
@@ -262,7 +261,7 @@ export function useMission() {
     manual.current = controller;
     const steering = new DirectionalSteering(
       (body, signal) => send("/manual", { ...body }, signal),
-      () => ({ ...motionState.current, viewYaw: viewYaw.current }),
+      () => motionState.current,
       (e) => {
         cancelControl();
         notify(e instanceof Error ? e.message : "Steering command failed.");
@@ -567,9 +566,6 @@ export function useMission() {
     drive,
     steer,
     releaseSteering,
-    setViewYaw: (yaw: number) => {
-      if (Number.isFinite(yaw)) viewYaw.current = yaw;
-    },
     navigate,
     release: cancelControl,
     trackingFault,

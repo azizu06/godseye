@@ -89,7 +89,6 @@ export default function App() {
         simulated={simulated}
         canGoal={controller.canDrive && mission.health?.mode !== "explore"}
         onGoal={(x, z) => void controller.navigate(x, z)}
-        onViewYaw={controller.setViewYaw}
       />
       <div
         className="workspace-actions heading-actions"
@@ -372,9 +371,10 @@ export default function App() {
             <h3>Move through the world</h3>
             <p>
               Standard keeps arrow-key steering and click-to-navigate available
-              together. Arrow directions follow your view. The rover turns
-              toward the requested direction before moving forward. Release the
-              keys to stop steering.
+              together. Up moves straight ahead. Down turns around, and Left or
+              Right turns a quarter turn before moving. Directions are relative
+              to the rover when you press the key; orbiting the view does not
+              steer it. Release the key to stop.
             </p>
             <p>
               Arm explicitly before moving. Stop disarms. Explore is a separate

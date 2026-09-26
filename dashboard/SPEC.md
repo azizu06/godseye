@@ -186,7 +186,7 @@ The spatial view fills the viewport by default.
 Preserve Spatial Memory, Object Intelligence, and Recent Activity in expandable panels over the map.
 Necessary controls stay within the spatial window, with configuration available on demand.
 Standard exposes both keyboard steering and click-to-navigate; Explore is the other UI mode.
-Arrow directions follow the current view, and the rover turns toward the requested direction before advancing.
+Up advances immediately along the rover’s current heading. Down requests a 180° turn, and Left/Right request a 90° turn before advancing. Capture the rover-relative target once per new direction press; camera orbit and held-key repeat must not retarget motion.
 Read [DISCOVERY.md](DISCOVERY.md) for the accepted behavior, input handoff, and retention requirements.
 
 ## Review and delivery

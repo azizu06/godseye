@@ -5,18 +5,20 @@ export interface SteeringVelocity {
 }
 const wrap = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
 
-/** viewYaw points toward the viewer along the floor (screen down). */
+/** A new press chooses a heading relative to the rover, independent of the camera. */
 export function headingForDirection(
   direction: SteeringDirection,
-  viewYaw: number,
+  roverYaw: number,
 ) {
   const offset = {
-    down: 0,
-    up: Math.PI,
-    right: Math.PI / 2,
-    left: -Math.PI / 2,
+    down: Math.PI,
+    up: 0,
+    right: -Math.PI / 2,
+    left: Math.PI / 2,
   }[direction];
-  return wrap(viewYaw + offset);
+  // Preserve forward exactly: wrapping an already valid heading introduces tiny
+  // numerical yaw corrections before the first forward pulse.
+  return direction === "up" ? roverYaw : wrap(roverYaw + offset);
 }
 
 export function steeringVelocity(
@@ -26,8 +28,9 @@ export function steeringVelocity(
   if (!Number.isFinite(yaw) || !Number.isFinite(targetYaw))
     return { v_mps: 0, yaw_rate_rps: 0 };
   const error = wrap(targetYaw - yaw);
+  if (Math.abs(error) < 0.02) return { v_mps: 0.15, yaw_rate_rps: 0 };
   return {
-    v_mps: Math.abs(error) < 0.12 ? 0.15 : 0,
+    v_mps: 0,
     yaw_rate_rps: Math.max(-0.5, Math.min(0.5, error * 2)),
   };
 }
@@ -36,6 +39,7 @@ export function steeringVelocity(
 export class DirectionalSteering {
   private timer: ReturnType<typeof setInterval> | null = null;
   private direction: SteeringDirection | null = null;
+  private targetYaw: number | null = null;
   private abort: AbortController | null = null;
   private busy = false;
   private epoch = 0;
@@ -44,10 +48,19 @@ export class DirectionalSteering {
       body: SteeringVelocity,
       signal?: AbortSignal,
     ) => Promise<unknown>,
-    private read: () => { yaw: number; viewYaw: number; ready: boolean },
+    private read: () => { yaw: number; ready: boolean },
     private error: (error: unknown) => void,
   ) {}
   start(direction: SteeringDirection) {
+    const current = this.read();
+    if (!current.ready || !Number.isFinite(current.yaw)) {
+      this.stop();
+      return;
+    }
+    // A held key must not move the target as the rover turns. Repeated starts
+    // preserve it; changing direction or releasing and pressing chooses anew.
+    if (direction !== this.direction || this.targetYaw === null)
+      this.targetYaw = headingForDirection(direction, current.yaw);
     this.direction = direction;
     if (this.timer) return;
     const epoch = ++this.epoch;
@@ -57,17 +70,14 @@ export class DirectionalSteering {
         this.stop();
         return;
       }
-      if (this.busy || !this.direction || epoch !== this.epoch) return;
+      if (this.busy || this.targetYaw === null || epoch !== this.epoch) return;
       this.busy = true;
       const abort = new AbortController();
       this.abort = abort;
       const timeout = setTimeout(() => abort.abort(), 800);
       try {
         await this.send(
-          steeringVelocity(
-            current.yaw,
-            headingForDirection(this.direction, current.viewYaw),
-          ),
+          steeringVelocity(current.yaw, this.targetYaw),
           abort.signal,
         );
       } catch (error) {
@@ -86,6 +96,7 @@ export class DirectionalSteering {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.targetYaw = null;
     this.epoch++;
     this.abort?.abort();
     this.abort = null;

@@ -35,7 +35,7 @@ test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
     page.getByRole("button", { name: "STOP ROVER", exact: true }),
   ).toBeInViewport();
 });
-test("keyboard steering turns before moving, leaves a trail, and stops on release and blur", async ({
+test("forward moves immediately without turning, leaves a trail, and stops on release and blur", async ({
   page,
 }) => {
   await page.goto("/");
@@ -44,12 +44,15 @@ test("keyboard steering turns before moving, leaves a trail, and stops on releas
     .getByRole("button", { name: "Arm simulator", exact: true })
     .click();
   const before = await page.locator(".pose-readout").innerText();
+  const rover = page.locator("svg.map2d g[transform*=rotate]");
+  const heading = (transform: string | null) =>
+    transform?.match(/rotate\(([^)]+)\)/)?.[1];
+  const initialHeading = heading(await rover.getAttribute("transform"));
   await page.keyboard.down("ArrowUp");
-  await page.waitForTimeout(250);
-  expect(await page.locator(".pose-readout").innerText()).toBe(before);
   await expect(page.locator(".pose-readout")).not.toHaveText(before, {
-    timeout: 15000,
+    timeout: 1500,
   });
+  expect(heading(await rover.getAttribute("transform"))).toBe(initialHeading);
   await expect
     .poll(() => page.locator("svg.map2d line").count())
     .toBeGreaterThan(1);
@@ -67,6 +70,13 @@ test("keyboard steering turns before moving, leaves a trail, and stops on releas
   await page.waitForTimeout(400);
   expect(await page.locator(".pose-readout").innerText()).toBe(blur);
   expect(await page.locator("svg.map2d line").count()).toBeGreaterThan(1);
+  await page.keyboard.down("ArrowDown");
+  await page.waitForTimeout(400);
+  expect(await page.locator(".pose-readout").innerText()).toBe(blur);
+  expect(heading(await rover.getAttribute("transform"))).not.toBe(
+    initialHeading,
+  );
+  await page.keyboard.up("ArrowDown");
 });
 
 test("older arm completion cannot override a newer stop", async ({ page }) => {

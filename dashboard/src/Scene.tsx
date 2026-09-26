@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Canvas, useThree, useFrame } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Edges, Grid, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -38,7 +38,6 @@ export interface SceneProps {
   simulated: boolean;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
-  onViewYaw?: (yaw: number) => void;
 }
 interface Layers {
   points: boolean;
@@ -47,22 +46,9 @@ interface Layers {
   occupancy: boolean;
 }
 
-function Controls({
-  tool,
-  reset,
-  onViewYaw,
-}: {
-  tool: "orbit" | "pan";
-  reset: number;
-  onViewYaw?: (yaw: number) => void;
-}) {
+function Controls({ tool, reset }: { tool: "orbit" | "pan"; reset: number }) {
   const ref = useRef<OrbitControlsImpl>(null);
   const { camera } = useThree();
-  const direction = useRef(new THREE.Vector3());
-  useFrame(() => {
-    camera.getWorldDirection(direction.current);
-    onViewYaw?.(Math.atan2(-direction.current.x, -direction.current.z));
-  });
   useEffect(() => {
     camera.position.set(7.3, 6.5, 8.2);
     ref.current?.target.set(0, 0.2, 0);
@@ -654,9 +640,6 @@ export default function Scene(props: SceneProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  useEffect(() => {
-    if (view === "2d") props.onViewYaw?.(0);
-  }, [view, props.onViewYaw]);
   const count = props.mission.chunks.reduce(
     (n, c) => n + c.positions.length / 3,
     0,
@@ -735,7 +718,7 @@ export default function Scene(props: SceneProps) {
               <Suspense fallback={null}>
                 <World {...props} layers={layers} />
               </Suspense>
-              <Controls tool={tool} reset={reset} onViewYaw={props.onViewYaw} />
+              <Controls tool={tool} reset={reset} />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>

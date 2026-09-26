@@ -664,15 +664,15 @@ export function OperatorControls({
           </p>
         </div>
         <div className="drive-pad">
-          {control("Move up", <ArrowUp size={17} />, "up")}
+          {control("Move forward", <ArrowUp size={17} />, "up")}
           <div>
-            {control("Move left", <ArrowLeft size={17} />, "left")}
+            {control("Turn left and move", <ArrowLeft size={17} />, "left")}
             <span>
               <Navigation size={15} />
             </span>
-            {control("Move right", <ArrowRight size={17} />, "right")}
+            {control("Turn right and move", <ArrowRight size={17} />, "right")}
           </div>
-          {control("Move down", <ArrowDown size={17} />, "down")}
+          {control("Turn around and move", <ArrowDown size={17} />, "down")}
         </div>
         <div className="arm-control">
           <button
