@@ -46,3 +46,13 @@ CREATE TABLE IF NOT EXISTS rescan_events (
     kind TEXT NOT NULL, object_id TEXT NOT NULL,
     PRIMARY KEY (rescan_id, kind, object_id)
 );
+CREATE TABLE IF NOT EXISTS object_labels (
+    object_id TEXT PRIMARY KEY REFERENCES objects(id) ON DELETE CASCADE,
+    label TEXT, status TEXT NOT NULL CHECK (status IN ('pending','labeled','unknown','unavailable','error')),
+    reason TEXT
+);
+CREATE TABLE IF NOT EXISTS label_budgets (
+    session_id TEXT NOT NULL, map_epoch INTEGER NOT NULL, attempts INTEGER NOT NULL,
+    PRIMARY KEY(session_id,map_epoch),
+    FOREIGN KEY(session_id,map_epoch) REFERENCES sessions
+);

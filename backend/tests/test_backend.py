@@ -97,7 +97,7 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(client.post('/manual', json={'v_mps': 1., 'yaw_rate_rps': 0.}).status_code, 422)
             self.assertEqual(client.post('/goal', json={'x': 1., 'z': 2.}).status_code, 409)  # disarmed
             self.assertEqual(client.post('/rescan').status_code, 409)  # no map to rescan yet
-            self.assertEqual(client.post('/ask', json={'question': 'backpack?'}).status_code, 501)
+            self.assertEqual(client.post('/ask', json={'question': 'backpack?'}).status_code, 200)
             session = client.post('/session').json()
             self.assertEqual(session['version'], 1)
             self.assertEqual(client.get('/objects').json()['objects'], [])
