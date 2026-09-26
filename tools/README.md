@@ -18,7 +18,8 @@ trigger. The health stop reason and startup banner explicitly label this demo
 synthetic; `armed` stays false and `car` stays down.
 
 The phone sends hello once, 30 Hz moving camera poses, and 5 Hz binary bundles
-(`--frame-hz 5` through `10`). Its deterministic 960×720 JPEG gradient, 256×192
+(`--frame-hz 5` through `10`). Its deterministic 960×720 JPEG gradient (or `--image PATH`, a local photo
+resized to 960×720 for detector smoke tests), 256×192
 little-endian float32 depth ramp, and high-confidence bytes need no assets.
 Frame metadata comes from the same pose sent immediately before the bundle.
 Camera translation occupies entries 12–14 of the column-major transform.
@@ -27,7 +28,7 @@ Each connection gets a new session UUID. Slow sends skip missed pose ticks rathe
 than flooding the backend. Connection errors exit visibly; restart to reconnect.
 Ctrl-C stops either tool.
 
-`tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts plus the latest `points` chunk, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
+`tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts, the latest `points` chunk and the latest objects, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
 
 Offline validation (no sockets, camera, car, or weights):
 
