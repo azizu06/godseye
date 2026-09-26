@@ -91,7 +91,12 @@ synthetic moved-backpack map, `scribe_v2` / `gemini-2.5-flash-lite` / Sarah on
 was last seen 20 seconds ago. It has moved 2 meters.", 3.9 s 16 kHz WAV that played.
 A follow-up Gemini-only call with a dedicated free-tier "GodsEye Scout" AI Studio
 project key and `gemini-3.5-flash-lite` returned a grounded answer in 0.9 s.
-Real rooms, microphones and noisy speech are still untested.
+A combined local integration with PRs #55 and #56 (plus the proposed
+`approach_view` assignment in `/route`) used the real detection message, the real
+`/route` planner and all three live providers. It answered "Where is the person, and how
+do I get to them?" with "A person was detected four seconds ago. A suggested walking
+approach to the person is available with a length of three point four meters." in
+1.7 s, with 7.6 s of playable speech. Real rooms, microphones and noisy speech are still untested.
 
 ```sh
 $HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_voice -v
