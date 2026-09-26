@@ -15,17 +15,22 @@ npm run dev
 ```
 
 Open http://localhost:5173.
-The default source is explicitly simulated; open Connection settings to enter your laptop's `/live` WebSocket and REST base URLs.
+Press Escape to open the workspace, then Connection settings to choose the local simulator or enter your laptop's `/live` WebSocket and REST base URLs.
 Telemetry-only mode supports `tools/fake_live.py` without sending commands.
 The real car adapter remains logging-only and cannot arm hardware.
 
 ## Demo
 
-The map fills the screen; open Spatial Memory, Object Intelligence, or Recent Activity from the floating panel controls.
+The map fills the screen with only 2D/3D, Standard/Explore and compact Arm/Stop controls.
+Press Escape, Shift+F10 or the context-menu key, right-click without dragging, or touch and hold the canvas to open the workspace.
+Spatial Memory, Object Intelligence, Recent Activity, Rover Controls, Scene settings, connection, export and session actions remain there.
+Keyboard navigation also reveals an Open workspace launcher on focus.
 Objects and point-cloud surfaces appear as the simulator observes them and remain in spatial memory.
 Select an object to inspect its position, confidence, observation history, and state.
 Open Rover Controls and run the relocation demo to move the simulated backpack and reveal the previous location, displacement, and event evidence.
-Use middle-drag to orbit, Shift + middle-drag to pan, the wheel to zoom, or the visible Orbit/Pan tools with the primary mouse button.
+Left-drag pans, right-drag rotates, and the wheel zooms.
+Middle-drag also orbits; Shift + middle-drag pans, and Home resets the view.
+A stationary left-click still navigates; a stationary right-click opens the workspace.
 The 2D tab provides a top-down map when inspecting occupancy or selecting a navigation goal.
 Arm explicitly before moving.
 Standard offers both arrow-key steering and click-to-navigate in the 3D scene or 2D map.

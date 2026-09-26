@@ -2944,3 +2944,261 @@ input[type="checkbox"] {
     font-size: 10px;
   }
 }
+
+/* Minimal canvas: every secondary tool lives in the on-demand workspace. */
+.minimal-workspace .scene-toolbar {
+  top: 20px;
+  left: 20px;
+  padding: 4px;
+  height: auto;
+  min-height: 36px;
+  border-radius: 8px;
+  gap: 0;
+  box-shadow: 0 4px 24px #0002;
+}
+.minimal-workspace .scene-toolbar .segmented {
+  border: 0;
+}
+.minimal-workspace .scene-toolbar button {
+  min-height: 28px;
+  padding: 5px 12px;
+}
+.minimal-workspace .flight-controls {
+  top: 20px;
+  right: 20px;
+  bottom: auto;
+  left: auto;
+}
+.minimal-workspace .operator-panel.compact {
+  border-radius: 8px;
+}
+.minimal-workspace .operator-panel.compact .operator-content {
+  padding: 4px;
+  gap: 10px;
+}
+.minimal-workspace .operator-panel.compact .mode-control {
+  flex: none;
+  min-width: 0;
+}
+.minimal-workspace .operator-panel.compact .mode-control p {
+  display: none;
+}
+.minimal-workspace .operator-panel.compact .mode-tabs {
+  border: 0;
+}
+.minimal-workspace .operator-panel.compact .mode-tabs button {
+  min-width: 66px;
+  min-height: 28px;
+  padding: 5px 9px;
+}
+.minimal-workspace .operator-panel.compact .arm-control {
+  min-width: 0;
+  width: auto;
+  margin: 0;
+}
+.minimal-workspace .operator-panel.compact .arm-control .button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 5px 9px;
+  gap: 5px;
+  font-size: 10px;
+  border-radius: 5px;
+}
+.workspace-launcher {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.workspace-launcher:focus-visible {
+  top: 70px;
+  left: 20px;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  padding: 10px 14px;
+  border-radius: 7px;
+  background: #16312f;
+  color: #b7f3e5;
+  z-index: 50;
+}
+.minimal-workspace .workspace-drawer {
+  top: 72px;
+  bottom: 20px;
+  right: 20px;
+  width: 368px;
+  max-height: calc(100dvh - 92px);
+}
+.minimal-workspace .drawer-heading {
+  gap: 9px;
+}
+.minimal-workspace .drawer-heading .eyebrow {
+  flex: 1;
+}
+.workspace-menu {
+  padding: 16px;
+}
+.workspace-summary {
+  padding: 2px 2px 17px;
+}
+.workspace-summary .eyebrow {
+  color: #b0e4d5;
+}
+.workspace-summary p {
+  color: #819baa;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 7px 0 0;
+}
+.workspace-menu-panels,
+.workspace-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.workspace-menu-panels button,
+.workspace-menu-actions button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  color: #bdd0d8;
+  text-align: left;
+  font-size: 12px;
+}
+.workspace-menu-panels button span {
+  flex: 1;
+}
+.workspace-menu-panels button:hover,
+.workspace-menu-actions button:hover {
+  background: #213b40;
+  color: #c4f1e5;
+}
+.workspace-menu-actions {
+  margin-top: 15px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.minimal-workspace .workspace-drawer .operator-panel .mode-control,
+.minimal-workspace .workspace-drawer .operator-panel .arm-control {
+  display: none;
+}
+.minimal-workspace .scene-tools-panel {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.minimal-workspace .scene-tools-panel .scene-caption,
+.minimal-workspace .scene-tools-panel .scene-stat,
+.minimal-workspace .scene-tools-panel .scene-bottom,
+.minimal-workspace .scene-tools-panel .scene-popover,
+.minimal-workspace .scene-tools-panel .surface-status,
+.minimal-workspace .scene-tools-panel .scene-footer {
+  position: static;
+  inset: auto;
+  transform: none;
+  max-width: none;
+  width: auto;
+  margin: 0;
+}
+.minimal-workspace .scene-tools-panel .scene-caption {
+  pointer-events: auto;
+}
+.minimal-workspace .scene-tools-panel .scene-stat {
+  text-align: left;
+}
+.minimal-workspace .scene-tools-panel .scene-stat > strong {
+  font-size: 28px;
+}
+.minimal-workspace .scene-tools-panel .scene-stat > span,
+.minimal-workspace .scene-tools-panel .scene-stat > small {
+  display: block;
+}
+.minimal-workspace .scene-tools-panel .surface-status {
+  text-align: left;
+  line-height: 1.6;
+  pointer-events: auto;
+}
+.minimal-workspace .scene-tools-panel .scene-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 13px;
+}
+.minimal-workspace .scene-tools-panel .scene-hint {
+  display: flex;
+  font-size: 10px;
+}
+.minimal-workspace .scene-tools-panel .axis-widget {
+  display: none;
+}
+.minimal-workspace .scene-tools-panel .scene-popover {
+  max-height: none;
+  padding: 14px;
+  box-shadow: none;
+}
+.minimal-workspace .scene-tools-panel .scene-footer {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 9px;
+  gap: 12px;
+}
+.minimal-workspace .scene-settings-actions {
+  display: flex;
+  gap: 10px;
+}
+.minimal-workspace .toast {
+  bottom: 20px;
+}
+@media (max-width: 760px) {
+  .minimal-workspace .scene-toolbar {
+    top: 12px;
+    left: 12px;
+  }
+  .minimal-workspace .scene-toolbar button {
+    padding: 5px 9px;
+  }
+  .minimal-workspace .flight-controls {
+    top: 12px;
+    right: 12px;
+    left: auto;
+  }
+  .minimal-workspace .operator-panel.compact .operator-content {
+    gap: 5px;
+  }
+  .minimal-workspace .operator-panel.compact .mode-tabs button {
+    min-width: 59px;
+    padding: 5px 7px;
+  }
+  .minimal-workspace .workspace-drawer {
+    top: 64px;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    max-height: calc(100dvh - 76px);
+  }
+  .workspace-launcher:focus-visible {
+    top: 61px;
+    left: 12px;
+  }
+  .minimal-workspace .toast {
+    bottom: 12px;
+  }
+}

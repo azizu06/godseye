@@ -59,6 +59,7 @@ class OccupancyGrid:
         self.max_voxels = max_voxels
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.last_message = None
+        self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
         self._hits = np.empty(0, np.int32)
         self._dirty = False
@@ -97,6 +98,21 @@ class OccupancyGrid:
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
             self._dirty = True
+            self.revision += 1
+
+    def snapshot(self):
+        """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
+
+        The same classification as the published grid, for the planner. Blocking like
+        `message_if_due`; it never touches the publish rate limit or change detection.
+        """
+        with self._lock:
+            revision, keys, hits = self.revision, self._keys.copy(), self._hits.copy()
+        picture = classify(keys, hits)
+        if picture is None:
+            return revision, None, None
+        col0, row0, cells, _ = picture
+        return revision, ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M), cells
 
     def message_if_due(self, now: float):
         """The `/live` `occupancy` message, or None when rate-limited, unchanged, or empty.

@@ -36,7 +36,10 @@ a second is rejected. Reconnect with a new hello when the AR session/epoch chang
 Mismatched session/epoch, malformed bundles, unknown versions, nonfinite values,
 and text frames close with code 1008. Binary headers are capped at 64 KiB and
 bundles at 8 MiB; dimension/payload lengths must agree. Pose must have 16
-column-major floats. Bundle transform belongs to the same captured frame.
+column-major floats forming a rigid camera-to-world matrix (zero, scaled, reflected or
+non-affine transforms close the socket, like the bundle decoder). Bundle transform belongs
+to the same captured frame; a pose and bundle with the same `t_capture` must agree on
+frame, transform and tracking or the socket closes.
 
 `/live` sends versioned JSON: health every 500 ms, pose at most 15 Hz,
 an objects snapshot and an empty path at connection and map reset.
@@ -50,6 +53,13 @@ and rover base heading remain future work.
 
 Phone freshness uses local monotonic receipt age and requires a wall timestamp
 within 250 ms of the Mac clock. Synchronize phone/Mac wall clocks for the demo.
+Receipt is not progress: only a pose or bundle with a strictly newer `t_capture` than any
+accepted so far renews freshness, so repeats with fresh wall times go stale. Pose and
+bundle streams are ordered independently, so a bundle delayed behind newer poses still
+maps with its own transform (`/capture/status` `mapping` counts `discarded_order`,
+`discarded_wall_time`, `discarded_tracking`) but never renews or rewinds the pose. Frames
+captured at or before a limited/unavailable capture are not mapped after recovery, and
+recovery never re-arms. Progress state is per phone connection.
 Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
@@ -325,6 +335,65 @@ observations come from the spec), tested only on synthetic scenes
 (`backend/tests/test_changes.py`); real-scene accuracy, depth noise and ARKit
 drift are unmeasured.
 
+## Navigation
+
+`POST /goal` and explore mode plan on the active session's occupancy grid
+(`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
+(`backend/navigator.py`). Each follower command goes through
+`Motion.submit` under the arm generation the run started in, so it reaches the
+car only via the leased 20 Hz pump (see Drive commands). `/arm` still refuses
+while the default car reports down, so runs are exercised by tests with
+`FakeCar`.
+
+- **Starting:** `/goal {x, z}` needs the backend armed in `navigate` mode (409
+  otherwise; there is no disarmed preview). It plans from the current pose (at
+  most 250 ms old), answers `{version, goal, points}`, publishes `path` and starts
+  following; a new goal replaces the current run. The arm generation is read
+  before planning, so a stop and re-arm while it plans answers 409 `Stopped
+  while planning` and the old goal never moves. Explore starts by itself
+  whenever the backend is armed in `explore` mode and drives to the nearest
+  reachable frontier (a known-free cell next to unknown or the edge of the cropped
+  grid), then the next, until none is left. Before any floor is mapped, goals plan
+  straight through unknown and explore waits in place with zero drive.
+- **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, occupied
+  cells inflated by a 0.15 m radius plus 0.03 m margin, line-of-sight shortcuts,
+  waypoints at most 0.25 m apart, at most 200,000 expansions. Unknown cells are
+  traversable at 3x the cost of free ones (depth sees only a few meters ahead)
+  and the grid is padded with unknown so goals beyond the mapped area still plan
+  (up to 1,000,000 cells).
+- **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
+  tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
+  the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
+  place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
+- **Replanning:** a full replan from the current pose about once per second; a
+  new map revision also triggers a blocked-path check (at most 4 Hz) that halts
+  and replans at once when the rest of the path now passes within the inflation
+  radius of an occupied cell. `path` is published only when its points change,
+  and new `/live` viewers get the current path.
+- **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
+  zero drive, health event) and publishes an empty `path`; health reports the
+  reason. `arrived`, `explore_complete`; `no_path`, `search_limit`,
+  `destination_blocked` (goal occupied or inside the inflation), `destination_unknown`,
+  `out_of_bounds`, `start_blocked`; `pose_stale` (no pose within 250 ms),
+  `tracking_lost`; `no_progress` (motion commanded while the pose moved under
+  5 cm and 0.15 rad for 5 s); `nav_error` (planner or loop failure); `disarmed`
+  (defensive: the armed mode changed without a stop); `command_stale` (Motion
+  refused a command because its generation ended). `/arm` also ends any run. Operator stop, mode change,
+  map reset, phone loss, tracking loss, the pose watchdog and shutdown end the
+  run through `stop` as well. A `/goal` that cannot be planned answers 409 with
+  the reason and disarms.
+- **Unverified interface dependencies** (rover issue #6): positive
+  `yaw_rate_rps` means increasing `yaw_rad`, a left (counterclockwise from above)
+  turn with +Y up, and the car adapter must confirm that sign; heading is the
+  camera forward, so the phone must face the rover's direction of travel (no
+  mount calibration); turning in place assumes a skid- or differential-steer
+  base; radius, margin, speeds and tolerances are placeholders, not measured car
+  parameters. With a car that never moves (`FakeCar`), a live run ends with
+  `no_progress` after 5 s.
+- **Tests:** `backend/tests/test_navigation.py` (planner, follower, 400 x 400
+  timing) and `backend/tests/test_navigator.py` (runs against a kinematic
+  stand-in rover, `/goal` and app-level stops).
+
 ## REST
 
 All successful responses carry `version: 1`. Errors use FastAPI's standard
@@ -334,10 +403,10 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 |---|---|
 | POST `/session` | Create map identity, revoke phone, clear current pose and disarm |
 | POST `/arm` | 409 while any health component is not ok (the default logging car always reports down); opens a fresh command generation |
-| POST `/stop` | Always accepted; latch operator stop and log zero drive |
+| POST `/stop` | Always accepted; latch operator stop, end any navigation run and send an explicit zero |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or not in manual mode; otherwise hold the command for a 250 ms lease and return health |
-| POST `/goal` | Validate x/z; 501 navigation unimplemented |
+| POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
@@ -382,16 +451,15 @@ vendor protocol, acknowledgement and health semantics belong to
   second dashboard still holding the button counts as fresh input after a
   re-arm. Only one operator surface should drive at a time.
 
-Navigation plugs in without touching the adapter: read
-`app.state.motion.generation` when a goal is accepted, then call
-`app.state.motion.submit(generation, mode, v_mps, yaw_rate_rps)` on every
-follower step (well inside 250 ms). `False` means the generation ended, so
-drop the goal and publish an empty path. Navigation owns goal and path policy;
-this boundary owns dispatch safety.
+Navigation uses the same boundary: `/goal` reads `app.state.motion.generation`
+before planning, and every 10 Hz follower step calls
+`app.state.motion.submit(generation, mode, v_mps, yaw_rate_rps)`. `False` means
+the generation ended, so the run stops (`command_stale`) and publishes an empty
+path. Navigation owns goal and path policy; this boundary owns dispatch safety.
 
-Proof is `backend/tests/test_motion.py` (fake clock) and
+Proof is `backend/tests/test_motion.py` (fake clock),
 `backend/tests/test_drive_safety.py` (real app, streaming phone, fake detector
-and `FakeCar`). This is backend evidence only. The Mac's lease is not the car's
+and `FakeCar`) and the navigation cases in `backend/tests/test_navigator.py`. This is backend evidence only. The Mac's lease is not the car's
 independent 300 ms stop, and no test here validates a physical protocol, stop
 distance or bench behavior; those need hardware evidence and explicit approval
 before any physical adapter is connected.
