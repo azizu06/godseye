@@ -144,7 +144,7 @@ test("only received observations populate the map and disconnect retains them wi
   await page.waitForTimeout(1600);
   const offline = await snapshot(page);
   // Failed reconnects preserve the last received snapshot as history. A
-  // successful reopen clears transient pose/chunks (missionLifecycle.spec.ts).
+  // successful reopen clears live pose/health, retaining received chunks (viewer.spec.ts).
   expect(offline.pose).toEqual(received.pose);
   expect(offline.objects).toEqual(received.objects);
   expect(offline.point_chunks).toEqual(received.point_chunks);

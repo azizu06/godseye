@@ -15,6 +15,7 @@ from backend.motion import DriveStop
 from backend.tests.test_command_envelope import faults
 from backend.tests.test_map_transport import frame, hello, wait_for
 from backend.tests.test_objects import FakeDetector
+from backend.tests.test_rich_capture import packet
 
 HOLD = {'v_mps': .1, 'yaw_rate_rps': 0.}
 
@@ -88,6 +89,21 @@ class DriveSafetyTests(unittest.TestCase):
         with TestClient(create_app(':memory:', detector=FakeDetector())) as client:
             self.assertEqual(self.health(client)['car'], 'down')
             self.assertEqual(client.post('/arm').status_code, 409)
+
+    def test_viewable_rich_capture_does_not_restore_stale_drive_authority(self):
+        with self.rig() as (client, car):
+            self.feeding.clear()
+            wait_for(lambda: self.health(client)['phone'] != 'ok')
+            payload = packet(session_id='map-session', capture=10000.)
+            response = client.post('/capture/ingest', content=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.json()['recording_enabled'])
+            self.assertEqual(client.get('/capture/rich/frame.bin').content, payload)
+            self.assertNotEqual(self.health(client)['phone'], 'ok')
+            self.assertFalse(self.health(client)['armed'])
+            self.assertEqual(client.post('/arm').status_code, 409)
+            self.assertEqual(client.post('/manual', json=HOLD).status_code, 409)
+            self.assertEqual(sends(car.calls), [])
 
     def test_unhealthy_car_refuses_arm_even_with_phone_and_detector_ok(self):
         for state in ('stale', 'down'):

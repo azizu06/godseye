@@ -15,6 +15,7 @@ export interface Mission {
   healthAt: number;
   pose: Pose | null;
   chunks: PointChunk[];
+  pointIds: number[];
   occupancy: Occupancy | null;
   path: [number, number][];
   objects: WorldObject[];
@@ -28,6 +29,7 @@ export const emptyMission = (): Mission => ({
   healthAt: 0,
   pose: null,
   chunks: [],
+  pointIds: [],
   occupancy: null,
   path: [],
   objects: [],
@@ -67,13 +69,16 @@ export function reduceMessage(
       };
     }
     case "points": {
-      if (state.chunks.some((c) => c.chunk_id === message.chunk_id))
-        return next;
+      if (state.pointIds.includes(message.chunk_id)) return next;
       const chunks = [...state.chunks, message].slice(-1000);
       let count = chunks.reduce((n, c) => n + c.positions.length / 3, 0);
       while (count > 500000 && chunks.length > 1)
         count -= chunks.shift()!.positions.length / 3;
-      return { ...next, chunks };
+      return {
+        ...next,
+        chunks,
+        pointIds: [...state.pointIds, message.chunk_id].slice(-1000),
+      };
     }
     case "occupancy":
       return { ...next, occupancy: message };

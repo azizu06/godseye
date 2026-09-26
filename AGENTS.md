@@ -14,6 +14,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 - Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
+- Viewer display freshness, feed URL selection, bounded rendering and integration tradeoffs: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
+
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 
 - Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.

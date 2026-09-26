@@ -9,14 +9,16 @@ import {
 import { emptyMission, reduceMessage } from "./state";
 import { DirectionalSteering, type SteeringDirection } from "./steering";
 import {
-  defaultConfig,
+  initialConfig,
+  updateFeedUrl,
   ManualController,
   sendCommand,
   type ConnectionConfig,
 } from "./transport";
 
 export function useMission() {
-  const [config, setConfig] = useState<ConnectionConfig>(defaultConfig);
+  const [config, setConfig] = useState<ConnectionConfig>(initialConfig);
+  useEffect(() => updateFeedUrl(config), [config]);
   const [mission, setMission] = useState(emptyMission);
   const [connection, setConnection] = useState("connecting");
   const [mapConfirmed, setMapConfirmed] = useState(false);
@@ -114,15 +116,14 @@ export function useMission() {
         latchStop(true);
         // A transport reconnect is not a new AR map. Keep historical spatial
         // memory, but require fresh identity/pose/health before resuming live use.
-        // Point IDs may restart after a backend restart, so clear their transient
-        // deduplication window while retaining the separate colored scan store.
+        // Point IDs may restart: clear only deduplication, retaining observed geometry.
         setMission((state) => ({
           ...state,
           health: null,
           healthAt: 0,
           pose: null,
           path: [],
-          chunks: [],
+          pointIds: [],
         }));
         setConnection("connected");
       };

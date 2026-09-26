@@ -12,6 +12,7 @@ test("default viewport is minimal and workspace tools remain keyboard accessible
   await expect(mainButtons).toHaveText([
     "3D",
     "2D",
+    "Frame scan",
     "Standard",
     "Explore",
     "Arm",
@@ -52,6 +53,7 @@ test("default viewport is minimal and workspace tools remain keyboard accessible
   await expect(mainButtons).toHaveText([
     "3D",
     "2D",
+    "Frame scan",
     "Standard",
     "Explore",
     "Arm",
@@ -171,6 +173,19 @@ test("left drag translates the view and right drag rotates around its target", a
   page,
 }) => {
   await observedFeed(page);
+  await expect(page.locator("canvas")).toBeVisible();
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const moduleUrl = "/node_modules/.vite/deps/@react-three_fiber.js";
+        const { _roots } = await import(moduleUrl);
+        return Boolean(
+          _roots.get(document.querySelector("canvas"))?.store.getState()
+            .controls,
+        );
+      }),
+    )
+    .toBe(true);
   // Read the actual renderer camera to distinguish panning from rotation.
   // This does not add a production debug endpoint or change camera behavior.
   const camera = () =>

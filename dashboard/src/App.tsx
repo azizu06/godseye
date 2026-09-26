@@ -255,6 +255,8 @@ export default function App() {
       <h1 className="sr-only">Godseye spatial workspace</h1>
       <Scene
         toolsHost={sceneToolsHost}
+        feedLabel={`External feed · ${config.wsUrl} · ${connection}`}
+        surfaceReason={capture.reason}
         mission={mission}
         surfaces={surfaces}
         persistentSurface={persistent}

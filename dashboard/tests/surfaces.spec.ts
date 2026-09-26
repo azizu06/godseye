@@ -102,9 +102,7 @@ test("received solid surfaces render and point cloud remains optional", async ({
   await expect(
     page.getByLabel("Color surfaces", { exact: true }),
   ).toBeChecked();
-  await expect(
-    page.getByLabel("Point cloud", { exact: true }),
-  ).not.toBeChecked();
+  await expect(page.getByLabel("Point cloud", { exact: true })).toBeChecked();
   await page.getByLabel("Point cloud", { exact: true }).check();
   await page.getByLabel("Color surfaces", { exact: true }).uncheck();
   await expect(page.getByTestId("surface-status")).toHaveCount(0);

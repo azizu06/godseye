@@ -3193,3 +3193,43 @@ input[type="checkbox"] {
     bottom: 12px;
   }
 }
+
+/* Visible diagnostics remain outside the workspace drawer. */
+.viewport-status {
+  position: absolute;
+  z-index: 8;
+  left: 20px;
+  bottom: 20px;
+  max-width: calc(100% - 40px);
+  padding: 10px 14px;
+  border: 1px solid #29424c;
+  border-radius: 8px;
+  background: #0c141ce8;
+  color: #abc5ce;
+  font: 11px/1.6 var(--mono);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.viewport-status span {
+  display: block;
+}
+.viewport-status span:first-child {
+  color: #d3e7e9;
+}
+.minimal-workspace .scene-toolbar {
+  gap: 4px;
+}
+@media (max-width: 760px) {
+  .viewport-status {
+    left: 12px;
+    bottom: 12px;
+    max-width: calc(100% - 24px);
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 520px) {
+  .frame-scan-label {
+    display: none;
+  }
+}

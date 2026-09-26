@@ -10,6 +10,36 @@ export const defaultConfig: ConnectionConfig = {
   apiUrl: "http://localhost:8765",
   commands: false,
 };
+/** URL-selected feeds survive reload without persisting control permission. */
+export function initialConfig(
+  search = window.location.search,
+): ConnectionConfig {
+  const params = new URLSearchParams(search);
+  const live = params.get("live");
+  if (!live) return { ...defaultConfig };
+  try {
+    const ws = new URL(live);
+    const api = new URL(ws);
+    api.protocol = ws.protocol === "wss:" ? "https:" : "http:";
+    api.pathname = "/";
+    api.search = "";
+    api.hash = "";
+    const config = {
+      ...defaultConfig,
+      wsUrl: ws.href,
+      apiUrl: params.get("api") ?? api.origin,
+    };
+    return validateConfig(config) ? { ...defaultConfig } : config;
+  } catch {
+    return { ...defaultConfig };
+  }
+}
+export function updateFeedUrl(config: ConnectionConfig) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("live", config.wsUrl);
+  url.searchParams.set("api", config.apiUrl);
+  window.history.replaceState(null, "", url);
+}
 export function validateConfig(config: ConnectionConfig): string | null {
   try {
     if (!["ws:", "wss:"].includes(new URL(config.wsUrl).protocol))

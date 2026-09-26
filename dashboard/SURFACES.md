@@ -4,7 +4,7 @@
 
 Issue #19 continues the goals in [SPEC.md](SPEC.md), [DISCOVERY.md](DISCOVERY.md), [the project spec](../docs/spec-v0.1.md), [INTERFACES.md](../docs/INTERFACES.md), and [CAPTURE.md](../docs/CAPTURE.md).
 
-The default 3D scene renders solid colored triangles rather than dots. Point cloud remains an independent optional layer. Orbit, pan, navigation, pose, sensor scope, trail, memory and intelligence remain available. Unknown space stays empty. Simulation is labeled and never used to fill a live feed.
+The default 3D scene renders solid colored triangles and received `/live` dots. Each layer remains independently selectable; see [VIEWER.md](VIEWER.md). Orbit, pan, navigation, pose, sensor scope, trail, memory and intelligence remain available. Unknown space stays empty. Simulation is labeled and never used to fill a live feed.
 
 Use the existing `/capture/status`, `/capture/rich/frame.bin` (preferred native JPEG), and `/capture/frame.bin` (v1 fallback) endpoints at the configured backend. Each binary frame contains synchronized JPEG, depth, confidence, scaled intrinsics and camera-to-world transform. Reconstruct a calibrated depth grid, retaining only medium- or high-confidence finite depth in 0.05–5 m. Reject triangles across depth discontinuities. Map the same-frame JPEG through image UVs. Do not mix preview images or poses from different frames. Frozen v1 control/live contracts remain unchanged.
 
