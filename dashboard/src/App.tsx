@@ -64,13 +64,15 @@ export default function App() {
   const capture = useColorSurfaces(
     config,
     mission.mapKey,
-    connection === "connected",
+    connection === "connected" && controller.mapConfirmed,
   );
   const surfaces = simulated
     ? controller.simSurface
       ? [controller.simSurface]
       : []
     : capture.patches;
+  const persistent = simulated ? controller.simSurface : capture.persistent;
+  const mapCellM = simulated ? 0.1 : capture.cellM;
   const object = mission.objects.find((o) => o.id === selected);
   const sourceLabel = simulated
     ? "Simulation"
@@ -97,6 +99,8 @@ export default function App() {
       <Scene
         mission={mission}
         surfaces={surfaces}
+        persistentSurface={simulated ? null : persistent}
+        mapCellM={mapCellM}
         surfaceStatus={simulated ? "receiving" : capture.status}
         selected={selected}
         onSelect={select}
@@ -124,7 +128,7 @@ export default function App() {
           className="button subtle"
           aria-label="Export snapshot"
           title="Export snapshot"
-          onClick={() => exportMission(controller)}
+          onClick={() => exportMission(controller, persistent, mapCellM)}
         >
           <Download size={15} />
           <span>Export snapshot</span>

@@ -17,4 +17,4 @@ export interface CapturedSurface extends SurfacePatch {
   cameraForward: [number, number, number];
 }
 export type SurfaceStatus =
-  "waiting" | "receiving" | "unavailable" | "error" | "paused";
+  "waiting" | "receiving" | "unavailable" | "error" | "paused" | "capacity";

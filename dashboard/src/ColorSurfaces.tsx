@@ -1,7 +1,13 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { SurfacePatch } from "./surfaceTypes";
-function Patch({ patch }: { patch: SurfacePatch }) {
+function Patch({
+  patch,
+  retained,
+}: {
+  patch: SurfacePatch;
+  retained: boolean;
+}) {
   const geometry = useMemo(() => {
     const result = new THREE.BufferGeometry();
     result.setAttribute(
@@ -35,17 +41,23 @@ function Patch({ patch }: { patch: SurfacePatch }) {
         toneMapped={false}
         fog={false}
         polygonOffset
-        polygonOffsetFactor={1}
-        polygonOffsetUnits={1}
+        polygonOffsetFactor={retained ? 4 : 1}
+        polygonOffsetUnits={retained ? 4 : 1}
       />
     </mesh>
   );
 }
-export function ColorSurfaces({ patches }: { patches: SurfacePatch[] }) {
+export function ColorSurfaces({
+  patches,
+  retained = false,
+}: {
+  patches: SurfacePatch[];
+  retained?: boolean;
+}) {
   return (
     <group name="observed-color-surfaces">
       {patches.map((patch) => (
-        <Patch key={patch.id} patch={patch} />
+        <Patch key={patch.id} patch={patch} retained={retained} />
       ))}
     </group>
   );

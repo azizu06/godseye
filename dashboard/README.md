@@ -52,14 +52,14 @@ Linux needs Chromium's system libraries; `npx playwright install --with-deps chr
 
 Received point chunks, trajectory samples, and event history are bounded in memory.
 Unknown message types are ignored and malformed known messages are rejected.
-A reconnect clears spatial data before receiving a new snapshot.
+A reconnect preserves the accumulated colored map and spatial history while pausing capture until the backend confirms the same session/epoch. Live pose and health are cleared so retained geometry cannot imply current tracking.
 Backend map identity changes also clear spatial data; enabled API connections hydrate matching saved events and merge them with live events.
 Rescan saves a baseline and watches new observations; it does not command a physical revisit.
-Exports contain the dashboard's bounded received state, not a complete backend session recording.
+Exports include the accumulated observed colored geometry and bounded received state, not a complete backend session recording. Export before browser reload; reload recovery and archive replay are not implemented.
 Live camera calibration, hardware drive behavior, and session lifecycle extensions require coordination with their owning components.
 
 ### Color surface reconstruction
 
 3D now defaults to solid observed surfaces. Scene layers keeps Point cloud available as an independent overlay. The simulator reveals warm-colored room surfaces progressively. Live rendering prefers native JPEG and raw RGB-D from `/capture/rich/frame.bin`, falling back to the calibrated v1 `/capture/frame.bin` bundle. Set Backend API base even if drive commands are disabled.
 
-Only valid, high-confidence, observed surfaces are drawn. Holes and incomplete scans remain visible; point-only feeds cannot provide textured surfaces. Native camera color is preserved, with textures capped at 1280 pixels on their longest side and a bounded view cache. This is live RGB-D reconstruction, not a watertight or photogrammetry-quality model. See [SURFACES.md](SURFACES.md) for calibration, limits and lifecycle.
+Only valid, high-confidence, observed surfaces are drawn. Holes and incomplete scans remain visible; point-only feeds cannot provide textured surfaces. Native camera color is baked into an accumulated map, with recent textures (up to 24 views / 48 MiB, at most 1280 pixels on their longest side) supplying fine detail. The map coarsens spatially at its 100,000-triangle/vertex budget instead of expiring old views. If disconnected geometry cannot fit, capture reports capacity and retains the existing map. Point-cloud mode uses accumulated colored vertices when available. This is live RGB-D reconstruction, not a watertight or photogrammetry-quality model. See [SURFACES.md](SURFACES.md) and [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md) for calibration, limits and lifecycle.
