@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
-for (const mode of ["small", "dense", "textured"]) {
-  const count = mode === "small" ? 300 : 20_000;
+for (const mode of ["small", "legacy", "dense", "textured"]) {
+  const count = mode === "small" || mode === "legacy" ? 300 : 20_000;
   test(`binary phone RGB + depth renders ${mode} frames through the real backend`, async ({
     page,
   }, testInfo) => {

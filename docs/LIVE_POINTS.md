@@ -6,6 +6,9 @@ messages. Health, pose, objects, and other control messages stay v1 JSON.
 Clients that do not request the subprotocol keep the frozen
 [v1 interface](INTERFACES.md): JSON points at up to 4 Hz and 2,500 samples.
 The viewport can also consume the JSON stream from older servers and fixtures.
+When a server does not accept the dense handshake, the viewport retries once
+without a subprotocol. A successful fallback stays in legacy mode across reconnects
+until reload; failed connections retain exponential backoff.
 The phone app and its v1 frame bundles need no update.
 
 With a dense viewer connected, the backend projects up to **20,000** reliable

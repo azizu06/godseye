@@ -54,6 +54,7 @@ export function usePointCloud() {
     setSource(endpoint);
     let disposed = false,
       attempt = 0,
+      preferDense = true,
       socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const processor = new CloudWorker(
@@ -72,11 +73,14 @@ export function usePointCloud() {
           setFeed((s) => ({ ...s, connection: "processing-error" }));
       },
     );
-    const connect = () => {
+    const connect = (dense = preferDense) => {
       if (disposed) return;
+      let opened = false;
       setFeed((s) => ({ ...s, connection: "connecting" }));
       try {
-        socket = new WebSocket(endpoint, POINTS_PROTOCOL);
+        socket = dense
+          ? new WebSocket(endpoint, POINTS_PROTOCOL)
+          : new WebSocket(endpoint);
         socket.binaryType = "arraybuffer";
       } catch {
         setFeed((s) => ({ ...s, connection: "invalid" }));
@@ -85,6 +89,8 @@ export function usePointCloud() {
       const current = socket;
       current.onopen = () => {
         if (disposed || current !== socket) return;
+        opened = true;
+        preferDense = dense;
         attempt = 0;
         setMap(null);
         processor.reset();
@@ -147,8 +153,19 @@ export function usePointCloud() {
       current.onerror = () => current.close();
       current.onclose = () => {
         if (disposed || current !== socket) return;
+        // Older backends accept /live without echoing a subprotocol. Browsers
+        // reject that handshake, so retry once with the original JSON contract.
+        // Remember legacy mode only after it opens; outages must not permanently
+        // downgrade a server that supports the dense stream.
+        if (!opened && dense) {
+          connect(false);
+          return;
+        }
         setFeed((s) => ({ ...s, connection: "offline" }));
-        retry = setTimeout(connect, Math.min(8000, 1000 * 2 ** attempt++));
+        retry = setTimeout(
+          () => connect(),
+          Math.min(8000, 1000 * 2 ** attempt++),
+        );
       };
     };
     connect();

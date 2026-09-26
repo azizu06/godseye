@@ -21,6 +21,9 @@ The status line shows whether points are live, the retained count, and feed or
 tracking interruptions. An empty view means no valid points have arrived yet.
 
 For a different backend, use `/?live=ws%3A%2F%2Flaptop-host%3A8765%2Flive`.
+Set the phone's laptop URL to `ws://laptop-host:8765/phone` on that same host.
+The dashboard uses the selected backend for both points and camera/depth surfaces;
+keep the `live` query parameter when bookmarking or reopening the dashboard.
 Use `/?live=off` for an empty viewport without a backend connection.
 
 ## Navigation
@@ -70,6 +73,8 @@ to **20,000 samples per chunk at 10 Hz**, using confidence 2 and depths from 0.0
 to 5 meters. This is a 20× increase in the delivery ceiling; phone capture speed
 and repeated observations determine how quickly new cells actually fill in.
 Older servers still work through their 2,500-point JSON chunks at 4 Hz.
+If the dense handshake fails, the viewport retries without a subprotocol and
+remembers a successful legacy connection until the page reloads.
 
 Walls, doors, and decorations remain measured geometry with camera colors. ARKit
 plane metadata does not replace them with rectangles or remove nearby samples.

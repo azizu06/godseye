@@ -40,6 +40,18 @@ if '--textured' in sys.argv:
 payload = bundle(depth, confidence, jpeg_bytes=color, session='browser-pipeline')
 print(json.dumps(dict(port=listener.getsockname()[1],
                      bundle=base64.b64encode(payload).decode())), flush=True)
-server = uvicorn.Server(uvicorn.Config(create_app(':memory:', capture_directory=''),
+backend = create_app(':memory:', capture_directory='')
+
+
+async def app(scope, receive, send):
+    if '--legacy' in sys.argv and scope['type'] == 'websocket' and scope['path'] == '/live':
+        # Match older servers: accept the socket without selecting a subprotocol
+        # and publish the original JSON points. Chromium rejects the first dense
+        # handshake; the dashboard must reconnect without offering a protocol.
+        scope = {**scope, 'subprotocols': []}
+    await backend(scope, receive, send)
+
+
+server = uvicorn.Server(uvicorn.Config(app,
                                      log_level='error', ws_max_size=8388608))
 server.run(sockets=[listener])
