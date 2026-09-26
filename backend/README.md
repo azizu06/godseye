@@ -13,6 +13,9 @@ Use the Mac's hotspot IP, configured in the client, for
 `ws://<mac>:8765/phone`, `ws://<mac>:8765/live`, and `http://<mac>:8765`.
 REST schemas are available at `/docs`. Use only on the private demo network;
 this scaffold has no authentication. CORS permits browser clients without credentials.
+`--host 0.0.0.0` listens on IPv4 only. On an IPv6-only iPhone hotspot (carrier CLAT, Mac IPv4 `192.0.0.x`
+unreachable) run with `--host ::`, which listens on all interfaces, and point the app at the Mac's Bonjour
+name, e.g. `ws://<mac-name>.local:8765/phone` (name from `scutil --get LocalHostName`).
 
 `GODSEYE_DB` selects the SQLite path (default `backend/godseye.db`). Tables
 are created at startup from `schema.sql`: sessions, frames, observations,
