@@ -9,7 +9,8 @@ import struct
 import unittest
 
 from PIL import Image
-from tools.fake_phone import frame_bundle, pose, synthetic_sensors
+from tools.fake_phone import (delayed_bundle_stream, frame_bundle, look_pose, pose, synthetic_sensors,
+                              world_sensors)
 from tools.fake_live import BACKPACK_ID, messages
 
 
@@ -50,6 +51,33 @@ class FakeContractTests(unittest.TestCase):
             self.assertEqual((decoded.format, decoded.size), ("JPEG", (960, 720)))
             self.assertLess(abs(decoded.getpixel((480, 360))[1] - 200), 8)
         self.assertEqual((depth, confidence), synthetic_sensors()[1:])
+
+    def test_world_depth_is_deterministic_and_sees_floor_and_boxes(self):
+        import numpy as np
+        transform = look_pose(0, 0., 0, "w")["transform"]
+        first, second = world_sensors(transform), world_sensors(transform)
+        self.assertEqual(first, second)
+        depth = np.frombuffer(first[1], "<f4")
+        confidence = np.frombuffer(first[2], "u1")
+        self.assertEqual((depth.size, confidence.size), (256 * 192, 256 * 192))
+        self.assertTrue(np.all(depth[confidence == 0] == 0))
+        self.assertGreater((confidence == 2).mean(), .3)
+        self.assertLessEqual(depth.max(), 5.)
+
+    def test_delayed_bundle_fixture_keeps_encoder_latency_ordering(self):
+        stream = delayed_bundle_stream("delay")
+        poses = [(m, t) for kind, m, t in stream if kind == "pose"]
+        frames = [(m, t) for kind, m, t in stream if kind == "frame"]
+        self.assertTrue(frames)
+        self.assertTrue(all(b[1] - a[1] > .03 for a, b in zip(poses, poses[1:])))
+        seen_pose = -1.
+        for kind, message, capture in stream:
+            if kind == "pose":
+                seen_pose = capture
+            else:
+                self.assertAlmostEqual(seen_pose - capture, .08 + 0., places=6)
+                self.assertNotIn(capture, [t for _, t in poses])
+                self.assertEqual(message["transform"], look_pose(0, 0., 0, "delay", yaw=.05 * math.sin(capture))["transform"])
 
     def test_live_types_shapes_and_synthetic_move(self):
         before = messages(0, 100, False)

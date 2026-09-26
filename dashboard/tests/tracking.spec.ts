@@ -1,3 +1,9 @@
+import {
+  simulator,
+  workspace,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect } from "@playwright/test";
 test("tracking follows phone health while backend telemetry remains connected", async ({
   page,
@@ -35,46 +41,33 @@ test("tracking follows phone health while backend telemetry remains connected", 
     const id = setInterval(health, 100);
     ws.onClose(() => clearInterval(id));
   });
-  await page.goto("/");
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await simulator(page);
+  await workspaceAction(page, "Connection settings");
   await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Enable REST commands").uncheck();
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
-  await expect(
-    page.getByText("Tracking normal", { exact: true }),
-  ).toBeVisible();
+  await closeWorkspace(page);
+  await workspace(page);
+  await expect(page.getByText(/Tracking normal/)).toBeVisible();
   phone = "down";
   age = null;
-  await expect(
-    page.getByText("Tracking unavailable", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Receiving telemetry", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText(/Tracking unavailable/)).toBeVisible();
+  await expect(page.getByText(/Receiving telemetry/)).toBeVisible();
   phone = "stale";
   age = 1000;
-  await expect(page.getByText("Tracking normal", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(page.getByText(/Tracking normal/)).toHaveCount(0);
   phone = "ok";
   age = 1000;
   await page.waitForTimeout(200);
-  await expect(page.getByText("Tracking normal", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(page.getByText(/Tracking normal/)).toHaveCount(0);
   age = 10;
   sendPose("limited");
   await page.waitForTimeout(200);
-  await expect(page.getByText("Tracking normal", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(page.getByText(/Tracking normal/)).toHaveCount(0);
   sendPose("normal");
-  await expect(
-    page.getByText("Tracking normal", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText(/Tracking normal/)).toBeVisible();
 });

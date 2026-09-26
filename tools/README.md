@@ -30,6 +30,24 @@ Ctrl-C stops either tool.
 
 `tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts, the latest `points` chunk, the latest objects and any change events, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
 
+## Car-ready smoke (no car)
+
+```sh
+$HOME/.venvs/godseye/bin/python -m pip install -r backend/requirements-test.txt
+$HOME/.venvs/godseye/bin/python -m tools.car_smoke [--delayed-bundles]
+```
+
+`tools/car_smoke.py` starts the real backend on a free loopback port (task-local temp DB,
+capture recording off, no weights) and streams `fake_phone.py`'s deterministic world (floor,
+10 cm low box, 50 cm box, ray-cast depth) through the real `/phone` pipeline. It exits nonzero
+unless `/live` occupancy shows both boxes occupied, open floor free, the shadow behind the
+box and the area behind the phone unknown, two runs give identical grids, and the backend
+stays disarmed (`car: down`, `/arm` 409, only zero `DRIVE STUB` lines, `drive.py` logging-only).
+About 15 s; bounded by a 90 s timeout per phase. It does not test `/goal`, manual lease or
+command safety. `--delayed-bundles` also streams `delayed_bundle_stream()` (bundles 80 ms behind
+33 ms poses, Sai's iOS ordering) and only reports the outcome; on main it maps nothing and
+reports `pose_stale`. Use that fixture, asserted, once pose-freshness ordering lands.
+
 Offline validation (no sockets, camera, car, or weights):
 
 ```sh

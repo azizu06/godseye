@@ -15,6 +15,7 @@ from backend.mapping import build_point_chunk
 from backend.occupancy import (CELL_M, FLOOR_TOL_M, HALF_EXTENT_M, OBSTACLE_MAX_M, OBSTACLE_MIN_M,
                                PUBLISH_INTERVAL_S, OccupancyGrid)
 from backend.tests.test_map_transport import fresh, hello, next_of, wait_for
+from backend.tests.test_pose_freshness import pose
 from backend.tests.test_mapping import bundle
 
 SESSION = ('occ-session', 1)
@@ -150,6 +151,13 @@ class BoundsTests(unittest.TestCase):
         self.assertGreater(grid.dropped, 0)
         self.assertLessEqual(len(message['cells']), 400000)  # dashboard parser limit
 
+    def test_a_frame_with_nothing_in_bounds_is_fresh_sensing_but_no_new_evidence(self):
+        grid = OccupancyGrid(SESSION)
+        grid.add(plane(0, 1, 0, 1, FLOOR_Y), now=4.)
+        self.assertEqual((grid.revision, grid.accepted_at), (1, 4.))
+        grid.add(np.array([[HALF_EXTENT_M + 3, FLOOR_Y, 0]]), now=5.)
+        self.assertEqual((grid.revision, grid.accepted_at), (1, 5.))
+
     def test_voxel_store_is_bounded(self):
         grid = OccupancyGrid(SESSION, max_voxels=500)
         feed(grid, plane(0, 3, 0, 3, FLOOR_Y, step=CELL_M), frames=2)
@@ -265,7 +273,7 @@ class LiveOccupancyTests(unittest.TestCase):
             stats = client.app.state.map_stats
             self.assertEqual((stats['published'], stats['no_new_points']), (1, 2))
             self.assertGreater(int((decode(message) == 1).sum()), 50)
-            # Every accepted capture counts as fresh sensing, published points or not.
+            # Every accepted capture adds evidence, published points or not.
             self.assertEqual(client.app.state.occupancy.revision, 3)
 
     def test_map_reset_clears_the_grid_and_never_republishes_the_old_one(self):
@@ -438,6 +446,7 @@ class LateMappingTests(unittest.TestCase):
                 wait_for(lambda: client.app.state.map_stats['discarded_reset'] == 1)
             self.assertEqual((old.voxels, new.voxels), (0, 0))
             self.assertEqual((old.revision, new.revision), (0, 0))
+            self.assertEqual((old.accepted_at, new.accepted_at), (None, None))
             messages = read_through_stop(client, live)
             self.assertFalse(any(m['type'] in ('points', 'occupancy') for m in messages))
             self.assertEqual(client.app.state.map_stats['published'], 0)
@@ -454,13 +463,30 @@ class LateMappingTests(unittest.TestCase):
                 gate.release.set()
                 wait_for(lambda: client.app.state.map_stats['discarded_stale'] == 1)
                 self.assertEqual(grid.voxels, 0)
-                self.assertEqual(grid.revision, 0)
+                self.assertEqual((grid.revision, grid.accepted_at), (0, None))
                 self.assertEqual(client.app.state.map_stats['published'], 0)
                 # The link and the grid stay usable: the next fresh frame maps.
                 phone.send_bytes(floor_frame('occ-old-frame', frame_id=2, t_capture=2.))
                 self.assertEqual(next_of(live, 'points')['frame_id'], 2)
                 self.assertGreater(grid.voxels, 0)
                 self.assertEqual(grid.revision, 1)
+                self.assertIsNotNone(grid.accepted_at)
+
+
+    def test_frame_finished_after_tracking_loss_is_discarded_before_touching_the_grid(self):
+        gate = GatedMapping()
+        with TestClient(create_app(':memory:', build_points=gate)) as client:
+            with client.websocket_connect('/phone') as phone:
+                grid = join(client, phone, 'map-session')
+                phone.send_bytes(floor_frame('map-session', t_capture=10.))
+                self.assertTrue(gate.started.wait(5))
+                phone.send_json(pose(10.1, 'not_available'))  # the frame's pose is now untrusted
+                wait_for(lambda: client.app.state.tracking_lost_capture == 10.1)
+                gate.release.set()
+                wait_for(lambda: client.app.state.map_stats['discarded_tracking'] == 1)
+                self.assertEqual(grid.voxels, 0)
+                self.assertEqual((grid.revision, grid.accepted_at), (0, None))
+                self.assertEqual(client.app.state.map_stats['published'], 0)
 
 
 if __name__ == '__main__':

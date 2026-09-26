@@ -80,20 +80,21 @@ def frame_evidence(positions) -> Evidence:
 
 
 class OccupancyGrid:
-    """Evidence for one session/epoch. `add`, `commit` and `message_if_due` are thread-safe.
+    """Evidence for one session/epoch. `add`, `commit`, `snapshot` and `message_if_due` are thread-safe.
 
-    `revision` counts committed frames and `accepted_at` is the caller's monotonic time
-    of the newest one; both advance on every accepted frame, even one that changes
-    nothing, so readers can tell a still-watched map from a stale one.
+    `revision` bumps whenever a commit adds evidence (navigation rechecks its path on
+    it). `accepted_at` is the caller's monotonic time of the newest committed frame and
+    advances even when that frame adds nothing, so readers can tell a still-watched
+    map from a stale one.
     """
 
     def __init__(self, session, max_voxels: int = MAX_VOXELS):
         self.session = tuple(session)
         self.max_voxels = max_voxels
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
-        self.revision = 0
         self.accepted_at = None
         self.last_message = None
+        self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
         self._hits = np.empty(0, np.int32)
         self._dirty = False
@@ -117,7 +118,6 @@ class OccupancyGrid:
         keys = evidence.keys
         with self._lock:
             self.dropped += evidence.outside
-            self.revision += 1
             self.accepted_at = now
             if not len(keys):
                 return
@@ -133,6 +133,21 @@ class OccupancyGrid:
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
             self._dirty = True
+            self.revision += 1
+
+    def snapshot(self):
+        """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
+
+        The same classification as the published grid, for the planner. Blocking like
+        `message_if_due`; it never touches the publish rate limit or change detection.
+        """
+        with self._lock:
+            revision, keys, hits = self.revision, self._keys.copy(), self._hits.copy()
+        picture = classify(keys, hits)
+        if picture is None:
+            return revision, None, None
+        col0, row0, cells, _ = picture
+        return revision, ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M), cells
 
     def message_if_due(self, now: float):
         """The `/live` `occupancy` message, or None when rate-limited, unchanged, or empty.

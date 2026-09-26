@@ -109,7 +109,7 @@ Open `/capture` for sensor previews and metadata. Downloads:
 - `/capture/sensor/{rgb|raw_depth|raw_confidence|smoothed_depth|smoothed_confidence|person_mask|person_depth}`:
   native JPEG or rendered PNG; 204 when unavailable. ETags avoid redundant transfer.
 - `/capture/status`: v1 preview/health plus `rich` packet descriptions, receipt ages,
-  counts, latest telemetry and recording state. Batch samples and anchor arrays are
+  counts, latest telemetry, recording state and v1 `mapping` counters. Batch samples and anchor arrays are
   omitted here; download the full packet to inspect them.
 - `/capture/frame.jpg` and `/capture/frame.bin`: original v1 image/bundle.
 

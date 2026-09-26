@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { ColorSurfaces } from "./ColorSurfaces";
 import type { SurfacePatch, SurfaceStatus } from "./surfaceTypes";
 import {
@@ -14,14 +15,11 @@ import { Edges, Grid, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import {
-  Box,
   Crosshair,
-  Hand,
   HelpCircle,
   Layers3,
   Maximize,
   MousePointer2,
-  Rotate3D,
   ScanLine,
 } from "lucide-react";
 import type { Mission } from "./state";
@@ -34,6 +32,7 @@ export const objectName = (o: WorldObject) =>
     ? "Plant"
     : o.class.charAt(0).toUpperCase() + o.class.slice(1);
 export interface SceneProps {
+  toolsHost?: HTMLElement | null;
   surfaces: SurfacePatch[];
   surfaceStatus: SurfaceStatus;
   persistentSurface: SurfacePatch | null;
@@ -53,7 +52,7 @@ interface Layers {
   occupancy: boolean;
 }
 
-function Controls({ tool, reset }: { tool: "orbit" | "pan"; reset: number }) {
+function Controls({ reset }: { reset: number }) {
   const ref = useRef<OrbitControlsImpl>(null);
   const { camera } = useThree();
   useEffect(() => {
@@ -71,9 +70,9 @@ function Controls({ tool, reset }: { tool: "orbit" | "pan"; reset: number }) {
       enableDamping
       dampingFactor={0.12}
       mouseButtons={{
-        LEFT: tool === "orbit" ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN,
+        LEFT: THREE.MOUSE.PAN,
         MIDDLE: THREE.MOUSE.ROTATE,
-        RIGHT: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.ROTATE,
       }}
       touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }}
     />
@@ -640,7 +639,6 @@ class RenderBoundary extends Component<
 }
 export default function Scene(props: SceneProps) {
   const [view, setView] = useState<"3d" | "2d">("3d"),
-    [tool, setTool] = useState<"orbit" | "pan">("orbit"),
     [reset, setReset] = useState(0),
     [layerMenu, setLayerMenu] = useState(false),
     [help, setHelp] = useState(false);
@@ -678,46 +676,25 @@ export default function Scene(props: SceneProps) {
     : props.mission.chunks.reduce((n, c) => n + c.positions.length / 3, 0);
   return (
     <section className="scene-panel" ref={container} aria-label="Spatial view">
-      <div className="scene-toolbar">
-        <div className="panel-title">
-          <Box size={15} />
-          <span>Spatial view</span>
-          <span className="micro-badge">
-            {props.simulated ? "SIMULATED" : "LIVE DATA"}
-          </span>
-        </div>
-        <div className="scene-actions">
-          <div className="segmented">
-            <button
-              className={view === "3d" ? "active" : ""}
-              onClick={() => setView("3d")}
-            >
-              3D
-            </button>
-            <button
-              className={view === "2d" ? "active" : ""}
-              onClick={() => setView("2d")}
-            >
-              2D
-            </button>
-          </div>
+      <div
+        className="scene-toolbar"
+        aria-label="View mode"
+        title="Workspace: Escape, right-click or long-press the canvas"
+      >
+        <div className="segmented">
           <button
-            title="Scene layers"
-            aria-label="Scene layers"
-            disabled={view === "2d"}
-            className={`icon-button ${layerMenu ? "active" : ""}`}
-            onClick={() => setLayerMenu(!layerMenu)}
+            aria-pressed={view === "3d"}
+            className={view === "3d" ? "active" : ""}
+            onClick={() => setView("3d")}
           >
-            <Layers3 size={16} />
+            3D
           </button>
           <button
-            title="Reset view · Home"
-            aria-label="Reset view"
-            disabled={view === "2d"}
-            className="icon-button"
-            onClick={() => setReset((x) => x + 1)}
+            aria-pressed={view === "2d"}
+            className={view === "2d" ? "active" : ""}
+            onClick={() => setView("2d")}
           >
-            <Maximize size={16} />
+            2D
           </button>
         </div>
       </div>
@@ -750,7 +727,7 @@ export default function Scene(props: SceneProps) {
               <Suspense fallback={null}>
                 <World {...props} layers={layers} />
               </Suspense>
-              <Controls tool={tool} reset={reset} />
+              <Controls reset={reset} />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>
@@ -773,55 +750,6 @@ export default function Scene(props: SceneProps) {
             ))}
           </div>
         )}
-        <div className="scene-caption">
-          <span className="live-dot" />{" "}
-          {props.simulated ? "THE STUDIO" : "CURRENT SESSION"}
-          <small>
-            {props.simulated
-              ? "5 m LiDAR · viewing angle uncalibrated"
-              : "ARKit world coordinates · meters"}
-          </small>
-          {props.mission.pose && (
-            <span className="pose-readout">
-              CAMERA <b>X {props.mission.pose.position[0].toFixed(2)}</b>
-              <b>Z {props.mission.pose.position[2].toFixed(2)}</b>
-              <em>m</em>
-            </span>
-          )}
-        </div>
-        {view === "3d" && layers.surfaces && (
-          <div
-            className="surface-status"
-            data-testid="surface-status"
-            data-map-triangles={
-              props.persistentSurface
-                ? props.persistentSurface.indices.length / 3
-                : 0
-            }
-          >
-            <span className="tiny-dot" />
-            {props.surfaceStatus === "capacity"
-              ? "Map capacity reached · prior scan retained · export before reset"
-              : props.persistentSurface || props.surfaces.length
-                ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? ` · retained at ${(props.mapCellM * 100).toFixed(0)} cm` : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
-                : props.simulated
-                  ? "Discovering color surfaces…"
-                  : props.surfaceStatus === "error" ||
-                      props.surfaceStatus === "unavailable"
-                    ? "Color capture unavailable · point cloud is in Layers"
-                    : "Waiting for color + depth · point cloud is in Layers"}
-          </div>
-        )}
-        <div className="scene-stat">
-          <span>
-            {props.persistentSurface ? "MAP VERTICES" : "POINTS RECEIVED"}
-          </span>
-          <strong>{count.toLocaleString()}</strong>
-          <small>
-            <span className="tiny-dot" /> {props.mission.objects.length} objects
-            recognized
-          </small>
-        </div>
         {!props.mission.pose &&
           !count &&
           !props.persistentSurface &&
@@ -834,123 +762,187 @@ export default function Scene(props: SceneProps) {
               </p>
             </div>
           )}
-        <div className="scene-bottom">
-          <div className="scene-toolbox">
-            <button
-              aria-label="Orbit tool"
-              disabled={view === "2d"}
-              title="Orbit · middle mouse drag"
-              className={tool === "orbit" ? "active" : ""}
-              onClick={() => setTool("orbit")}
-            >
-              <Rotate3D size={17} />
-            </button>
-            <button
-              aria-label="Pan tool"
-              disabled={view === "2d"}
-              title="Pan · Shift + middle mouse drag"
-              className={tool === "pan" ? "active" : ""}
-              onClick={() => setTool("pan")}
-            >
-              <Hand size={17} />
-            </button>
-            <span />
-            <button
-              aria-label="View controls help"
-              disabled={view === "2d"}
-              onClick={() => setHelp(!help)}
-            >
-              <HelpCircle size={17} />
-            </button>
-          </div>
-          <span className="scene-hint">
-            {view === "2d" ? (
-              props.canGoal ? (
-                "Click the map to set a destination"
-              ) : (
-                "X–Z plane · world meters"
-              )
-            ) : (
-              <>
-                <MousePointer2 size={12} /> Drag to {tool} <span>·</span> Scroll
-                to zoom
-              </>
+      </div>
+      {props.toolsHost &&
+        createPortal(
+          <div className="scene-tools-panel">
+            <div className="scene-caption">
+              <span className="live-dot" />{" "}
+              {props.simulated ? "THE STUDIO" : "CURRENT SESSION"}
+              <small>
+                {props.simulated
+                  ? "5 m LiDAR · viewing angle uncalibrated"
+                  : "ARKit world coordinates · meters"}
+              </small>
+              {props.mission.pose && (
+                <span className="pose-readout">
+                  CAMERA <b>X {props.mission.pose.position[0].toFixed(2)}</b>
+                  <b>Z {props.mission.pose.position[2].toFixed(2)}</b>
+                  <em>m</em>
+                </span>
+              )}
+            </div>
+            {view === "3d" && layers.surfaces && (
+              <div
+                className="surface-status"
+                data-testid="surface-status"
+                data-map-triangles={
+                  props.persistentSurface
+                    ? props.persistentSurface.indices.length / 3
+                    : 0
+                }
+              >
+                <span className="tiny-dot" />
+                {props.surfaceStatus === "capacity"
+                  ? "Map capacity reached · prior scan retained · export before reset"
+                  : props.persistentSurface || props.surfaces.length
+                    ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? ` · retained at ${(props.mapCellM * 100).toFixed(0)} cm` : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
+                    : props.simulated
+                      ? "Discovering color surfaces…"
+                      : props.surfaceStatus === "error" ||
+                          props.surfaceStatus === "unavailable"
+                        ? "Color capture unavailable · point cloud is in Layers"
+                        : "Waiting for color + depth · point cloud is in Layers"}
+              </div>
             )}
-          </span>
-          <div className="axis-widget">
-            <span className="axis-y">Y</span>
-            <span className="axis-z">Z</span>
-            <span className="axis-x">X</span>
-            <Crosshair size={22} />
-          </div>
-        </div>
-        {view === "3d" && layerMenu && (
-          <div className="scene-popover layers-popover">
-            <h4>Scene layers</h4>
-            {(Object.keys(layers) as (keyof Layers)[]).map((key) => (
-              <label key={key}>
-                <input
-                  type="checkbox"
-                  checked={layers[key]}
-                  onChange={() => setLayers({ ...layers, [key]: !layers[key] })}
-                />
-                {key === "surfaces"
-                  ? "Color surfaces"
-                  : key === "points"
-                    ? "Point cloud"
-                    : key === "objects"
-                      ? "Object labels"
-                      : key === "trajectory"
-                        ? "Rover trail"
-                        : "Occupancy grid"}
-              </label>
-            ))}
-          </div>
+            <div className="scene-stat">
+              <span>
+                {props.persistentSurface ? "MAP VERTICES" : "POINTS RECEIVED"}
+              </span>
+              <strong>{count.toLocaleString()}</strong>
+              <small>
+                <span className="tiny-dot" /> {props.mission.objects.length}{" "}
+                objects recognized
+              </small>
+            </div>
+            <div className="scene-settings-actions">
+              <button
+                title="Scene layers"
+                aria-label="Scene layers"
+                disabled={view === "2d"}
+                className={`icon-button ${layerMenu ? "active" : ""}`}
+                onClick={() => setLayerMenu(!layerMenu)}
+              >
+                <Layers3 size={16} />
+              </button>
+              <button
+                title="Reset view · Home"
+                aria-label="Reset view"
+                disabled={view === "2d"}
+                className="icon-button"
+                onClick={() => setReset((x) => x + 1)}
+              >
+                <Maximize size={16} />
+              </button>
+            </div>
+            <div className="scene-bottom">
+              <div className="scene-toolbox">
+                <button
+                  aria-label="View controls help"
+                  disabled={view === "2d"}
+                  onClick={() => setHelp(!help)}
+                >
+                  <HelpCircle size={17} />
+                </button>
+              </div>
+              <span className="scene-hint">
+                {view === "2d" ? (
+                  props.canGoal ? (
+                    "Click the map to set a destination"
+                  ) : (
+                    "X–Z plane · world meters"
+                  )
+                ) : (
+                  <>
+                    <MousePointer2 size={12} /> Left-drag pans · right-drag
+                    rotates
+                  </>
+                )}
+              </span>
+              <div className="axis-widget">
+                <span className="axis-y">Y</span>
+                <span className="axis-z">Z</span>
+                <span className="axis-x">X</span>
+                <Crosshair size={22} />
+              </div>
+            </div>
+            {view === "3d" && layerMenu && (
+              <div className="scene-popover layers-popover">
+                <h4>Scene layers</h4>
+                {(Object.keys(layers) as (keyof Layers)[]).map((key) => (
+                  <label key={key}>
+                    <input
+                      type="checkbox"
+                      checked={layers[key]}
+                      onChange={() =>
+                        setLayers({ ...layers, [key]: !layers[key] })
+                      }
+                    />
+                    {key === "surfaces"
+                      ? "Color surfaces"
+                      : key === "points"
+                        ? "Point cloud"
+                        : key === "objects"
+                          ? "Object labels"
+                          : key === "trajectory"
+                            ? "Rover trail"
+                            : "Occupancy grid"}
+                  </label>
+                ))}
+              </div>
+            )}
+            {view === "3d" && help && (
+              <div className="scene-popover help-popover">
+                <h4>Find your perspective</h4>
+                <p>
+                  <kbd>Left drag</kbd> Pan
+                </p>
+                <p>
+                  <kbd>Right drag</kbd> Rotate
+                </p>
+                <p>
+                  <kbd>Middle drag</kbd> Orbit
+                </p>
+                <p>
+                  <kbd>Shift + middle</kbd> Pan
+                </p>
+                <p>
+                  <kbd>Scroll</kbd> Zoom
+                </p>
+                <p>
+                  <kbd>Home</kbd> Reset view
+                </p>
+                <small>
+                  Click without dragging to navigate. Right-click without
+                  dragging opens the workspace. Two-finger touch pans and zooms.
+                </small>
+              </div>
+            )}
+            <div className="scene-footer">
+              <span>
+                <i className="legend-point" />{" "}
+                {view === "2d"
+                  ? "Occupancy"
+                  : layers.surfaces
+                    ? "Color surfaces"
+                    : "Point cloud"}
+              </span>
+              <span>
+                <i className="legend-rover" /> Rover / phone
+              </span>
+              <span>
+                <i className="legend-change" /> Change detected
+              </span>
+              <span
+                className="scene-unit"
+                title="Apple documents a 5 m LiDAR depth limit. Viewing angle awaits camera intrinsics; this is not observed coverage."
+              >
+                5 m LiDAR · FOV UNCALIBRATED
+              </span>
+            </div>
+          </div>,
+          props.toolsHost,
         )}
-        {view === "3d" && help && (
-          <div className="scene-popover help-popover">
-            <h4>Find your perspective</h4>
-            <p>
-              <kbd>Middle drag</kbd> Orbit
-            </p>
-            <p>
-              <kbd>Shift + middle</kbd> Pan
-            </p>
-            <p>
-              <kbd>Scroll</kbd> Zoom
-            </p>
-            <p>
-              <kbd>Home</kbd> Reset view
-            </p>
-            <small>
-              Or select Orbit / Pan and drag with your primary button.
-              Two-finger touch pans and zooms.
-            </small>
-          </div>
-        )}
-      </div>
-      <div className="scene-footer">
-        <span>
-          <i className="legend-point" />{" "}
-          {view === "2d"
-            ? "Occupancy"
-            : layers.surfaces
-              ? "Color surfaces"
-              : "Point cloud"}
-        </span>
-        <span>
-          <i className="legend-rover" /> Rover / phone
-        </span>
-        <span>
-          <i className="legend-change" /> Change detected
-        </span>
-        <span
-          className="scene-unit"
-          title="Apple documents a 5 m LiDAR depth limit. Viewing angle awaits camera intrinsics; this is not observed coverage."
-        >
-          5 m LiDAR · FOV UNCALIBRATED
-        </span>
-      </div>
     </section>
   );
 }
