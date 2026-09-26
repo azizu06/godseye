@@ -209,19 +209,18 @@ export function Settings({
               />{" "}
               Enable REST commands
             </label>
-            {draft.commands && (
-              <label>
-                Backend API base
-                <input
-                  value={draft.apiUrl}
-                  onChange={(e) =>
-                    setDraft({ ...draft, apiUrl: e.target.value })
-                  }
-                  placeholder="http://localhost:8765"
-                  required
-                />
-              </label>
-            )}
+            <label>
+              Backend API base
+              <input
+                value={draft.apiUrl}
+                onChange={(e) => setDraft({ ...draft, apiUrl: e.target.value })}
+                placeholder="http://localhost:8765"
+                required
+              />
+            </label>
+            <small>
+              Color surfaces use this API even when drive commands are off.
+            </small>
             <div className="preset-row">
               <span>Quick setup</span>
               <button

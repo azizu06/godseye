@@ -1,3 +1,5 @@
+import { ColorSurfaces } from "./ColorSurfaces";
+import type { SurfacePatch, SurfaceStatus } from "./surfaceTypes";
 import {
   Component,
   Suspense,
@@ -32,6 +34,8 @@ export const objectName = (o: WorldObject) =>
     ? "Plant"
     : o.class.charAt(0).toUpperCase() + o.class.slice(1);
 export interface SceneProps {
+  surfaces: SurfacePatch[];
+  surfaceStatus: SurfaceStatus;
   mission: Mission;
   selected: string | null;
   onSelect: (id: string) => void;
@@ -40,6 +44,7 @@ export interface SceneProps {
   onGoal: (x: number, z: number) => void;
 }
 interface Layers {
+  surfaces: boolean;
   points: boolean;
   objects: boolean;
   trajectory: boolean;
@@ -223,12 +228,14 @@ function Trajectory({ mission }: { mission: Mission }) {
   );
 }
 function World({
+  surfaces,
   mission,
   selected,
   layers,
   canGoal,
   onGoal,
 }: {
+  surfaces: SurfacePatch[];
   mission: Mission;
   selected: string | null;
   layers: Layers;
@@ -271,6 +278,7 @@ function World({
         fadeStrength={1.6}
         infiniteGrid
       />
+      {layers.surfaces && <ColorSurfaces patches={surfaces} />}
       {layers.points && <Cloud mission={mission} />}
       {layers.occupancy && <OccupancyMesh mission={mission} />}
       {layers.trajectory && <Trajectory mission={mission} />}
@@ -613,7 +621,8 @@ export default function Scene(props: SceneProps) {
     [layerMenu, setLayerMenu] = useState(false),
     [help, setHelp] = useState(false);
   const [layers, setLayers] = useState<Layers>({
-    points: true,
+    surfaces: true,
+    points: false,
     objects: true,
     trajectory: true,
     occupancy: false,
@@ -757,6 +766,19 @@ export default function Scene(props: SceneProps) {
             </span>
           )}
         </div>
+        {view === "3d" && layers.surfaces && (
+          <div className="surface-status" data-testid="surface-status">
+            <span className="tiny-dot" />
+            {props.surfaces.length
+              ? `${props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0).toLocaleString()} color triangles${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
+              : props.simulated
+                ? "Discovering color surfaces…"
+                : props.surfaceStatus === "error" ||
+                    props.surfaceStatus === "unavailable"
+                  ? "Color capture unavailable · point cloud is in Layers"
+                  : "Waiting for color + depth · point cloud is in Layers"}
+          </div>
+        )}
         <div className="scene-stat">
           <span>POINTS RECEIVED</span>
           <strong>{count.toLocaleString()}</strong>
@@ -834,13 +856,15 @@ export default function Scene(props: SceneProps) {
                   checked={layers[key]}
                   onChange={() => setLayers({ ...layers, [key]: !layers[key] })}
                 />
-                {key === "points"
-                  ? "Point cloud"
-                  : key === "objects"
-                    ? "Object labels"
-                    : key === "trajectory"
-                      ? "Rover trail"
-                      : "Occupancy grid"}
+                {key === "surfaces"
+                  ? "Color surfaces"
+                  : key === "points"
+                    ? "Point cloud"
+                    : key === "objects"
+                      ? "Object labels"
+                      : key === "trajectory"
+                        ? "Rover trail"
+                        : "Occupancy grid"}
               </label>
             ))}
           </div>
@@ -870,7 +894,11 @@ export default function Scene(props: SceneProps) {
       <div className="scene-footer">
         <span>
           <i className="legend-point" />{" "}
-          {view === "3d" ? "Point cloud" : "Occupancy"}
+          {view === "2d"
+            ? "Occupancy"
+            : layers.surfaces
+              ? "Color surfaces"
+              : "Point cloud"}
         </span>
         <span>
           <i className="legend-rover" /> Rover / phone

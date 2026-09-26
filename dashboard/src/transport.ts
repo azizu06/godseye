@@ -18,13 +18,12 @@ export function validateConfig(config: ConnectionConfig): string | null {
   } catch {
     return "Enter a valid WebSocket address.";
   }
-  if (config.commands)
-    try {
-      if (!["http:", "https:"].includes(new URL(config.apiUrl).protocol))
-        return "Use an http:// or https:// API address.";
-    } catch {
-      return "Enter a valid API address.";
-    }
+  try {
+    if (!["http:", "https:"].includes(new URL(config.apiUrl).protocol))
+      return "Use an http:// or https:// API address.";
+  } catch {
+    return "Enter a valid API address.";
+  }
   return null;
 }
 export async function sendCommand(

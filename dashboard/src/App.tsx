@@ -1,3 +1,4 @@
+import { useColorSurfaces } from "./useColorSurfaces";
 import { useState } from "react";
 import {
   Activity,
@@ -59,6 +60,16 @@ export default function App() {
     [help, setHelp] = useState(false),
     [rescanBusy, setRescanBusy] = useState(false);
   const simulated = config.source === "simulator";
+  const capture = useColorSurfaces(
+    config,
+    mission.mapKey,
+    connection === "connected",
+  );
+  const surfaces = simulated
+    ? controller.simSurface
+      ? [controller.simSurface]
+      : []
+    : capture.patches;
   const object = mission.objects.find((o) => o.id === selected);
   const sourceLabel = simulated
     ? "Simulation"
@@ -84,6 +95,8 @@ export default function App() {
       <h1 className="sr-only">Godseye spatial workspace</h1>
       <Scene
         mission={mission}
+        surfaces={surfaces}
+        surfaceStatus={simulated ? "receiving" : capture.status}
         selected={selected}
         onSelect={select}
         simulated={simulated}

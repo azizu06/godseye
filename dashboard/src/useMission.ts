@@ -1,3 +1,4 @@
+import type { SurfacePatch } from "./surfaceTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseMessage,
@@ -35,6 +36,7 @@ export function useMission() {
   const controlEpoch = useRef(0);
   const controlBusy = useRef<number | null>(null);
   const heldDirection = useRef<SteeringDirection | null>(null);
+  const [simSurface, setSimSurface] = useState<SurfacePatch | null>(null);
   const [steeringDirection, setSteeringDirection] =
     useState<SteeringDirection | null>(null);
   const directional = useRef<DirectionalSteering | null>(null);
@@ -84,6 +86,7 @@ export function useMission() {
       attempt = 0;
     manual.current?.stop();
     setMission(emptyMission());
+    setSimSurface(null);
     setStartedAt(Date.now());
     setPending(null);
     latchStop(true);
@@ -95,6 +98,7 @@ export function useMission() {
       const interval = setInterval(() => {
         sim.tick(0.1);
         receive(sim.snapshot());
+        setSimSurface(sim.getSurface());
       }, 100);
       return () => {
         clearInterval(interval);
@@ -121,6 +125,7 @@ export function useMission() {
         cancelControl();
         latchStop(true);
         setMission(emptyMission());
+        setSimSurface(null);
         setStartedAt(Date.now());
         setConnection("connected");
       };
@@ -219,9 +224,11 @@ export function useMission() {
         const result = simulator.current.command(path, body);
         if (path === "/session") {
           setMission(emptyMission());
+          setSimSurface(null);
           setStartedAt(Date.now());
         }
         receive(simulator.current.snapshot(path === "/session"));
+        setSimSurface(simulator.current.getSurface());
         return result;
       }
       if (!config.commands)
@@ -550,6 +557,7 @@ export function useMission() {
   };
   return {
     mission,
+    simSurface,
     rescanBaseline,
     historyStatus,
     config,

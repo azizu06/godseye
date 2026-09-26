@@ -2920,3 +2920,27 @@ input[type="checkbox"] {
     font-size: 10px;
   }
 }
+
+.surface-status {
+  position: absolute;
+  left: 50%;
+  bottom: 166px;
+  transform: translateX(-50%);
+  max-width: min(480px, calc(100% - 32px));
+  padding: 8px 13px;
+  border: 1px solid rgba(146, 178, 182, 0.14);
+  border-radius: 9px;
+  background: rgba(12, 20, 28, 0.78);
+  color: #afc8c7;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
+  text-align: center;
+  pointer-events: none;
+}
+@media (max-width: 700px) {
+  .surface-status {
+    bottom: 254px;
+    font-size: 10px;
+  }
+}
