@@ -27,7 +27,12 @@ import {
 } from "lucide-react";
 import type { Mission } from "./state";
 import { decodeCells, type WorldObject } from "./protocol";
-import { ProjectLabels, useSceneLabels } from "./SceneLabels";
+import {
+  ProjectLabels,
+  useSceneLabels,
+  type ApproachDrawing,
+} from "./SceneLabels";
+import type { LiveMarker } from "./detections";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 
 export const objectName = (o: WorldObject) =>
@@ -48,6 +53,12 @@ export interface SceneProps {
   onSelect: (id: string) => void;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
+  /** Fresh detections placed by their own frame's depth; empty when stale. */
+  liveDetections: LiveMarker[];
+  /** Suggested walking route; visualization only, never a rover goal. */
+  approachRoute: ApproachDrawing | null;
+  pickingRouteStart: boolean;
+  onRouteStart: (x: number, z: number) => void;
 }
 interface Layers {
   surfaces: boolean;
@@ -258,6 +269,10 @@ function World({
   layers,
   canGoal,
   onGoal,
+  liveDetections,
+  approachRoute,
+  pickingRouteStart,
+  onRouteStart,
 }: {
   cloud: PointCloudStore;
   persistentSurface: SurfacePatch | null;
@@ -267,6 +282,10 @@ function World({
   layers: Layers;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
+  liveDetections: LiveMarker[];
+  approachRoute: ApproachDrawing | null;
+  pickingRouteStart: boolean;
+  onRouteStart: (x: number, z: number) => void;
 }) {
   const selectedEvent = mission.events
     .filter(
@@ -288,6 +307,50 @@ function World({
           <planeGeometry args={[40, 40]} />
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         </mesh>
+      )}
+      {pickingRouteStart && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, -0.01, 0]}
+          onClick={(e) => {
+            if (e.button === 0 && e.delta < 4)
+              onRouteStart(e.point.x, e.point.z);
+          }}
+        >
+          <planeGeometry args={[40, 40]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
+      {approachRoute && (
+        <group>
+          <mesh
+            position={[approachRoute.start[0], 0.09, approachRoute.start[1]]}
+            rotation={[-Math.PI / 2, 0, 0]}
+          >
+            <ringGeometry args={[0.12, 0.16, 32]} />
+            <meshBasicMaterial color="#ffb86b" side={THREE.DoubleSide} />
+          </mesh>
+          {approachRoute.points && (
+            <Line
+              points={approachRoute.points.map((p) => [p[0], 0.09, p[1]])}
+              color="#ffb86b"
+              lineWidth={3}
+            />
+          )}
+          {approachRoute.approach && (
+            <mesh
+              position={[
+                approachRoute.approach[0],
+                0.09,
+                approachRoute.approach[1],
+              ]}
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <circleGeometry args={[0.12, 32]} />
+              <meshBasicMaterial color="#ffb86b" side={THREE.DoubleSide} />
+            </mesh>
+          )}
+        </group>
       )}
       <ambientLight intensity={1.5} />
       <directionalLight position={[4, 8, 3]} intensity={2} />
@@ -392,6 +455,25 @@ function World({
             />
           </group>
         ))}
+      {liveDetections.map((d) => (
+        <group key={d.key} position={d.position}>
+          <mesh>
+            <sphereGeometry args={[0.07, 16, 12]} />
+            <meshBasicMaterial
+              color={d.class === "person" ? "#ff7a66" : "#f2d27a"}
+            />
+          </mesh>
+          <mesh>
+            <sphereGeometry args={[0.14, 20, 14]} />
+            <meshBasicMaterial
+              color={d.class === "person" ? "#ff7a66" : "#f2d27a"}
+              transparent
+              opacity={0.22}
+              depthWrite={false}
+            />
+          </mesh>
+        </group>
+      ))}
       <ViewScope mission={mission} />
       {mission.pose && (
         <group
@@ -691,6 +773,8 @@ export default function Scene(props: SceneProps) {
     props.selected,
     props.onSelect,
     layers.objects,
+    props.liveDetections,
+    props.approachRoute,
   );
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

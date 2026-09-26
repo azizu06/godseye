@@ -26,6 +26,11 @@ class MPSDetector:
         self.model = YOLO(str(weights))
         self.model.to('mps')
 
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        """Every class these weights can emit."""
+        return tuple(self.model.names.values())
+
     def detect(self, frame: FrameBundle) -> list[Detection]:
         """Ultralytics xyxy boxes are in original JPEG pixels, after letterbox undo."""
         result = self.model.predict(source=frame.image, device='mps', conf=self.confidence,
