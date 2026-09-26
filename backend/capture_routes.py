@@ -73,10 +73,8 @@ def register_capture_routes(app):
         owner, session = app.state.phone, app.state.session
         if owner is None or session is None:
             raise HTTPException(409, 'Connect the v1 /phone session before uploading capture data')
-        # RichUploader sends one request at a time. Bound concurrent ingress and
-        # disk work without delaying pose messages or admitting an unbounded queue.
-        if app.state.capture_ingest_lock.locked():
-            raise HTTPException(429, 'A capture upload is already being processed')
+        # Serialize uploads to keep packet ordering and disk accounting consistent.
+        # Concurrent requests wait here instead of being rejected with 429.
         async with app.state.capture_ingest_lock:
             data = bytearray()
             async for chunk in request.stream():

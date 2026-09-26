@@ -7,10 +7,12 @@ sensor packets never refresh pose freshness or arm hardware.
 ## Transport and envelope
 
 First connect `/phone` with the session's v1 hello. Send full packets using
-`POST /capture/ingest`, `Content-Type: application/octet-stream`. Upload one at a
-time. Success is HTTP 200; the response includes `recording_enabled`,
-`recorded_bytes`, and a nullable `recording_error`. Accepted live data can still
-have a recording error: inspect that field rather than assuming disk success.
+`POST /capture/ingest`, `Content-Type: application/octet-stream`. The phone
+uploads one at a time. Concurrent requests wait and are processed sequentially,
+without a 429 rejection. Success is HTTP 200; the response includes
+`recording_enabled`, `recorded_bytes`, and a nullable `recording_error`. Accepted
+live data can still have a recording error: inspect that field rather than
+assuming disk success.
 
 Each `.capture` packet has four little-endian bytes giving the UTF-8 JSON header
 length, followed by the header, then contiguous binary sections:
@@ -41,8 +43,8 @@ length, followed by the header, then contiguous binary sections:
   invalid; unavailable body landmarks become `null`. Binary depth NaN, infinity,
   and nonpositive readings remain unchanged; consumers must reject invalid depth.
 - HTTP 400: malformed packet; 409: inactive session/epoch, duplicate/old packet,
-  or encoding wall time more than 15 seconds from the laptop; 413: size limit;
-  429: another upload is being processed. No upload alters v1 freshness rules.
+  or encoding wall time more than 15 seconds from the laptop; 413: size limit.
+  No upload alters v1 freshness rules.
 
 ## Data collected
 
