@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .frame_bundle import parse_frame_bundle
 from .localization import LocalizedDetection, view_status
+from .labels import crop_jpeg
 
 MATCH_RADIUS_M = .5  # same-class sightings closer than this are the same object
 MAX_SNAPSHOT = 256  # objects per snapshot, most recently seen first
@@ -26,6 +27,7 @@ class FrameObjects:
     t_wall_ms: int
     found: tuple[LocalizedDetection, ...]
     views: tuple | None = None  # (rescan_id, ((object_id, view_status), ...)) for watched points
+    crops: tuple[bytes, ...] = ()
 
 
 class Sighting(NamedTuple):
@@ -48,8 +50,11 @@ def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int, wa
     frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
     views = None if watch is None else (
         watch[0], tuple((object_id, view_status(frame, position)) for object_id, position in watch[1]))
+    found = tuple(detector.localize(frame))
+    crops = tuple(crop_jpeg(frame.image, item.detection.box) if i < 32 else b''
+                  for i, item in enumerate(found))
     return FrameObjects(frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture,
-                        frame.t_wall_ms, tuple(detector.localize(frame)), views)
+                        frame.t_wall_ms, found, views=views, crops=crops)
 
 
 def associate(tracks, found, radius_m=MATCH_RADIUS_M):
@@ -155,17 +160,23 @@ class ObjectMemory:
             (json.dumps(list(position)), (kc * kn + dc * dn) / (kn + dn), min(kf, df), max(kl, dl),
              kn + dn, state, keep))
 
-    def snapshot(self, session) -> list[dict]:
-        """The v1 `objects` list for one session/epoch, newest sighting first."""
+    def snapshot(self, session, limit=MAX_SNAPSHOT) -> list[dict]:
+        """The v1 object facts, newest first; `limit=None` searches the complete map."""
         if session is None:
             return []
         rows = self.db.execute(
             'SELECT id, class, position_json, identity_confidence, first_seen, last_seen, observations, state '
-            'FROM objects WHERE session_id=? AND map_epoch=? ORDER BY last_seen DESC, id LIMIT ?',
-            (*session, MAX_SNAPSHOT)).fetchall()
+            'FROM objects WHERE session_id=? AND map_epoch=? ORDER BY last_seen DESC, id' +
+            (' LIMIT ?' if limit is not None else ''),
+            (*session, limit) if limit is not None else session).fetchall()
+        identities = {row[0]: dict(label=row[1], status=row[2], reason=row[3], source='gemini')
+                      for row in self.db.execute(
+                          'SELECT l.object_id,l.label,l.status,l.reason FROM object_labels l '
+                          'JOIN objects o ON o.id=l.object_id WHERE o.session_id=? AND o.map_epoch=?', session)}
         return [dict(id=object_id, **{'class': name}, position=[round(v, 3) for v in json.loads(position)],
                      confidence=round(confidence, 3), first_seen=first, last_seen=last,
-                     observations=count, state=state)
+                     observations=count, state=state, identity=identities.get(object_id,
+                         dict(label=None, status='unavailable', reason='not_requested', source=None)))
                 for object_id, name, position, confidence, first, last, count, state in rows]
 
     def latest_session(self):

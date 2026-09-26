@@ -31,6 +31,7 @@ from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import MappingError, PointChunk, build_point_chunk, points_message
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
+from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
@@ -184,7 +185,8 @@ def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
                car: CarAdapter | None = None, motion_limits: MotionLimits | None = None,
-               audio_provider=None, calibration=None) -> FastAPI:
+               audio_provider=None, calibration=None, label_provider=None,
+               label_timeout_s: float = 6.) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -243,10 +245,17 @@ def create_app(db_path: str | None = None, build_points=None,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None)
+        app.state.labels = ObjectLabels(db, label_provider,
+            lambda session: publish(objects_message(session)) if session == shown_session() else None,
+            timeout_s=label_timeout_s)
+        label_task = asyncio.create_task(app.state.labels.run())
         task = asyncio.create_task(watchdog())
         try:
             yield
         finally:
+            label_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await label_task
             task.cancel()
             try:
                 with suppress(asyncio.CancelledError):
@@ -486,6 +495,7 @@ def create_app(db_path: str | None = None, build_points=None,
         session = (result.session_id, result.map_epoch)
         seen_at = result.t_wall_ms / 1000
         sightings = app.state.objects.record(session, result.frame_id, seen_at, result.found)
+        app.state.labels.enqueue(session, sightings, result.crops)
         app.state.detected_at = time.monotonic()
         events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
         if sightings or changed:
@@ -649,7 +659,8 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/ask')
     async def ask(body: Ask):
-        raise HTTPException(501, 'Object queries are not implemented')
+        session = shown_session()
+        return answer_from_objects(body.question, app.state.objects.snapshot(session, limit=None), session)
 
     @app.get('/objects')
     async def objects():
@@ -817,4 +828,5 @@ def create_app(db_path: str | None = None, build_points=None,
     return app
 
 
-app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env())
+app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env(),
+                 label_provider=provider_from_env())

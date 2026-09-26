@@ -15,7 +15,7 @@ from backend.objects import ObjectMemory, associate
 from backend.tests.test_map_transport import frame, hello, next_of, wait_for
 
 SCHEMA = (Path(__file__).parents[1] / 'schema.sql').read_text()
-WIRE_KEYS = {'id', 'class', 'position', 'confidence', 'first_seen', 'last_seen', 'observations', 'state'}
+WIRE_KEYS = {'id', 'class', 'position', 'confidence', 'first_seen', 'last_seen', 'observations', 'state', 'identity'}
 
 # The test scene is a flat wall 2 m ahead of a camera at (1, 2, 3) looking along world -X
 # (test_mapping.TRANSFORM). An 80x60 JPEG box centred at column u lands at world
