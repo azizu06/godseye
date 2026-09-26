@@ -126,7 +126,9 @@ const voice = (page: Page) =>
 
 test("unavailable backend shows a clear disabled state", async ({ page }) => {
   await connect(page, "unavailable");
-  await expect(voice(page).getByRole("status")).toHaveText(
+  // The dock is a polite live region, not a second page-wide status role.
+  await expect(voice(page).getByRole("status")).toHaveCount(0);
+  await expect(voice(page).locator(".voice-status")).toHaveText(
     "Voice Q&A unavailable on this backend.",
   );
   await expect(
@@ -150,24 +152,24 @@ test("push-to-talk question is answered, spoken and can be stopped", async ({
     await gate;
     await route.fulfill({ json: reply });
   });
-  await expect(voice(page).getByRole("status")).toHaveText(
+  await expect(voice(page).locator(".voice-status")).toHaveText(
     "Hold to ask Scout about what it has seen.",
   );
   // The microphone is untouched until the button is held.
   expect((await counters(page)).gum).toBe(0);
   await hold(page, 500);
-  await expect(voice(page).getByRole("status")).toHaveText("Thinking…");
+  await expect(voice(page).locator(".voice-status")).toHaveText("Thinking…");
   // Released immediately after recording, before the answer returns.
   expect(await counters(page)).toMatchObject({ gum: 1, stopped: 1 });
   expect(uploads).toEqual([{ type: "audio/webm;codecs=opus", size: 4096 }]);
   release();
-  await expect(voice(page).getByRole("status")).toHaveText("Speaking…");
+  await expect(voice(page).locator(".voice-status")).toHaveText("Speaking…");
   const exchange = page.getByRole("definition");
   await expect(exchange.first()).toHaveText("Where is the backpack?");
   await expect(exchange.last()).toHaveText(reply.answer);
   expect((await counters(page)).plays).toBe(1);
   await voice(page).getByRole("button", { name: "Stop speaking" }).click();
-  await expect(voice(page).getByRole("status")).toHaveText("Stopped.");
+  await expect(voice(page).locator(".voice-status")).toHaveText("Stopped.");
   expect((await counters(page)).pauses).toBeGreaterThan(0);
   await expect(
     page.getByRole("button", { name: "Hold to ask Scout" }),
@@ -187,9 +189,9 @@ test("thinking can be cancelled and a late answer is ignored", async ({
     await route.fulfill({ json: reply }).catch(() => {});
   });
   await hold(page, 500);
-  await expect(voice(page).getByRole("status")).toHaveText("Thinking…");
+  await expect(voice(page).locator(".voice-status")).toHaveText("Thinking…");
   await voice(page).getByRole("button", { name: "Cancel question" }).click();
-  await expect(voice(page).getByRole("status")).toHaveText("Cancelled.");
+  await expect(voice(page).locator(".voice-status")).toHaveText("Cancelled.");
   release();
   await page.waitForTimeout(300);
   await expect(page.getByRole("definition")).toHaveCount(0);
@@ -209,16 +211,16 @@ test("short taps, provider errors and text-only replies are explained", async ({
     route.fulfill(responses[asked++]),
   );
   await hold(page, 50);
-  await expect(voice(page).getByRole("status")).toHaveText(
+  await expect(voice(page).locator(".voice-status")).toHaveText(
     "Hold the button while you speak.",
   );
   expect(asked).toBe(0);
   await hold(page, 500);
-  await expect(voice(page).getByRole("status")).toHaveText(
+  await expect(voice(page).locator(".voice-status")).toHaveText(
     "Scout could not answer right now.",
   );
   await hold(page, 500);
-  await expect(voice(page).getByRole("status")).toHaveText(
+  await expect(voice(page).locator(".voice-status")).toHaveText(
     "Spoken reply unavailable; the answer is shown.",
   );
   await expect(page.getByRole("definition").last()).toHaveText(reply.answer);

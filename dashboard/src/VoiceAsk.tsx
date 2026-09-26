@@ -291,7 +291,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
         >
           <Mic size={17} />
         </button>
-        <p role="status" aria-live="polite">
+        <p className="voice-status" aria-live="polite">
           {status}
         </p>
         {busy && (
