@@ -1,5 +1,6 @@
 """God's Eye v1 transport skeleton; the default car adapter only logs motion."""
 import asyncio
+import base64
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.approach import approach_route
 from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
@@ -34,8 +36,8 @@ from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
-from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
-from backend.navigation import path_message
+from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
@@ -70,6 +72,13 @@ class Goal(Input):
 
 class Ask(Input):
     question: str = Field(min_length=1, max_length=2000)
+
+
+class Route(Input):
+    session_id: str = Field(min_length=1, max_length=256)
+    map_epoch: int = Field(ge=1)
+    object_id: str = Field(min_length=1, max_length=256)
+    start: list[float] = Field(min_length=2, max_length=2)  # operator-selected entrance/start, world (x, z)
 
 
 class Hello(Input):
@@ -235,6 +244,11 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.overlay_classes = overlay_classes(overlay or classes_from_env(),
                                                     getattr(app.state.detector, 'class_names', None))
         app.state.detection_view = None  # (message, jpeg) of the newest accepted detection frame
+        # The current selected-person /route response plus t_wall_ms, for read-only
+        # consumers such as voice answers; None when absent or invalidated.
+        app.state.approach_view = None
+        app.state.approach_basis = None  # fingerprint of the occupancy cells it was planned on
+        app.state.route_requests = 0
         app.state.session = None
         app.state.phone = None
         app.state.pose = None
@@ -504,6 +518,15 @@ def create_app(db_path: str | None = None, build_points=None,
                 continue
             publish(message)
             stats['published'] += 1
+            if app.state.approach_basis is not None and app.state.approach_basis != cells_fingerprint(
+                    message['origin'], (message['height'], message['width']), base64.b64decode(message['cells'])):
+                retire_route()
+
+    def retire_route():
+        app.state.approach_view = app.state.approach_basis = None
+
+    def cells_fingerprint(origin, shape, cells: bytes):
+        return (tuple(float(v) for v in origin), tuple(int(v) for v in shape), hash(bytes(cells)))
 
     def active_grid():
         grid = app.state.occupancy
@@ -533,6 +556,11 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.detection_view = (overlay, result.jpeg)
         publish(overlay)
         events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
+        if (view := app.state.approach_view) is not None and (sightings or changed):
+            person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                           if o['id'] == view['object_id']), None)
+            if person is None or [person['position'][0], person['position'][2]] != view['person']:
+                retire_route()
         if sightings or changed:
             publish(objects_message(session))
         for record in events:
@@ -564,6 +592,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
         app.state.detection_view = None
+        retire_route()
         app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
@@ -707,6 +736,45 @@ def create_app(db_path: str | None = None, build_points=None,
         publish(objects_message(session))
         return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
                     baseline_objects=len(started.baseline))
+
+    @app.post('/route')
+    async def route(body: Route):
+        """Suggested walking approach to a remembered person; visualization only.
+
+        Never sets a rover goal, path or motion. The dashboard re-requests it when the
+        map or the person's evidence changes and drops it on a map reset.
+        """
+        session = (body.session_id, body.map_epoch)
+        if session != app.state.session:
+            raise HTTPException(409, 'Route requested for a map that is no longer active')
+        app.state.route_requests += 1
+        request = app.state.route_requests  # a newer selection supersedes this one
+        person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                       if o['id'] == body.object_id and o['class'] == 'person'), None)
+        if person is None:
+            retire_route()  # a failed selection never leaves an older route standing
+            raise HTTPException(404, 'No localized person with that id in the active map')
+        target = (person['position'][0], person['position'][2])
+        grid = active_grid()
+
+        def plan():
+            revision, origin, cells = (None, None, None) if grid is None else grid.snapshot()
+            planned = approach_route(None if cells is None else
+                                     Grid.from_array(cells, origin=origin, cell_m=CELL_M), body.start, target)
+            basis = ('no_map',) if cells is None else cells_fingerprint(origin, cells.shape, cells.tobytes())
+            return revision, planned, basis
+
+        revision, planned, basis = await asyncio.to_thread(plan)
+        if app.state.session != session:
+            raise HTTPException(409, 'Map reset while planning')
+        response = dict(version=1, session_id=session[0], map_epoch=session[1], object_id=body.object_id,
+                        person=list(target), start=list(body.start), occupancy_revision=revision, **planned)
+        if request == app.state.route_requests:
+            # Success or not, this is now the selected route; an unavailable result
+            # replaces (invalidates) any earlier success.
+            app.state.approach_view = dict(response, t_wall_ms=int(time.time() * 1000))
+            app.state.approach_basis = basis
+        return response
 
     @app.post('/ask')
     async def ask(body: Ask):

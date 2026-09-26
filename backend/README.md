@@ -367,6 +367,33 @@ the frame contains nothing, so the dashboard can show what the detector saw:
 
 Tests (no weights): `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_detections -v`.
 
+### Suggested approach route (visualization only)
+
+`POST /route` `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` returns
+a suggested walking route from an operator-selected entrance/start to a
+remembered `person` in the active map (`backend/approach.py`). It reuses the
+navigation grid A* on the current occupancy classification, with these demo
+clearance assumptions instead of the car footprint: a 0.5 m wide walker
+(0.25 m radius) plus 0.05 m margin, observed-free cells only (unknown space is
+blocked, never filled in; doors are not inferred), and a 0.3 m keep-out around
+the person. The route ends at the nearest observed-free point within 1.5 m of the
+person, never on the person's cells. The response echoes the map, object, start and
+occupancy revision. It has `status: "ok"` with `points`, `approach` and `length_m`,
+or `status: "unavailable"` with a `reason` (`no_observed_map`,
+`start_not_observed_free`, `no_observed_free_approach`, `no_observed_free_route`,
+`start_or_person_off_map`), always with `assumptions` and `verified: false`.
+A wrong map returns `409` and an unknown or non-person object returns `404`. It never sets a goal,
+publishes `path`, arms or commands motion. The dashboard re-requests it on new
+occupancy or a moved person and drops it on a map reset.
+
+`app.state.approach_view` is the current selected route for read-only consumers
+(voice answers): the newest `/route` response dict plus `t_wall_ms`, or `None`.
+An unavailable result replaces an earlier success. A `404` selection, a map reset,
+a newly published occupancy picture that differs from the cells it was planned on,
+and a sighting that moves, merges or removes the person all set it to `None`.
+A slower, older request never overwrites a newer selection. Tests:
+`$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_approach -v`.
+
 ## Rescan and change events
 
 `POST /rescan` (`backend/changes.py`) needs an active map with at least one
