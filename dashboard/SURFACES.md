@@ -13,3 +13,7 @@ For fine recent detail, retain up to 24 observed view patches within a 48 MiB CP
 The simulator progressively reveals colored triangle patches from its hidden scene using the same visibility/range/occlusion rules as discovery. No complete hidden-room mesh becomes visible. A feed with only point data reports surface unavailability and retains the point-cloud option; it does not invent connectivity or imply photograph-quality capture.
 
 Implementation sequence: (1) calibrated decoder/triangulation and simulator geometry with tests; (2) bounded capture polling and surface renderer, default/layer UX; (3) browser and real-backend fixture checks, visual inspection, independent review, PR and merge. Verification covers projection, color UV orientation, invalid data, discontinuities, identity races, progressive retention and resource bounds.
+
+Dense observed planar regions are simplified before accumulation using normal agreement, an 8 mm plane-fit residual limit, preserved polygon boundaries/holes, and a 0.04 total linear-color error budget.
+Uniform regions and smooth color gradients can release interior vertices; uncertain geometry and sharp color detail retain their observed mesh.
+This is a conservative geometric approximation, not a semantic wall detector; see [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md).

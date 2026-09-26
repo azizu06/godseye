@@ -88,7 +88,14 @@ describe("persistent surface map", () => {
       maxTriangles: 160,
       initialCellM: 0.02,
     });
-    for (let i = 0; i < 12; i++) map.add(plane(i * 5, 0, 1, 15));
+    for (let i = 0; i < 12; i++) {
+      const detailed = plane(i * 5, 0, 1, 15);
+      // Sharp color detail must retain dense geometry, exercising the adaptive
+      // fallback even when uniform planes now compress before accumulation.
+      for (let vertex = 0; vertex < detailed.colors!.length / 3; vertex++)
+        detailed.colors![vertex * 3 + 2] = vertex % 2 ? 0.8 : 0.1;
+      map.add(detailed);
+    }
     map.add(plane(-10, 0, 0.005, 2, [0.2, 0.8, 0.1]));
     const patch = map.snapshot()!;
     expect(map.cellM).toBeGreaterThan(0.02);

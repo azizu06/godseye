@@ -673,10 +673,9 @@ export default function Scene(props: SceneProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  const count = props.mission.chunks.reduce(
-    (n, c) => n + c.positions.length / 3,
-    0,
-  );
+  const count = props.persistentSurface
+    ? props.persistentSurface.positions.length / 3
+    : props.mission.chunks.reduce((n, c) => n + c.positions.length / 3, 0);
   return (
     <section className="scene-panel" ref={container} aria-label="Spatial view">
       <div className="scene-toolbar">
@@ -814,7 +813,9 @@ export default function Scene(props: SceneProps) {
           </div>
         )}
         <div className="scene-stat">
-          <span>POINTS RECEIVED</span>
+          <span>
+            {props.persistentSurface ? "MAP VERTICES" : "POINTS RECEIVED"}
+          </span>
           <strong>{count.toLocaleString()}</strong>
           <small>
             <span className="tiny-dot" /> {props.mission.objects.length} objects
