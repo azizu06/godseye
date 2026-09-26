@@ -27,6 +27,8 @@ Each connection gets a new session UUID. Slow sends skip missed pose ticks rathe
 than flooding the backend. Connection errors exit visibly; restart to reconnect.
 Ctrl-C stops either tool.
 
+`tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts plus the latest `points` chunk, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
+
 Offline validation (no sockets, camera, car, or weights):
 
 ```sh

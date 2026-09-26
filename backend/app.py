@@ -1,7 +1,9 @@
 """God's Eye v1 transport skeleton; all motion is logging-only."""
 import asyncio
+from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -15,6 +17,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.drive import drive
+from backend.frame_bundle import FrameValidationError
+from backend.mapping import MappingError, build_point_chunk, points_message
+
+logger = logging.getLogger(__name__)
+MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
+MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
+MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 
 
 class Input(BaseModel):
@@ -108,7 +117,36 @@ def decode_frame(data: bytes) -> Frame:
     return frame
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+class Listener:
+    """One /live viewer: control messages plus a small, separate points backlog."""
+
+    def __init__(self):
+        self.queue = asyncio.Queue(maxsize=32)
+        self.points = deque(maxlen=MAP_PENDING_POINTS)
+        self.wake = asyncio.Event()
+
+
+class LatestFrame:
+    """Single-slot mailbox: a newer bundle replaces one still waiting."""
+
+    def __init__(self):
+        self.item = None
+        self.ready = asyncio.Event()
+
+    def put(self, payload):
+        replaced = self.item is not None
+        self.item = (payload, time.monotonic())
+        self.ready.set()
+        return replaced
+
+    def take(self):
+        item, self.item = self.item, None
+        self.ready.clear()
+        return item
+
+
+def create_app(db_path: str | None = None, build_points=build_point_chunk) -> FastAPI:
+    """`build_points(payload, session_id, map_epoch)` runs in a worker thread."""
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
 
     @asynccontextmanager
@@ -124,6 +162,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
         app.state.listeners = set()
+        app.state.chunk_id = 0
+        app.state.map_stats = Counter()
         task = asyncio.create_task(watchdog())
         try:
             yield
@@ -158,10 +198,44 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     stop_reason=app.state.stop_reason)
 
     def publish(message):
-        for queue in app.state.listeners:
-            if queue.full():
-                queue.get_nowait()
-            queue.put_nowait(message)
+        for listener in app.state.listeners:
+            if message['type'] == 'points':
+                listener.points.append(message)  # oldest chunk drops when full
+            else:
+                if listener.queue.full():
+                    listener.queue.get_nowait()
+                listener.queue.put_nowait(message)
+            listener.wake.set()
+
+    async def map_worker(owner, session, mailbox):
+        """Turn the newest bundle into one points chunk, one at a time, off the event loop."""
+        stats = app.state.map_stats
+        last_start = -MAP_INTERVAL_S
+        last_capture = -1.0
+        while True:
+            await mailbox.ready.wait()
+            await asyncio.sleep(max(0., last_start + MAP_INTERVAL_S - time.monotonic()))
+            payload, received = mailbox.take()  # newest wins; older ones were replaced
+            last_start = time.monotonic()
+            try:
+                chunk = await asyncio.to_thread(build_points, payload, *session)
+            except (FrameValidationError, MappingError):
+                stats['rejected'] += 1
+                continue
+            except Exception:  # a mapping bug must not end the phone session
+                stats['failed'] += 1
+                logger.exception('point chunk computation failed')
+                continue
+            # The map may have reset or the phone left while this was computing.
+            if app.state.phone is not owner or app.state.session != session:
+                stats['discarded_reset'] += 1
+            elif chunk.t_capture <= last_capture or time.monotonic() - received > MAP_MAX_AGE_S:
+                stats['discarded_stale'] += 1
+            else:
+                last_capture = chunk.t_capture
+                app.state.chunk_id += 1
+                publish(points_message(chunk, app.state.chunk_id))
+                stats['published'] += 1
 
     async def watchdog():
         ticks = 0
@@ -178,6 +252,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
         stop('session_reset')
         app.state.session = session
         app.state.pose = app.state.pose_at = None
+        app.state.chunk_id = 0
+        for listener in app.state.listeners:
+            listener.points.clear()
         app.state.db.execute('INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
                              (*session, int(time.time()*1000)))
         app.state.db.commit()
@@ -245,6 +322,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
     async def phone(ws: WebSocket):
         await ws.accept()
         owner = object()
+        worker = None
         try:
             hello = Hello.model_validate_json(await ws.receive_text())
             if app.state.phone is not None:
@@ -252,6 +330,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 return
             set_session((hello.session_id, hello.map_epoch))
             app.state.phone = owner
+            mailbox = LatestFrame()
+            worker = asyncio.create_task(map_worker(owner, (hello.session_id, hello.map_epoch), mailbox))
             last_capture = -1.0
             last_pose_publish = -1.0
             while True:
@@ -284,6 +364,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
                      json.dumps(pose.transform), pose.tracking,
                      json.dumps(pose.image.intrinsics) if isinstance(pose, Frame) else None))
                 app.state.db.commit()
+                if isinstance(pose, Frame) and pose.tracking == 'normal':
+                    if mailbox.put(message['bytes']):
+                        app.state.map_stats['replaced'] += 1
                 now = time.monotonic()
                 if now - last_pose_publish >= 1/15:
                     last_pose_publish = now
@@ -294,6 +377,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason='Invalid v1 phone protocol')
         finally:
+            if worker is not None:
+                worker.cancel()
             if app.state.phone is owner:
                 app.state.phone = None
                 app.state.pose = app.state.pose_at = None
@@ -303,14 +388,20 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.websocket('/live')
     async def live(ws: WebSocket):
         await ws.accept()
-        queue = asyncio.Queue(maxsize=32)
-        app.state.listeners.add(queue)
+        listener = Listener()
+        app.state.listeners.add(listener)
         async def send():
             await ws.send_json(health())
             await ws.send_json(dict(version=1, type='objects', objects=[]))
             await ws.send_json(dict(version=1, type='path', points=[]))
             while True:
-                await ws.send_json(await queue.get())
+                await listener.wake.wait()
+                listener.wake.clear()
+                while listener.queue.qsize() or listener.points:
+                    if listener.queue.qsize():
+                        await ws.send_json(listener.queue.get_nowait())
+                    if listener.points:
+                        await ws.send_json(listener.points.popleft())
         sender = asyncio.create_task(send())
         try:
             while True:
@@ -318,7 +409,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            app.state.listeners.discard(queue)
+            app.state.listeners.discard(listener)
             sender.cancel()
             with suppress(asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
                 await sender
