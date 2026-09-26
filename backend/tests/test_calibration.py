@@ -7,17 +7,22 @@ import json
 import math
 import os
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 import numpy as np
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from backend import app as backend_app
 from backend.app import create_app
 from backend.calibration import RoverCalibration, calibration_from_env, load_calibration
+from backend.mapping import build_point_chunk
 from backend.occupancy import OCCUPIED, OccupancyGrid
 from backend.tests.test_map_transport import hello, next_of, wait_for
-from backend.tests.test_occupancy import FLOOR_Y, box, feed, plane, send_frames
+from backend.tests.test_occupancy import FLOOR_Y, box, feed, floor_frame, plane, send_frames
+from backend.tests.test_pose_freshness import pose
 
 SESSION = ('cal-session', 1)
 # Measured-looking TEST values; they exercise the code, they do not describe the car.
@@ -75,6 +80,32 @@ class CalibratedTests(unittest.TestCase):
         self.assertFalse(snapshot.traversable(3, 3))
         self.assertFalse(snapshot.traversable(.9, .9))
 
+    def test_narrow_passage_counts_the_whole_occupied_cell_not_just_its_center(self):
+        calibration = RoverCalibration.model_validate(TEST_CALIBRATION)  # inflation 0.2785 m
+
+        def passage(left_face, right_face):
+            grid = OccupancyGrid(SESSION, calibration=calibration)
+            feed(grid, np.concatenate([plane(-1, 1, -1, 1, FLOOR_Y),
+                                       box(-.9, left_face, -.1, .1, FLOOR_Y, FLOOR_Y + .3),
+                                       box(right_face, .9, -.1, .1, FLOOR_Y, FLOOR_Y + .3)]))
+            return grid.snapshot()
+
+        # Wall cells end at x = -0.25 and start at x = 0.30: 0.55 m of free floor. From the
+        # middle cell (x = 0.025) the wall cell centers are 0.30 m away but their edges
+        # only 0.275 m, inside the 0.2785 m disc, so the rover does not fit.
+        narrow = passage(-.26, .30)
+        self.assertEqual((narrow.cell(-.26, 0), narrow.cell(-.24, 0), narrow.cell(.30, 0)), (OCCUPIED, 1, OCCUPIED))
+        for x in np.arange(-.225, .3, .05):
+            self.assertFalse(narrow.traversable(x, 0), x)
+        # One more free cell on each side leaves 0.325 m to either wall: it fits in the middle.
+        wide = passage(-.31, .35)
+        self.assertTrue(wide.traversable(.025, 0))
+        self.assertFalse(wide.traversable(-.075, 0))  # 0.225 m from the left wall
+        # Nonfinite queries are never traversable.
+        for x, z in [(math.nan, 0), (0, math.inf)]:
+            self.assertFalse(wide.traversable(x, z))
+            self.assertEqual(wide.cell(x, z), 0)
+
     def test_a_threshold_inside_the_floor_noise_band_is_unsupported_not_guessed(self):
         # Heights read up to one 2 cm slice low, so a 5 cm hazard can look like 4 cm
         # floor noise. A rover that cannot cross 4.5 cm is beyond this sensing.
@@ -128,6 +159,8 @@ class InputTests(unittest.TestCase):
         del missing['camera_left_m']  # unmeasured must be written as null, not left out
         with self.assertRaises(ValidationError):
             RoverCalibration.model_validate(missing)
+        with self.assertRaises(ValidationError):
+            RoverCalibration.model_validate({**TEST_CALIBRATION, 'measured_by': '   '})
 
     def test_file_and_environment_loading(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -149,24 +182,26 @@ class InputTests(unittest.TestCase):
 
 class FreshnessTests(unittest.TestCase):
     def setUp(self):
-        self.now = 100.
-        self.grid = OccupancyGrid(SESSION, calibration=RoverCalibration.model_validate(TEST_CALIBRATION),
-                                  clock=lambda: self.now)
+        self.grid = OccupancyGrid(SESSION, calibration=RoverCalibration.model_validate(TEST_CALIBRATION))
 
     def test_unchanged_observations_advance_freshness_without_a_new_picture(self):
         empty = self.grid.snapshot()
         self.assertEqual((empty.revision, empty.sensed_at, empty.cells), (0, None, None))
         self.assertIn('no_floor', empty.blockers)
         feed(self.grid, low_box_scene(.07))
+        self.assertIsNone(self.grid.snapshot().sensed_at)  # evidence alone is not an accepted frame
+        self.grid.mark_sensed(100.)
         first = self.grid.snapshot()
         self.assertEqual((first.revision, first.sensed_at, first.session), (1, 100., SESSION))
         self.assertIsNotNone(self.grid.message_if_due(0.))
-        self.now = 107.5
         self.grid.add(low_box_scene(.07))  # the same view again
+        self.grid.mark_sensed(107.5)
         self.assertIsNone(self.grid.message_if_due(5.))  # no new /live picture
         again = self.grid.snapshot()
         self.assertEqual((again.revision, again.sensed_at), (1, 107.5))
         self.assertEqual(first.sensed_at, 100.)  # snapshots are immutable
+        self.grid.mark_sensed(90.)  # an older arrival never moves freshness back
+        self.assertEqual(self.grid.snapshot().sensed_at, 107.5)
 
     def test_revision_advances_when_the_picture_or_floor_changes(self):
         feed(self.grid, plane(-1, 1, -1, 1, FLOOR_Y))
@@ -213,6 +248,54 @@ class LiveSnapshotTests(unittest.TestCase):
             self.assertEqual(reset.session, (session['session_id'], 1))
             self.assertEqual((reset.revision, reset.sensed_at, reset.blockers), (0, None, ('no_floor',)))
             self.assertEqual(first.session, ('cal-live', 1))  # the old snapshot is untouched
+
+    def test_frames_dropped_as_stale_do_not_refresh_the_map(self):
+        slow = threading.Event()
+
+        def build(payload, session_id, map_epoch):
+            if slow.is_set():
+                threading.Event().wait(.8)  # finishes past the patched 0.5 s frame age
+            return build_point_chunk(payload, session_id, map_epoch)
+
+        calibration = RoverCalibration.model_validate(TEST_CALIBRATION)
+        with mock.patch.object(backend_app, 'MAP_MAX_AGE_S', .5), \
+                TestClient(create_app(':memory:', build_points=build, calibration=calibration)) as client:
+            state = client.app.state
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('cal-stale'))
+                send_frames(client, phone, 'cal-stale')
+                fresh_map = state.map_snapshot()
+                self.assertIsNotNone(fresh_map.sensed_at)
+                slow.set()
+                phone.send_bytes(floor_frame('cal-stale', 4, 4.))  # same view: no new points either
+                wait_for(lambda: state.map_stats['discarded_stale'] == 1)
+                self.assertEqual(state.map_snapshot().sensed_at, fresh_map.sensed_at)
+                self.assertEqual(state.map_stats['no_new_points'], 2)  # the stale one is not counted
+
+    def test_a_repeat_captured_before_tracking_loss_does_not_refresh_the_map(self):
+        started, release, gate = threading.Event(), threading.Event(), threading.Event()
+
+        def build(payload, session_id, map_epoch):
+            if gate.is_set():
+                started.set()
+                release.wait(5)
+            return build_point_chunk(payload, session_id, map_epoch)
+
+        with TestClient(create_app(':memory:', build_points=build)) as client:
+            state = client.app.state
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())  # 'map-session', as the pose helper expects
+                send_frames(client, phone, 'map-session')
+                before = state.map_snapshot().sensed_at
+                gate.set()
+                phone.send_bytes(floor_frame('map-session', 4, 4.))  # same view: no new points
+                self.assertTrue(started.wait(5))
+                phone.send_json(pose(4.1, 'not_available'))
+                wait_for(lambda: state.tracking_lost_capture == 4.1)
+                release.set()
+                wait_for(lambda: state.map_stats['discarded_tracking'] == 1)
+                self.assertEqual(state.map_snapshot().sensed_at, before)
+                self.assertEqual(state.map_stats['no_new_points'], 2)
 
     def test_calibration_never_arms_or_drives(self):
         calibration = RoverCalibration.model_validate(TEST_CALIBRATION)

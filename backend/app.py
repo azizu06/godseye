@@ -295,10 +295,11 @@ def create_app(db_path: str | None = None, build_points=None,
                                       app.state.changes.watching)
         return locate
 
-    async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
+    async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age, sensed=None):
         """Run `compute` on the newest bundle, one at a time, off the event loop.
 
         `accept` runs on the event loop only for results that are still current.
+        `sensed(received)` also runs then, and for a current frame with no new points.
         """
         last_start = -interval
         last_capture = -1.0
@@ -309,9 +310,8 @@ def create_app(db_path: str | None = None, build_points=None,
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
-            except NoNewPoints:
-                stats['no_new_points'] += 1
-                continue
+            except NoNewPoints as nothing_new:
+                result = nothing_new  # mapped, but nothing to publish: still gated like a result
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
@@ -327,6 +327,11 @@ def create_app(db_path: str | None = None, build_points=None,
             elif result.t_capture <= last_capture or time.monotonic() - received > max_age:
                 stats['discarded_stale'] += 1
             else:
+                if sensed is not None:
+                    sensed(received)
+                if isinstance(result, NoNewPoints):
+                    stats['no_new_points'] += 1
+                    continue
                 last_capture = result.t_capture
                 try:
                     accept(result)
@@ -377,21 +382,21 @@ def create_app(db_path: str | None = None, build_points=None,
             publish(message)
             stats['published'] += 1
 
-    def occupancy_snapshot():
+    def active_grid():
         grid = app.state.occupancy
-        if grid is not None and grid.session == app.state.session:
-            return grid.last_message
-        return None
+        return grid if grid is not None and grid.session == app.state.session else None
+
+    def occupancy_snapshot():
+        grid = active_grid()
+        return None if grid is None else grid.last_message
 
     def map_snapshot():
         """The active map's OccupancySnapshot for navigation, or None without one.
 
         Blocking (it classifies all evidence), so async callers use a worker thread.
         """
-        grid = app.state.occupancy
-        if grid is not None and grid.session == app.state.session:
-            return grid.snapshot()
-        return None
+        grid = active_grid()
+        return None if grid is None else grid.snapshot()
 
     app.state.map_snapshot = map_snapshot
 
@@ -566,7 +571,7 @@ def create_app(db_path: str | None = None, build_points=None,
             grid = app.state.occupancy
             workers.append(asyncio.create_task(frame_worker(
                 owner, session, mailbox, map_into(grid), accept_points, app.state.map_stats,
-                MAP_INTERVAL_S, MAP_MAX_AGE_S)))
+                MAP_INTERVAL_S, MAP_MAX_AGE_S, grid.mark_sensed)))
             workers.append(asyncio.create_task(occupancy_worker(owner, session, grid)))
             detections = LatestFrame()
             if app.state.detector is not None:

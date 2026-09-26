@@ -39,7 +39,7 @@ class RoverCalibration(BaseModel):
 
     # Every field is required: an unmeasured value is an explicit null, never omitted.
     version: Literal[1]
-    measured_by: str | None = Field(min_length=1)
+    measured_by: str | None = Field(pattern=r'\S')
     obstacle_min_m: float | None = Field(gt=0, lt=OBSTACLE_MAX_M)
     footprint_length_m: float | None = Field(gt=0, le=1)
     footprint_width_m: float | None = Field(gt=0, le=1)

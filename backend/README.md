@@ -103,7 +103,8 @@ one in-flight bundle per phone.
   per world voxel of `GODSEYE_POINT_VOXEL_M`, drops voxels already sent in this
   map, and publishes up to `GODSEYE_POINTS_PER_CHUNK` of the rest, evenly spread
   over the image. A frame with nothing new publishes no chunk (`map_stats`
-  counts it as `no_new_points`); a chunk dropped as stale is not remembered.
+  counts it as `no_new_points` if it is still current, else as discarded); a
+  chunk dropped as stale is not remembered.
   A voxel may be sent again once it is `GODSEYE_POINT_REFRESH_S` old by
   capture time, so a moved object or drifted surface is not frozen forever.
   The memory is shared by all viewers and resets only when the session/epoch
@@ -214,8 +215,8 @@ Pending hardware prerequisites, owned by Tomiwa: the lowest obstacle height the
 car cannot drive over; chassis length and width including bumpers; the clearance
 margin to keep; the phone camera's offset from the chassis center (forward,
 left) and its yaw relative to the chassis; and `measured_by`, naming who measured
-and where the evidence lives. Stopping distance and bench-stop evidence are
-separate, and no backend test stands in for any of them. Meters and radians;
+and where the evidence lives. Steering/speed response, stopping distance and
+bench-stop evidence are separate, and no backend test stands in for any of them. Meters and radians;
 bounds only reject typos (a footprint side over 1 m, centimeters, NaN, unknown
 keys).
 
@@ -235,11 +236,13 @@ active map. It returns an immutable `OccupancySnapshot` for the current
 session/epoch only: `cells` in the `/live` layout with `origin`, `floor_y`,
 `blockers` (empty exactly when `ready`), `inflation_m`, `revision` and
 `sensed_at`. `revision` changes when the picture or floor does. `sensed_at` is
-the monotonic time of the last frame folded into the grid, so repeated views
-keep it fresh even when `/live` sends no new grid. The staleness limit is the
-navigation owner's policy. `traversable(x, z)` is False unless the map is ready
-and every cell within `inflation_m` is known free; unknown, occupied and
-off-grid cells block. A map reset starts an empty snapshot (revision 0, no
+the monotonic time of the newest accepted mapping frame, so repeated views
+keep it fresh even when `/live` sends no new grid. It is stamped with the frame's
+arrival time only after the mapping worker's phone, session, tracking-loss and
+1 s age checks pass, so dropped frames never refresh it. The staleness limit is the navigation
+owner's policy. `traversable(x, z)` is False unless the map is ready and every
+cell with any part within `inflation_m` of the point is known free; unknown,
+occupied and off-grid cells block. A map reset starts an empty snapshot (revision 0, no
 `sensed_at`) and keeps the calibration. Calibration never arms or drives.
 Tested on synthetic floors and boxes only (`backend/tests/test_calibration.py`),
 with TEST values that describe no real car.

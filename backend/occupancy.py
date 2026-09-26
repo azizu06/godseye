@@ -29,7 +29,6 @@ import base64
 from dataclasses import dataclass
 import math
 import threading
-import time
 
 import numpy as np
 
@@ -66,8 +65,9 @@ class OccupancySnapshot:
     `cells[row, col]` is laid out like the `/live` message: row along +z from
     origin[1], column along +x from origin[0]. `cells` is None before a floor is found.
     `revision` changes only when the classified picture or floor does; `sensed_at`
-    (the grid clock, monotonic seconds) advances with every accepted frame, even
-    one that changes nothing. How stale is too stale is the consumer's policy.
+    (monotonic seconds, the arrival of the newest accepted frame) advances with every
+    accepted frame, even one that changes nothing. How stale is too stale is the
+    consumer's policy.
     """
     session: tuple
     revision: int
@@ -88,7 +88,7 @@ class OccupancySnapshot:
 
     def cell(self, x: float, z: float) -> int:
         """State of the cell holding world (x, z); UNKNOWN outside the grid."""
-        if self.cells is None:
+        if self.cells is None or not (math.isfinite(x) and math.isfinite(z)):
             return UNKNOWN
         row, col = self._index(x, z)
         if 0 <= row < self.cells.shape[0] and 0 <= col < self.cells.shape[1]:
@@ -97,19 +97,24 @@ class OccupancySnapshot:
 
     def traversable(self, x: float, z: float) -> bool:
         """Whether the rover may stand at world (x, z): only on a motion-ready map, and
-        only when every cell within `inflation_m` of that cell's center is known free.
+        only when every cell with any part within `inflation_m` of (x, z) is known free.
         Unknown, occupied and off-grid cells all block."""
-        if not self.ready or self.cells is None:
+        if not self.ready or self.cell(x, z) != FREE:
             return False
         row, col = self._index(x, z)
-        reach = self.inflation_m / self.cell_m
-        r = math.floor(reach + _EPS)
+        reach = math.ceil(self.inflation_m / self.cell_m)
+        rows, cols = np.arange(row - reach, row + reach + 1), np.arange(col - reach, col + reach + 1)
+        # Distance from (x, z) to the nearest point of each cell in the window.
+        left, top = self.origin[0] + cols * self.cell_m, self.origin[1] + rows * self.cell_m
+        dx = np.maximum(np.maximum(left - x, x - left - self.cell_m), 0)
+        dz = np.maximum(np.maximum(top - z, z - top - self.cell_m), 0)
+        near = dz[:, None] ** 2 + dx[None, :] ** 2 <= self.inflation_m ** 2
         height, width = self.cells.shape
-        if row - r < 0 or col - r < 0 or row + r >= height or col + r >= width:
-            return False  # part of the footprint disc is off the known grid
-        dr, dc = np.ogrid[-r:r + 1, -r:r + 1]
-        disc = dr * dr + dc * dc <= reach * reach + _EPS
-        return bool(np.all(self.cells[row - r:row + r + 1, col - r:col + r + 1][disc] == FREE))
+        window = np.full(near.shape, UNKNOWN, np.uint8)  # off-grid cells stay unknown
+        r0, r1 = max(rows[0], 0), min(rows[-1] + 1, height)
+        c0, c1 = max(cols[0], 0), min(cols[-1] + 1, width)
+        window[r0 - rows[0]:r1 - rows[0], c0 - cols[0]:c1 - cols[0]] = self.cells[r0:r1, c0:c1]
+        return bool(np.all(window[near] == FREE))
 
 
 class OccupancyGrid:
@@ -120,7 +125,7 @@ class OccupancyGrid:
     measured threshold less HEIGHT_MARGIN_M, for `/live` and the snapshot alike.
     """
 
-    def __init__(self, session, max_voxels: int = MAX_VOXELS, calibration=None, clock=time.monotonic):
+    def __init__(self, session, max_voxels: int = MAX_VOXELS, calibration=None):
         self.session = tuple(session)
         self.max_voxels = max_voxels
         self.calibration = calibration
@@ -133,22 +138,18 @@ class OccupancyGrid:
         self._dirty = False
         self._last_at = None
         self._last_picture = None
-        self._clock = clock
         self._sensed_at = None
         self._revision = 0
         self._snapshot_picture = None
         self._lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()  # revisions follow the evidence they describe
 
     @property
     def voxels(self) -> int:
         return len(self._keys)
 
     def add(self, positions) -> None:
-        """Fold one accepted frame's world points ((N, 3) ARKit meters) into the evidence.
-
-        Each call is one accepted sensing, so it advances `sensed_at` even when the
-        points change nothing. Callers gate on phone, session and frame age first.
-        """
+        """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
         p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
         with np.errstate(invalid='ignore'):
             ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
@@ -159,7 +160,6 @@ class OccupancyGrid:
         keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                          + iy[inside].astype(np.int64))
         with self._lock:
-            self._sensed_at = self._clock()
             self.dropped += int(len(p) - inside.sum())
             if not len(keys):
                 return
@@ -206,8 +206,21 @@ class OccupancyGrid:
             self._last_picture, self._last_at, self.last_message = fingerprint, now, message
             return message
 
+    def mark_sensed(self, at: float) -> None:
+        """Record that a frame which arrived at monotonic time `at` was accepted for this map.
+
+        Called for every accepted frame, including ones that add nothing new, and never
+        for frames dropped as stale or from a previous phone or map.
+        """
+        with self._lock:
+            self._sensed_at = at if self._sensed_at is None else max(self._sensed_at, at)
+
     def snapshot(self) -> OccupancySnapshot:
         """Classified picture of all evidence so far; blocking like `message_if_due`."""
+        with self._snapshot_lock:
+            return self._snapshot()
+
+    def _snapshot(self):
         with self._lock:
             keys, hits, sensed_at = self._keys.copy(), self._hits.copy(), self._sensed_at
         picture = classify(keys, hits, self.obstacle_from_m)

@@ -22,7 +22,14 @@ _OFFSET = 1 << (_AXIS_BITS - 1)
 
 
 class NoNewPoints(MappingError):
-    """Every candidate lies in a voxel already sent recently; publish nothing."""
+    """Every candidate lies in a voxel already sent recently; publish nothing.
+
+    Carries the frame's `t_capture` so callers can still apply their frame gates.
+    """
+
+    def __init__(self, t_capture: float):
+        super().__init__('every voxel in this frame was sent recently')
+        self.t_capture = t_capture
 
 
 @dataclass(frozen=True)
@@ -146,7 +153,7 @@ class VoxelMemory:
                 recent &= (age >= 0) & (age < settings.refresh_s)
         new = np.sort(first[~recent])  # back to image order, so the cap spreads evenly
         if not new.size:
-            raise NoNewPoints('every voxel in this frame was sent recently')
+            raise NoNewPoints(chunk.t_capture)
         keep = new[_spread(new.size, settings.per_chunk)]
         return _subset(chunk, keep, keys[keep])
 
