@@ -8,12 +8,17 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import uvicorn
+import numpy as np
 from backend.app import create_app
 from backend.tests.test_mapping import bundle, grids
 
 listener = socket.socket()
 listener.bind(('127.0.0.1', 0))
-payload = bundle(*grids(), session='browser-pipeline')
+depth, confidence = grids()
+if '--dense' in sys.argv:
+    depth = np.full((192, 256), 2., dtype='<f4')
+    confidence = np.full(depth.shape, 2, dtype='u1')
+payload = bundle(depth, confidence, session='browser-pipeline')
 print(json.dumps(dict(port=listener.getsockname()[1],
                      bundle=base64.b64encode(payload).decode())), flush=True)
 server = uvicorn.Server(uvicorn.Config(create_app(':memory:', capture_directory=''),

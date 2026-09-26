@@ -13,6 +13,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 - Dashboard viewport controls, run/test commands, and future scene integration: `dashboard/README.md`.
+- Optional dense binary point stream, worker/GPU update limits, and performance benchmark: `docs/LIVE_POINTS.md`; default v1 clients stay unchanged.
 
 ## Maintaining this file
 

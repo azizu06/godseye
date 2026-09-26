@@ -9,7 +9,8 @@ from PIL import Image
 
 from backend.frame_bundle import parse_frame_bundle
 from backend.localization import Detection, localize_detection
-from backend.mapping import MappingError, build_point_chunk, depth_to_points, points_message
+from backend.mapping import (MappingError, build_point_chunk, depth_to_points, points_message,
+                             points_binary, DENSE_MAX_POINTS)
 
 # Camera rotated +90 degrees about world Y and translated (1, 2, 3), as in test_localization.
 TRANSFORM = [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 2, 3, 1]
@@ -124,6 +125,26 @@ class DepthQualityTests(unittest.TestCase):
 
 
 class MessageTests(unittest.TestCase):
+    def test_dense_packet_preserves_measurements_and_byte_colors_with_a_bounded_legacy_view(self):
+        depth = np.full((192, 256), 2., dtype='<f4')
+        confidence = np.full(depth.shape, 2, dtype='u1')
+        confidence[:, :128] = 1
+        chunk = build_point_chunk(bundle(depth, confidence), 's', 1, max_points=DENSE_MAX_POINTS)
+        self.assertEqual(len(chunk.positions), 20_000)
+        self.assertTrue(np.all(chunk.positions[:, 2] < 3))  # Only high-confidence right half.
+        packet = points_binary(chunk, 7)
+        size = struct.unpack_from('<I', packet)[0]
+        header = json.loads(packet[4:4 + size])
+        self.assertEqual(size % 4, 0)
+        self.assertEqual((header['version'], header['count'], header['chunk_id']), (2, 20_000, 7))
+        self.assertEqual((header['session_id'], header['map_epoch'], header['t_capture']), ('s', 1, 3.5))
+        positions = np.frombuffer(packet, dtype='<f4', count=60_000, offset=4 + size).reshape(-1, 3)
+        colors = np.frombuffer(packet, dtype='u1', offset=4 + size + 240_000).reshape(-1, 3)
+        np.testing.assert_allclose(positions, chunk.positions, atol=1e-6)
+        np.testing.assert_array_equal(colors, np.rint(chunk.colors * 255))
+        self.assertEqual(len(points_message(chunk, 7)['positions']), 7500)
+        self.assertLess(len(packet), 301_000)
+
     def test_points_message_is_flat_rounded_and_versioned(self):
         depth, conf = grids()
         chunk = build_point_chunk(bundle(depth, conf), 's', 1, max_points=50)

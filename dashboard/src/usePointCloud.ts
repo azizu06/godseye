@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { PointCloudStore } from "./pointCloud";
+import { PointCloudStore, POINTS_PROTOCOL } from "./pointCloud";
+import { CloudWorker } from "./cloudWorker";
 
 export function liveEndpoint(pageURL: string): string | null {
   const page = new URL(pageURL);
@@ -52,11 +53,28 @@ export function usePointCloud() {
       attempt = 0,
       socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    const processor = new CloudWorker(
+      cloud,
+      ({ kind, result }) => {
+        if (disposed) return;
+        if (kind === "announce" && result === "accepted")
+          setFeed((s) => ({ ...s, lastPoint: 0 }));
+        if (kind === "ingest" && result === "accepted")
+          setFeed((s) => ({ ...s, lastPoint: Date.now() }));
+        if (result === "invalid")
+          setFeed((s) => ({ ...s, rejected: s.rejected + 1 }));
+      },
+      () => {
+        if (!disposed)
+          setFeed((s) => ({ ...s, connection: "processing-error" }));
+      },
+    );
     const connect = () => {
       if (disposed) return;
       setFeed((s) => ({ ...s, connection: "connecting" }));
       try {
-        socket = new WebSocket(endpoint);
+        socket = new WebSocket(endpoint, POINTS_PROTOCOL);
+        socket.binaryType = "arraybuffer";
       } catch {
         setFeed((s) => ({ ...s, connection: "invalid" }));
         return;
@@ -65,7 +83,7 @@ export function usePointCloud() {
       current.onopen = () => {
         if (disposed || current !== socket) return;
         attempt = 0;
-        cloud.clear();
+        processor.reset();
         setFeed({
           connection: "connected",
           phone: "unknown",
@@ -75,8 +93,12 @@ export function usePointCloud() {
         });
       };
       current.onmessage = (event) => {
-        if (disposed || current !== socket || typeof event.data !== "string")
+        if (disposed || current !== socket) return;
+        if (event.data instanceof ArrayBuffer) {
+          processor.ingest(event.data);
           return;
+        }
+        if (typeof event.data !== "string") return;
         if (event.data.length > 512_000) {
           setFeed((s) => ({ ...s, rejected: s.rejected + 1 }));
           return;
@@ -90,23 +112,25 @@ export function usePointCloud() {
         }
         if (!message || message.version !== 1) return;
         if (message.type === "points") {
-          const result = cloud.ingest(message);
-          if (result === "accepted")
-            setFeed((s) => ({ ...s, lastPoint: Date.now() }));
-          if (result === "invalid")
-            setFeed((s) => ({ ...s, rejected: s.rejected + 1 }));
+          processor.ingest(message);
         } else if (message.type === "objects") {
-          if (cloud.announce(message)) setFeed((s) => ({ ...s, lastPoint: 0 }));
+          processor.announce(message);
         } else if (
           message.type === "health" &&
           ["ok", "stale", "down"].includes(message.phone)
         ) {
-          setFeed((s) => ({ ...s, phone: message.phone }));
+          setFeed((s) =>
+            s.phone === message.phone ? s : { ...s, phone: message.phone },
+          );
         } else if (
           message.type === "pose" &&
           ["normal", "limited", "not_available"].includes(message.tracking)
         ) {
-          setFeed((s) => ({ ...s, tracking: message.tracking }));
+          setFeed((s) =>
+            s.tracking === message.tracking
+              ? s
+              : { ...s, tracking: message.tracking },
+          );
         }
       };
       current.onerror = () => current.close();
@@ -120,6 +144,7 @@ export function usePointCloud() {
     return () => {
       disposed = true;
       clearTimeout(retry);
+      processor.dispose();
       if (socket) {
         socket.onclose = null;
         socket.onmessage = null;
@@ -142,6 +167,8 @@ export function usePointCloud() {
   if (feed.connection === "offline") label = "Feed disconnected";
   if (feed.connection === "invalid") label = "Invalid point feed URL";
   if (feed.connection === "disabled") label = "Point feed off";
+  if (feed.connection === "processing-error")
+    label = "Point processing failed; reload the view";
   if (feed.connection === "connected" && cloud.count && !live)
     label = "No fresh depth";
   if (feed.connection === "connected" && feed.tracking === "limited")

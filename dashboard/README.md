@@ -57,15 +57,22 @@ The preview retains up to **2,000,000 points**, with one latest measured sample
 per **1 cm spatial cell**. Positions stay at their measured coordinates rather
 than snapping to cell centers. When full, new cells replace older slots in a
 ring. The status line reports replacement. This buffer limits display memory,
-not the phone's recording. The current backend emits at most 2,500 samples per chunk
-at 4 Hz, using confidence 2 and depths from 0.05 to 5 meters.
+not the phone's recording. The viewport negotiates a compact binary feed with up
+to **20,000 samples per chunk at 10 Hz**, using confidence 2 and depths from 0.05
+to 5 meters. This is a 20× increase in the delivery ceiling; phone capture speed
+and repeated observations determine how quickly new cells actually fill in.
+Older servers still work through their 2,500-point JSON chunks at 4 Hz.
 
 Walls, doors, and decorations all remain colored points. ARKit plane metadata
 continues to be captured, but does not replace surfaces with rectangles or remove
 nearby samples. Scan previously simplified areas again to refill their points.
 
-GPU uploads cover changed ranges instead of the entire 48 MB position/color
-buffer every frame. CPU spatial indexing and GPU copies use additional memory.
+Point decoding and spatial indexing run in a background worker so incoming
+frames do not block navigation. It transfers changed ranges to the renderer;
+identical observations trigger no GPU upload. GPU updates run once per rendered
+frame. Scattered changes upload their affected ranges instead of the full 48 MB
+buffer. Worker, renderer, spatial indexing, and GPU copies use additional memory.
+See [dense live points](../docs/LIVE_POINTS.md) for the wire format and limits.
 
 Map/session changes clear old geometry before new points arrive. Duplicate,
 delayed, malformed, and oversized chunks are ignored. A disconnected or stale
@@ -83,8 +90,9 @@ object removal, and calibration between the phone and rover remain future work.
 
 `src/Scene.tsx` owns the freely navigable camera, grid, and geometry slot.
 `src/PointCloudLayer.tsx` uploads a bounded point buffer to Three.js.
-`src/pointCloud.ts` validates and accumulates chunks; `src/usePointCloud.ts`
-handles the live connection, reconnects, and status.
+`src/pointCloud.ts` validates and accumulates chunks in `src/pointCloud.worker.ts`.
+`src/cloudWorker.ts` bounds pending work and transfers updates to the renderer;
+`src/usePointCloud.ts` handles the live connection, reconnects, and status.
 
 ```sh
 npm run build
@@ -92,6 +100,7 @@ npm run format:check
 npx playwright install chromium
 python3 -m pip install -r ../backend/requirements-test.txt
 npm test
+node tools/benchmark-points.mjs
 ```
 
 Tests cover world positions, color conversion, bounded accumulation, map

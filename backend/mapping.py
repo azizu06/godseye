@@ -1,9 +1,14 @@
 """Pure depth-to-world point chunks for the live map; no I/O, models, or globals."""
 from dataclasses import dataclass
+import json
+import struct
 
 import numpy as np
 
 from .frame_bundle import FrameBundle, parse_frame_bundle
+
+POINTS_PROTOCOL = 'godseye.points.v2'
+DENSE_MAX_POINTS = 20_000
 
 
 class MappingError(ValueError):
@@ -79,7 +84,27 @@ def points_message(chunk: PointChunk, chunk_id: int) -> dict:
     session_id, map_epoch, frame_id and t_capture are additive fields so the
     dashboard can clear its cloud when the map identity changes.
     """
+    indices = np.linspace(0, len(chunk.positions) - 1, min(2500, len(chunk.positions))).astype(np.int64)
     return dict(version=1, type='points', chunk_id=chunk_id, session_id=chunk.session_id,
                 map_epoch=chunk.map_epoch, frame_id=chunk.frame_id, t_capture=chunk.t_capture,
-                positions=np.round(chunk.positions, 3).ravel().tolist(),
-                colors=np.round(chunk.colors, 3).ravel().tolist())
+                positions=np.round(chunk.positions[indices], 3).ravel().tolist(),
+                colors=np.round(chunk.colors[indices], 3).ravel().tolist())
+
+
+def points_binary(chunk: PointChunk, chunk_id: int) -> bytes:
+    """Opt-in v2: aligned JSON header, XYZ float32 LE meters, RGB uint8 sRGB.
+
+    Only viewers negotiating POINTS_PROTOCOL receive binary points. V1 phone
+    input and the default /live JSON contract stay unchanged.
+    """
+    count = len(chunk.positions)
+    if not 0 < count <= DENSE_MAX_POINTS:
+        raise ValueError('invalid dense point count')
+    header = json.dumps(dict(version=2, type='points', chunk_id=chunk_id,
+                             session_id=chunk.session_id, map_epoch=chunk.map_epoch,
+                             frame_id=chunk.frame_id, t_capture=chunk.t_capture, count=count,
+                             positions='float32_le', colors='rgb8_srgb'), separators=(',', ':')).encode()
+    header += b' ' * (-len(header) % 4)
+    return (struct.pack('<I', len(header)) + header +
+            chunk.positions.astype('<f4').tobytes() +
+            np.rint(chunk.colors * 255).astype('u1').tobytes())

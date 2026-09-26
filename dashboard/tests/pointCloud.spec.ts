@@ -6,6 +6,7 @@ import {
   PointCloudStore,
 } from "../src/pointCloud";
 import { liveEndpoint } from "../src/usePointCloud";
+import { binaryPoints } from "./support/binaryPoints";
 
 const chunk = (id = 1, positions = [1, 2, -3], colors = [1, 0.5, 0]) => ({
   version: 1,
@@ -172,4 +173,71 @@ test("point buffer retains two million distinct samples and uploads appended ran
   cloud.ingest(chunk(MAX_POINTS + 1, [90, 90, 90]));
   expect(cloud.count).toBe(2_000_000);
   expect(cloud.evicted).toBe(1);
+  cloud.takeUpdateRanges();
+  const scattered = [];
+  for (let i = 1; i <= 2500; i++) {
+    const j = i * 797;
+    scattered.push((j % 2000) * 0.02, Math.floor(j / 2000) * 0.02, 0);
+  }
+  cloud.ingest(chunk(MAX_POINTS + 2, scattered, Array(7500).fill(0.9)));
+  // Scattered observations used to force all 48 MB back onto the GPU.
+  expect(
+    cloud.takeUpdateRanges().reduce((sum, r) => sum + r.count * 8, 0),
+  ).toBe(60_000);
+});
+
+test("dense binary packets keep measured coordinates, color precision, and reject malformed data atomically", () => {
+  const cloud = new PointCloudStore(4);
+  expect(cloud.ingest(binaryPoints([1.123456, 2, -3], [17, 128, 255]))).toBe(
+    "accepted",
+  );
+  expect(cloud.positions[0]).toBeCloseTo(1.123456, 6);
+  expect(cloud.colors[0]).toBeCloseTo(linearColor(17 / 255), 6);
+  expect(cloud.colors[1]).toBeCloseTo(linearColor(128 / 255), 6);
+  expect(cloud.colors[2]).toBe(1);
+  for (const packet of [
+    binaryPoints([1, 2, 3], [1, 2, 3], { count: 20_001 }),
+    binaryPoints([1, 2, 3], [1, 2, 3], { colors: "unknown" }),
+    binaryPoints([NaN, 2, 3], [1, 2, 3]),
+    binaryPoints([1, 2, 3], [1, 2, 3], { map_epoch: 0 }),
+    binaryPoints([1, 2, 3], [1, 2, 3], { t_capture: -1 }),
+    binaryPoints([1, 2, 3], [1, 2, 3]).slice(0, -1),
+    new ArrayBuffer(8),
+  ]) {
+    expect(cloud.ingest(packet)).toBe("invalid");
+    expect(cloud.count).toBe(1);
+    expect(cloud.positions[0]).toBeCloseTo(1.123456, 6);
+  }
+});
+
+test("worker patches match the cache, preserve map resets, and skip unchanged GPU data", () => {
+  const worker = new PointCloudStore(4),
+    renderer = new PointCloudStore(4);
+  worker.ingest(
+    binaryPoints([0.001, 1, -2, 2000, 1, -2], [128, 64, 0, 0, 128, 64]),
+  );
+  renderer.applyUpdate(worker.takeUpdate());
+  expect(renderer.count).toBe(2);
+  expect(renderer.positions).toEqual(worker.positions);
+  expect(renderer.colors).toEqual(worker.colors);
+  renderer.takeUpdateRanges();
+  worker.ingest(
+    binaryPoints([0.001, 1, -2, 2000, 1, -2], [128, 64, 0, 0, 128, 64], {
+      t_capture: 2,
+      chunk_id: 2,
+    }),
+  );
+  expect(worker.takeUpdate().positions.length).toBe(0);
+  worker.announce({
+    version: 1,
+    type: "objects",
+    session_id: "next-map",
+    map_epoch: 1,
+  });
+  renderer.applyUpdate(worker.takeUpdate());
+  expect(renderer.count).toBe(0);
+  expect(renderer.bounds()).toBeNull();
+  expect(
+    worker.ingest(binaryPoints([0, 1, 2], [255, 0, 0], { t_capture: 3 })),
+  ).toBe("ignored");
 });

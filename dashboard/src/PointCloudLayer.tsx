@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
-import { useThree } from "@react-three/fiber";
+import { memo, useEffect, useRef } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
 import {
   BufferAttribute,
   BufferGeometry,
@@ -19,13 +19,17 @@ const roundSplats: PointsMaterial["onBeforeCompile"] = (shader) => {
   );
 };
 
-export default function PointCloud({ cloud }: { cloud: PointCloudStore }) {
-  const version = useSyncExternalStore(cloud.subscribe, cloud.snapshot);
+export default memo(function PointCloud({ cloud }: { cloud: PointCloudStore }) {
+  const uploaded = useRef(-1);
   const geometry = useRef<BufferGeometry>(null);
   const invalidate = useThree((state) => state.invalidate);
-  useLayoutEffect(() => {
+  useEffect(() => cloud.subscribe(invalidate), [cloud, invalidate]);
+  useFrame(() => {
+    const version = cloud.snapshot();
+    if (version === uploaded.current) return;
     const buffer = geometry.current;
     if (!buffer) return;
+    uploaded.current = version;
     buffer.setDrawRange(0, cloud.count);
     const ranges = cloud.takeUpdateRanges();
     for (const attribute of [
@@ -37,8 +41,7 @@ export default function PointCloud({ cloud }: { cloud: PointCloudStore }) {
         attribute.addUpdateRange(range.start, range.count);
       if (ranges.length) attribute.needsUpdate = true;
     }
-    invalidate();
-  }, [cloud, version, invalidate]);
+  });
   return (
     <points frustumCulled={false}>
       <bufferGeometry ref={geometry}>
@@ -64,4 +67,4 @@ export default function PointCloud({ cloud }: { cloud: PointCloudStore }) {
       />
     </points>
   );
-}
+});

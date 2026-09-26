@@ -1,14 +1,16 @@
 export const MAX_POINTS = 2_000_000;
 export const VOXEL_SIZE = 0.01;
 export const MAX_CHUNK_POINTS = 2500;
+export const MAX_DENSE_POINTS = 20_000;
+export const POINTS_PROTOCOL = "godseye.points.v2";
 
 type Identity = { session_id: string; map_epoch: number };
 export type PointChunk = {
-  version: 1;
+  version: 1 | 2;
   type: "points";
   chunk_id: number;
-  positions: number[];
-  colors: number[];
+  positions: number[] | Float32Array;
+  colors: number[] | Uint8Array;
   session_id?: string;
   map_epoch?: number;
   t_capture?: number;
@@ -33,6 +35,7 @@ const keyFor = (value: Identity | null) =>
   value ? JSON.stringify([value.session_id, value.map_epoch]) : "legacy";
 
 export function parsePointChunk(value: unknown): PointChunk | null {
+  if (value instanceof ArrayBuffer) return parseBinaryPoints(value);
   if (
     !record(value) ||
     value.version !== 1 ||
@@ -72,11 +75,93 @@ export function parsePointChunk(value: unknown): PointChunk | null {
   return value as PointChunk;
 }
 
+function parseBinaryPoints(data: ArrayBuffer): PointChunk | null {
+  if (data.byteLength < 8 || data.byteLength > 4100 + MAX_DENSE_POINTS * 15)
+    return null;
+  const length = new DataView(data).getUint32(0, true);
+  if (!length || length > 4096 || length % 4 || 4 + length > data.byteLength)
+    return null;
+  try {
+    const header: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        new Uint8Array(data, 4, length),
+      ),
+    );
+    if (
+      !record(header) ||
+      header.version !== 2 ||
+      header.type !== "points" ||
+      !identity(header) ||
+      !integer(header.chunk_id) ||
+      !integer(header.frame_id) ||
+      !integer(header.count) ||
+      header.count < 1 ||
+      header.count > MAX_DENSE_POINTS ||
+      typeof header.t_capture !== "number" ||
+      !Number.isFinite(header.t_capture) ||
+      header.t_capture < 0 ||
+      header.positions !== "float32_le" ||
+      header.colors !== "rgb8_srgb" ||
+      data.byteLength !== 4 + length + header.count * 15
+    )
+      return null;
+    const positions = new Float32Array(data, 4 + length, header.count * 3);
+    if (!positions.every((v) => Number.isFinite(v) && Math.abs(v) <= 1_000_000))
+      return null;
+    return {
+      ...header,
+      positions,
+      colors: new Uint8Array(
+        data,
+        4 + length + header.count * 12,
+        header.count * 3,
+      ),
+    } as PointChunk;
+  } catch {
+    return null;
+  }
+}
+
 /** JPEG RGB is sRGB; Three.js vertex colors use linear RGB. */
 export function linearColor(value: number) {
   return value <= 0.04045
     ? value / 12.92
     : Math.pow((value + 0.055) / 1.055, 2.4);
+}
+
+const rgb8Linear = Float32Array.from({ length: 256 }, (_, i) =>
+  linearColor(i / 255),
+);
+type VoxelKey = number | string;
+function voxelKey(x: number, y: number, z: number, size: number): VoxelKey {
+  const a = Math.floor(x / size) + 65536;
+  const b = Math.floor(y / size) + 65536;
+  const c = Math.floor(z / size) + 65536;
+  // Three 17-bit coordinates fit exactly in a JS number. Far-away samples use
+  // the unbounded string path, never a colliding hash or wrapped coordinate.
+  return a >= 0 && a < 131072 && b >= 0 && b < 131072 && c >= 0 && c < 131072
+    ? (a * 131072 + b) * 131072 + c
+    : `${a},${b},${c}`;
+}
+
+export type CloudUpdate = {
+  count: number;
+  evicted: number;
+  spans: Uint32Array; // pairs of starting component and component count
+  positions: Float32Array;
+  colors: Float32Array;
+};
+
+function mergeRanges(ranges: { start: number; count: number }[]) {
+  ranges.sort((a, b) => a.start - b.start);
+  const merged: typeof ranges = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last && range.start <= last.start + last.count)
+      last.count = Math.max(last.count, range.start + range.count - last.start);
+    else merged.push({ ...range });
+  }
+  return merged;
 }
 
 /** Bounded spatial cache. Retain measured positions, never snap them to voxel centers. */
@@ -86,14 +171,15 @@ export class PointCloudStore {
   count = 0;
   evicted = 0;
   private dirty = new Set<number>();
+  private uploadRanges: { start: number; count: number }[] = [];
   private cursor = 0;
   private revision = 0;
   private mapKey: string | null = null;
   private retired = new Set<string>();
   private lastChunk = -1;
   private lastCapture = -1;
-  private slots = new Map<string, number>();
-  private keys: (string | undefined)[];
+  private slots = new Map<VoxelKey, number>();
+  private keys: (VoxelKey | undefined)[] = [];
   private listeners = new Set<() => void>();
 
   constructor(
@@ -110,7 +196,6 @@ export class PointCloudStore {
       throw Error("Invalid point cache limits");
     this.positions = new Float32Array(capacity * 3);
     this.colors = new Float32Array(capacity * 3);
-    this.keys = new Array(capacity);
   }
 
   subscribe = (listener: () => void) => {
@@ -131,8 +216,9 @@ export class PointCloudStore {
     this.lastChunk = -1;
     this.lastCapture = -1;
     this.dirty.clear();
+    this.uploadRanges = [];
     this.slots.clear();
-    this.keys.fill(undefined);
+    this.keys.length = 0;
   }
   clear() {
     this.empty();
@@ -151,8 +237,52 @@ export class PointCloudStore {
         last.count = slot * 3 + 3 - last.start;
       else ranges.push({ start: slot * 3, count: 3 });
     }
-    // Scattered revisits can cost more in GPU calls than one active-buffer upload.
-    return ranges.length > 256 ? [{ start: 0, count: this.count * 3 }] : ranges;
+    const uploads = this.uploadRanges;
+    this.uploadRanges = [];
+    return uploads.length ? mergeRanges([...uploads, ...ranges]) : ranges;
+  }
+  /** Worker -> renderer: transfer only changed ranges, never the full 2M cache. */
+  takeUpdate(): CloudUpdate {
+    const ranges = this.takeUpdateRanges();
+    const size = ranges.reduce((sum, range) => sum + range.count, 0);
+    const positions = new Float32Array(size),
+      colors = new Float32Array(size);
+    const spans = new Uint32Array(ranges.length * 2);
+    let offset = 0;
+    ranges.forEach(({ start, count }, i) => {
+      spans.set([start, count], i * 2);
+      positions.set(this.positions.subarray(start, start + count), offset);
+      colors.set(this.colors.subarray(start, start + count), offset);
+      offset += count;
+    });
+    return {
+      count: this.count,
+      evicted: this.evicted,
+      spans,
+      positions,
+      colors,
+    };
+  }
+  applyUpdate(update: CloudUpdate) {
+    let offset = 0;
+    for (let i = 0; i < update.spans.length; i += 2) {
+      const start = update.spans[i],
+        count = update.spans[i + 1];
+      this.positions.set(
+        update.positions.subarray(offset, offset + count),
+        start,
+      );
+      this.colors.set(update.colors.subarray(offset, offset + count), start);
+      this.uploadRanges.push({ start, count });
+      offset += count;
+    }
+    this.count = update.count;
+    this.evicted = update.evicted;
+    // Hidden tabs may receive points while animation frames are paused. Keep
+    // their upload backlog bounded by buffer coverage, not elapsed time.
+    if (this.uploadRanges.length > 256)
+      this.uploadRanges = mergeRanges(this.uploadRanges);
+    this.changed();
   }
   private selectMap(next: string) {
     if (this.mapKey === next) return;
@@ -198,8 +328,9 @@ export class PointCloudStore {
       const x = chunk.positions[i];
       const y = chunk.positions[i + 1];
       const z = chunk.positions[i + 2];
-      const voxel = `${Math.floor(x / this.voxelSize)},${Math.floor(y / this.voxelSize)},${Math.floor(z / this.voxelSize)}`;
+      const voxel = voxelKey(x, y, z, this.voxelSize);
       let slot = this.slots.get(voxel);
+      const isNew = slot === undefined;
       if (slot === undefined) {
         slot = this.cursor;
         const previous = this.keys[slot];
@@ -212,14 +343,23 @@ export class PointCloudStore {
         this.cursor = (this.cursor + 1) % this.capacity;
         this.count = Math.min(this.capacity, this.count + 1);
       }
-      this.positions[slot * 3] = x;
-      this.positions[slot * 3 + 1] = y;
-      this.positions[slot * 3 + 2] = z;
-      this.dirty.add(slot);
-      for (let channel = 0; channel < 3; channel++)
-        this.colors[slot * 3 + channel] = linearColor(
-          chunk.colors[i + channel],
-        );
+      const index = slot * 3;
+      let updated = isNew;
+      for (let channel = 0; channel < 3; channel++) {
+        const p = Math.fround(chunk.positions[i + channel]);
+        const c =
+          chunk.version === 2
+            ? rgb8Linear[chunk.colors[i + channel]]
+            : Math.fround(linearColor(chunk.colors[i + channel]));
+        if (
+          this.positions[index + channel] !== p ||
+          this.colors[index + channel] !== c
+        )
+          updated = true;
+        this.positions[index + channel] = p;
+        this.colors[index + channel] = c;
+      }
+      if (updated) this.dirty.add(slot);
     }
     this.lastChunk = chunk.chunk_id;
     if (chunk.t_capture !== undefined) this.lastCapture = chunk.t_capture;

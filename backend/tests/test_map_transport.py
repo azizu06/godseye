@@ -9,7 +9,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from backend.app import MAP_PENDING_POINTS, Listener, create_app
-from backend.mapping import build_point_chunk
+from backend.mapping import build_point_chunk, POINTS_PROTOCOL
 from backend.tests.test_mapping import TRANSFORM, bundle as raw_bundle, grids
 
 MAX_POINTS = 2500
@@ -58,6 +58,30 @@ def wait_for(predicate, timeout=5.):
 
 
 class MapTransportTests(unittest.TestCase):
+    def test_dense_viewer_negotiates_binary_while_legacy_viewer_keeps_bounded_json(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            with client.websocket_connect('/live', subprotocols=[POINTS_PROTOCOL]) as dense, \
+                    client.websocket_connect('/live') as legacy, client.websocket_connect('/phone') as phone:
+                self.assertEqual(dense.accepted_subprotocol, POINTS_PROTOCOL)
+                self.assertIsNone(legacy.accepted_subprotocol)
+                phone.send_json(hello())
+                depth = np.full((192, 256), 2, dtype='<f4')
+                confidence = np.full(depth.shape, 2, dtype='u1')
+                phone.send_bytes(fresh(raw_bundle(depth, confidence, session='map-session')))
+                while True:
+                    message = dense.receive()
+                    if message.get('bytes') is not None:
+                        packet = message['bytes']
+                        break
+                size = struct.unpack_from('<I', packet)[0]
+                header = json.loads(packet[4:4 + size])
+                self.assertEqual((header['version'], header['count'], header['session_id']),
+                                 (2, 20_000, 'map-session'))
+                old = next_of(legacy, 'points')
+                self.assertEqual((old['version'], len(old['positions'])), (1, 7500))
+                self.assertEqual(old['frame_id'], header['frame_id'])
+                self.assertFalse(client.get('/health').json()['armed'])
+
     def test_encoder_latency_does_not_starve_points_or_rewind_latest_pose(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
             with client.websocket_connect('/phone') as phone:

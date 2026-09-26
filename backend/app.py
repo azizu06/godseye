@@ -24,11 +24,13 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
-from backend.mapping import MappingError, build_point_chunk, points_message
+from backend.mapping import (MappingError, build_point_chunk, points_message, points_binary,
+                             POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.objects import ObjectMemory, detect_objects
 
 logger = logging.getLogger(__name__)
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
+DENSE_MAP_INTERVAL_S = .1  # opt-in binary viewers: up to 10 Hz
 MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
 MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference
@@ -130,10 +132,12 @@ def decode_frame(data: bytes) -> Frame:
 class Listener:
     """One /live viewer: control messages plus a small, separate points backlog."""
 
-    def __init__(self):
+    def __init__(self, binary_points=False):
         self.queue = asyncio.Queue(maxsize=32)
         self.points = deque(maxlen=MAP_PENDING_POINTS)
         self.wake = asyncio.Event()
+        self.binary_points = binary_points
+        self.last_points_at = -float('inf')
 
 
 class LatestFrame:
@@ -269,16 +273,27 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                                       app.state.changes.watching)
         return locate
 
+    def map_interval():
+        return (DENSE_MAP_INTERVAL_S if any(v.binary_points for v in tuple(app.state.listeners))
+                else MAP_INTERVAL_S)
+
+    def map_frame(payload, session_id, map_epoch):
+        if build_points is not build_point_chunk:
+            return build_points(payload, session_id, map_epoch)
+        maximum = DENSE_MAX_POINTS if map_interval() == DENSE_MAP_INTERVAL_S else 2500
+        return build_point_chunk(payload, session_id, map_epoch, max_points=maximum)
+
     async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
         """Run `compute` on the newest bundle, one at a time, off the event loop.
 
         `accept` runs on the event loop only for results that are still current.
         """
-        last_start = -interval
+        last_start = -float('inf')
         last_capture = -1.0
         while True:
             await mailbox.ready.wait()
-            await asyncio.sleep(max(0., last_start + interval - time.monotonic()))
+            period = interval() if callable(interval) else interval
+            await asyncio.sleep(max(0., last_start + period - time.monotonic()))
             payload, received = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
@@ -309,7 +324,23 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     def accept_points(chunk):
         app.state.chunk_id += 1
-        publish(points_message(chunk, app.state.chunk_id))
+        now = time.monotonic()
+        binary = legacy = None
+        dense_active = map_interval() == DENSE_MAP_INTERVAL_S
+        for listener in app.state.listeners:
+            if listener.binary_points:
+                if binary is None:
+                    binary = points_binary(chunk, app.state.chunk_id)
+                message = binary
+            else:
+                if dense_active and now - listener.last_points_at < MAP_INTERVAL_S:
+                    continue
+                if legacy is None:
+                    legacy = points_message(chunk, app.state.chunk_id)
+                message = legacy
+            listener.last_points_at = now
+            listener.points.append(message)
+            listener.wake.set()
 
     def accept_objects(result):
         session = (result.session_id, result.map_epoch)
@@ -470,8 +501,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             session = (hello.session_id, hello.map_epoch)
             mailbox = LatestFrame()
             workers.append(asyncio.create_task(frame_worker(
-                owner, session, mailbox, build_points, accept_points, app.state.map_stats,
-                MAP_INTERVAL_S, MAP_MAX_AGE_S)))
+                owner, session, mailbox, map_frame, accept_points, app.state.map_stats,
+                map_interval, MAP_MAX_AGE_S)))
             detections = LatestFrame()
             if app.state.detector is not None:
                 workers.append(asyncio.create_task(frame_worker(
@@ -559,8 +590,9 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     @app.websocket('/live')
     async def live(ws: WebSocket):
-        await ws.accept()
-        listener = Listener()
+        dense = POINTS_PROTOCOL in ws.scope.get('subprotocols', [])
+        await ws.accept(subprotocol=POINTS_PROTOCOL if dense else None)
+        listener = Listener(binary_points=dense)
         app.state.listeners.add(listener)
         async def send():
             await ws.send_json(health())
@@ -573,7 +605,11 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                     if listener.queue.qsize():
                         await ws.send_json(listener.queue.get_nowait())
                     if listener.points:
-                        await ws.send_json(listener.points.popleft())
+                        message = listener.points.popleft()
+                        if isinstance(message, bytes):
+                            await ws.send_bytes(message)
+                        else:
+                            await ws.send_json(message)
         sender = asyncio.create_task(send())
         try:
             while True:
