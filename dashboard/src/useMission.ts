@@ -1,3 +1,9 @@
+import {
+  PointCloudStore,
+  POINTS_PROTOCOL,
+  type CapturedPoints,
+} from "./pointCloud";
+import { CloudWorker } from "./cloudWorker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseMessage,
@@ -17,6 +23,27 @@ import {
 } from "./transport";
 
 export function useMission() {
+  const [cloud] = useState(() => new PointCloudStore());
+  const pointWorker = useRef<CloudWorker | null>(null);
+  useEffect(() => {
+    const worker = new CloudWorker(
+      cloud,
+      () => {},
+      () => setNotice("Point worker unavailable; reload to resume."),
+    );
+    pointWorker.current = worker;
+    return () => {
+      worker.dispose();
+      pointWorker.current = null;
+    };
+  }, [cloud]);
+  const ingestCaptured = useCallback(
+    (points: CapturedPoints, restore = false) => {
+      if (restore) pointWorker.current?.restoreCoverage();
+      pointWorker.current?.ingestCaptured(points);
+    },
+    [],
+  );
   const [config, setConfig] = useState<ConnectionConfig>(initialConfig);
   useEffect(() => updateFeedUrl(config), [config]);
   const [mission, setMission] = useState(emptyMission);
@@ -58,14 +85,30 @@ export function useMission() {
     if (heldDirection.current !== null) cancelControl();
   }, [cancelControl]);
   const activeMap = useRef<string | null>(null);
+  const cloudMap = useRef<string | null>(null);
   const { source, wsUrl, apiUrl } = config;
-  const receive = useCallback(
-    (messages: Message[]) =>
-      setMission((s) =>
-        messages.reduce((state, m) => reduceMessage(state, m), s),
-      ),
-    [],
-  );
+  const receive = useCallback((messages: Message[], wire?: unknown) => {
+    for (const message of messages) {
+      const key = mapKey(message);
+      if (key && key !== cloudMap.current) {
+        cloudMap.current = key;
+        pointWorker.current?.reset();
+        pointWorker.current?.announce({
+          version: 1,
+          type: "objects",
+          session_id: message.session_id,
+          map_epoch: message.map_epoch,
+        });
+      }
+      if (message.type === "points")
+        pointWorker.current?.ingest(
+          wire instanceof ArrayBuffer ? wire.slice(0) : message,
+        );
+    }
+    setMission((s) =>
+      messages.reduce((state, m) => reduceMessage(state, m), s),
+    );
+  }, []);
   const notify = useCallback((message: string) => setNotice(message), []);
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 500);
@@ -82,15 +125,18 @@ export function useMission() {
     cancelControl();
     controlBusy.current = null;
     activeMap.current = null;
+    cloudMap.current = null;
     confirmedMap.current = false;
     setMapConfirmed(confirmedMap.current);
     stopEpoch.current++;
     let disposed = false,
       timer: ReturnType<typeof setTimeout> | undefined,
       socket: WebSocket | undefined,
-      attempt = 0;
+      attempt = 0,
+      legacySocket = false;
     manual.current?.stop();
     setMission(emptyMission());
+    pointWorker.current?.reset();
     setStartedAt(Date.now());
     setPending(null);
     setUnconfirmedMotion(false);
@@ -98,9 +144,13 @@ export function useMission() {
     latchStop(true);
     const connect = () => {
       if (disposed) return;
+      let opened = false;
       setConnection(attempt ? "reconnecting" : "connecting");
       try {
-        socket = new WebSocket(wsUrl);
+        socket = legacySocket
+          ? new WebSocket(wsUrl)
+          : new WebSocket(wsUrl, POINTS_PROTOCOL);
+        socket.binaryType = "arraybuffer";
       } catch {
         setConnection("disconnected");
         setNotice("Could not open the configured WebSocket.");
@@ -108,7 +158,9 @@ export function useMission() {
       }
       socket.onopen = () => {
         if (disposed) return;
+        opened = true;
         attempt = 0;
+        pointWorker.current?.reconnect();
         confirmedMap.current = false;
         setMapConfirmed(false);
         stopEpoch.current++;
@@ -151,7 +203,7 @@ export function useMission() {
             cancelControl();
             latchStop(true);
           }
-          receive([message]);
+          receive([message], e.data);
         }
       };
       socket.onerror = () => {
@@ -168,6 +220,9 @@ export function useMission() {
         stopEpoch.current++;
         cancelControl();
         latchStop(true);
+        // Fall back only after a failed handshake; ordinary reconnects retain
+        // the negotiated dense stream.
+        if (!opened) legacySocket = true;
         setConnection("reconnecting");
         timer = setTimeout(connect, Math.min(8000, 1000 * 2 ** attempt++));
       };
@@ -589,6 +644,8 @@ export function useMission() {
       manual.current?.start(v, w);
   };
   return {
+    cloud,
+    ingestCaptured,
     mission,
     rescanBaseline,
     historyStatus,

@@ -70,14 +70,14 @@ export function reduceMessage(
     }
     case "points": {
       if (state.pointIds.includes(message.chunk_id)) return next;
-      const chunks = [...state.chunks, message].slice(-1000);
+      const chunks = [...state.chunks, message].slice(-4000);
       let count = chunks.reduce((n, c) => n + c.positions.length / 3, 0);
-      while (count > 500000 && chunks.length > 1)
+      while (count > 2000000 && chunks.length > 1)
         count -= chunks.shift()!.positions.length / 3;
       return {
         ...next,
         chunks,
-        pointIds: [...state.pointIds, message.chunk_id].slice(-1000),
+        pointIds: [...state.pointIds, message.chunk_id].slice(-4000),
       };
     }
     case "occupancy":

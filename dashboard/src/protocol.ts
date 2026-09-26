@@ -1,3 +1,4 @@
+import { parseBinaryPoints } from "./pointCloud";
 export type Vec3 = [number, number, number];
 export type Vec2 = [number, number];
 export type Mode = "manual" | "navigate" | "explore";
@@ -29,8 +30,8 @@ export interface Pose {
 }
 export interface PointChunk {
   chunk_id: number;
-  positions: number[];
-  colors: number[];
+  positions: number[] | Float32Array;
+  colors: number[] | Float32Array;
 }
 export interface Occupancy {
   origin: Vec2;
@@ -80,6 +81,17 @@ export function decodeCells(grid: Occupancy): Uint8Array {
 }
 export function parseMessage(raw: unknown): Message | null {
   try {
+    if (raw instanceof ArrayBuffer) {
+      const chunk = parseBinaryPoints(raw);
+      return chunk
+        ? ({
+            ...chunk,
+            version: 1,
+            positions: chunk.positions as Float32Array,
+            colors: Float32Array.from(chunk.colors, (c) => c / 255),
+          } as Message)
+        : null;
+    }
     if (typeof raw === "string") {
       if (raw.length > 8_000_000) return null;
       raw = JSON.parse(raw);

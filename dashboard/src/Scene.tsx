@@ -1,3 +1,5 @@
+import PointCloudLayer from "./PointCloudLayer";
+import type { PointCloudStore } from "./pointCloud";
 import { createPortal } from "react-dom";
 import { ColorSurfaces } from "./ColorSurfaces";
 import type { SurfacePatch, SurfaceStatus } from "./surfaceTypes";
@@ -5,7 +7,7 @@ import {
   Component,
   Suspense,
   useEffect,
-  useLayoutEffect,
+  useSyncExternalStore,
   useMemo,
   useRef,
   useState,
@@ -33,6 +35,7 @@ export const objectName = (o: WorldObject) =>
     ? "Plant"
     : o.class.charAt(0).toUpperCase() + o.class.slice(1);
 export interface SceneProps {
+  cloud: PointCloudStore;
   toolsHost?: HTMLElement | null;
   feedLabel: string;
   surfaceReason: string;
@@ -122,65 +125,6 @@ function Controls({
       }}
       touches={{ ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN }}
     />
-  );
-}
-/** Fixed GPU storage; append only changed ranges, compact only on bounded eviction. */
-function Cloud({ mission }: { mission: Mission }) {
-  const { invalidate } = useThree();
-  const previous = useRef<Mission["chunks"]>([]);
-  const geometry = useMemo(() => {
-    const value = new THREE.BufferGeometry();
-    for (const name of ["position", "color"])
-      value.setAttribute(
-        name,
-        new THREE.BufferAttribute(new Float32Array(500000 * 3), 3).setUsage(
-          THREE.DynamicDrawUsage,
-        ),
-      );
-    value.setDrawRange(0, 0);
-    return value;
-  }, []);
-  useLayoutEffect(() => {
-    const chunks = mission.chunks;
-    const appended = previous.current.every((chunk, i) => chunks[i] === chunk);
-    const start = appended ? previous.current.length : 0;
-    let offset = appended
-      ? previous.current.reduce((n, c) => n + c.positions.length, 0)
-      : 0;
-    const first = offset;
-    const positions = geometry.getAttribute(
-      "position",
-    ) as THREE.BufferAttribute;
-    const colors = geometry.getAttribute("color") as THREE.BufferAttribute;
-    for (let i = start; i < chunks.length; i++) {
-      (positions.array as Float32Array).set(chunks[i].positions, offset);
-      (colors.array as Float32Array).set(chunks[i].colors, offset);
-      offset += chunks[i].positions.length;
-    }
-    if (offset > first) {
-      for (const attribute of [positions, colors]) {
-        attribute.addUpdateRange(first, offset - first);
-        attribute.needsUpdate = true;
-      }
-    }
-    geometry.setDrawRange(0, offset / 3);
-    previous.current = chunks;
-    invalidate();
-  }, [mission.chunks, geometry, invalidate]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  return (
-    <points name="live-point-cloud" geometry={geometry} frustumCulled={false}>
-      <pointsMaterial
-        size={0.023}
-        toneMapped={false}
-        vertexColors
-        transparent
-        opacity={0.8}
-        sizeAttenuation
-        depthWrite={false}
-        fog={false}
-      />
-    </points>
   );
 }
 function OccupancyMesh({ mission }: { mission: Mission }) {
@@ -306,6 +250,7 @@ function Trajectory({ mission }: { mission: Mission }) {
   );
 }
 function World({
+  cloud,
   persistentSurface,
   surfaces,
   mission,
@@ -314,6 +259,7 @@ function World({
   canGoal,
   onGoal,
 }: {
+  cloud: PointCloudStore;
   persistentSurface: SurfacePatch | null;
   surfaces: SurfacePatch[];
   mission: Mission;
@@ -362,7 +308,11 @@ function World({
         <ColorSurfaces patches={[persistentSurface]} retained />
       )}
       {layers.surfaces && <ColorSurfaces patches={surfaces} />}
-      {layers.points && <Cloud mission={mission} />}
+      <PointCloudLayer
+        cloud={cloud}
+        visible={layers.points}
+        surfaceOcclusion={layers.surfaces}
+      />
       {layers.occupancy && <OccupancyMesh mission={mission} />}
       {layers.trajectory && <Trajectory mission={mission} />}
       {mission.path.length > 1 && (
@@ -710,11 +660,16 @@ export default function Scene(props: SceneProps) {
     trajectory: true,
     occupancy: false,
   });
+  useSyncExternalStore(props.cloud.subscribe, props.cloud.snapshot);
+  const hasGeometry =
+    props.cloud.count > 0 ||
+    !!props.persistentSurface ||
+    props.surfaces.length > 0;
   const bounds = useMemo(() => {
     const box = new THREE.Box3();
     const point = new THREE.Vector3();
     const arrays = [
-      ...props.mission.chunks.map((chunk) => chunk.positions),
+      props.cloud.positions.subarray(0, props.cloud.count * 3),
       ...props.surfaces.map((patch) => patch.positions),
       ...(props.persistentSurface ? [props.persistentSurface.positions] : []),
     ];
@@ -724,11 +679,8 @@ export default function Scene(props: SceneProps) {
           point.set(positions[i], positions[i + 1], positions[i + 2]),
         );
     return box.isEmpty() ? null : box.getBoundingSphere(new THREE.Sphere());
-  }, [props.mission.chunks, props.surfaces, props.persistentSurface]);
-  const liveCount = props.mission.chunks.reduce(
-    (n, c) => n + c.positions.length / 3,
-    0,
-  );
+  }, [props.mission.mapKey, frame, hasGeometry]);
+  const liveCount = props.cloud.count;
   const triangleCount =
     (props.persistentSurface?.indices.length ?? 0) / 3 +
     props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0);
@@ -764,7 +716,7 @@ export default function Scene(props: SceneProps) {
   }, []);
   const count = props.persistentSurface
     ? props.persistentSurface.positions.length / 3
-    : props.mission.chunks.reduce((n, c) => n + c.positions.length / 3, 0);
+    : props.cloud.count;
   return (
     <section className="scene-panel" ref={container} aria-label="Spatial view">
       <div
@@ -804,6 +756,13 @@ export default function Scene(props: SceneProps) {
           {liveCount.toLocaleString()} live points ·{" "}
           {triangleCount.toLocaleString()} surface triangles ·{" "}
           {layers.points ? "points visible" : "points hidden"} ·{" "}
+          {(layers.points
+            ? layers.surfaces
+              ? props.cloud.visibleCount
+              : props.cloud.count
+            : 0
+          ).toLocaleString()}{" "}
+          dots drawn ·{" "}
           {layers.surfaces ? "surfaces visible" : "surfaces hidden"}
         </span>
         <span>{props.surfaceReason}</span>

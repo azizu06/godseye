@@ -153,6 +153,7 @@ export default function App() {
     config,
     mission.mapKey,
     connection === "connected" && controller.mapConfirmed,
+    controller.ingestCaptured,
   );
   const surfaces = capture.patches;
   const persistent = capture.persistent;
@@ -256,6 +257,7 @@ export default function App() {
       <Scene
         toolsHost={sceneToolsHost}
         feedLabel={`External feed · ${config.wsUrl} · ${connection}`}
+        cloud={controller.cloud}
         surfaceReason={capture.reason}
         mission={mission}
         surfaces={surfaces}

@@ -91,9 +91,11 @@ The iPhone uploader keeps one request in flight and one latest packet per kind.
 Replaced/failed/over-5-second-old queued packets count as dropped. Failed packets
 are not replayed. Slow links therefore miss samples; the independent phone archive
 can retain data that did not reach the laptop. No claim of complete 100 Hz delivery
-is made. One image encoder is active at a time; busy frame opportunities count as
-skipped. Serious thermal state reduces full frame upload to 2 Hz, v1 bundles to
-5 Hz, and local frames to 1 Hz; critical thermal state stops capture.
+is made. A dedicated live encoder targets 30 Hz independently of full-sensor/archive
+encoding and mesh export; each lane has one job in flight. Weighted full uploads
+favor frames while admitting telemetry, geometry and stills. Serious thermal state
+caps live bundles at 15 Hz, reduces full/local frames to 1 Hz and geometry to 0.5 Hz;
+critical thermal state stops capture. These are target rates, not delivery guarantees.
 
 The laptop stores exact received packets by default in
 `backend/captures/<session-hash>/` with a `recording.json` index. Set
@@ -110,6 +112,7 @@ Older v1 archives are unchanged and are not migrated.
 
 Open `/capture` for sensor previews and metadata. Downloads:
 
+- `/capture/surface.bin`: conditional read-only preview containing unchanged JPEG/raw depth/confidence from one eligible frame, with ETag and capture age; 204 when unavailable, 304 when unchanged. Native data is preferred within 35 ms of the latest v1 frame. Own tracking, identity, known tracking-loss cutoff and 15-second display age are checked independently of drive permission.
 - `/capture/rich/{frame|telemetry|geometry|still}.bin`: exact latest v2 packet.
 - `/capture/sensor/{rgb|raw_depth|raw_confidence|smoothed_depth|smoothed_confidence|person_mask|person_depth}`:
   native JPEG or rendered PNG; 204 when unavailable. ETags avoid redundant transfer.

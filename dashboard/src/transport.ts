@@ -15,10 +15,15 @@ export function initialConfig(
   search = window.location.search,
 ): ConnectionConfig {
   const params = new URLSearchParams(search);
-  const live = params.get("live");
+  const live = params.get("live") ?? import.meta.env.VITE_LIVE_URL;
   if (!live) return { ...defaultConfig };
   try {
-    const ws = new URL(live);
+    const ws = new URL(
+      live,
+      typeof window === "undefined" ? undefined : window.location.href,
+    );
+    if (ws.protocol === "http:") ws.protocol = "ws:";
+    if (ws.protocol === "https:") ws.protocol = "wss:";
     const api = new URL(ws);
     api.protocol = ws.protocol === "wss:" ? "https:" : "http:";
     api.pathname = "/";

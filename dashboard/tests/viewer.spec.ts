@@ -7,6 +7,7 @@ test("point-only feed is visible with controls off, survives reconnect, and fram
   let close = () => {},
     send = (_epoch: number, _chunk: number) => {};
   let connections = 0;
+  let pointOffset = 0;
   let seed = true;
   const posts: string[] = [];
   await page.route("http://localhost:9876/**", (route) => {
@@ -49,7 +50,9 @@ test("point-only feed is visible with controls off, survives reconnect, and fram
           session_id: "viewer",
           map_epoch: epoch,
           chunk_id: chunk,
-          positions: [19, 0, -2, 21, 2, -2, 20, 1, -2],
+          positions: [19, 0, -2, 21, 2, -2, 20, 1, -2].map((v, i) =>
+            i % 3 === 0 ? v + pointOffset : v,
+          ),
           colors: [1, 0, 0, 0, 1, 0, 0, 0, 1],
         }),
       );
@@ -91,6 +94,8 @@ test("point-only feed is visible with controls off, survives reconnect, and fram
   close();
   await expect.poll(() => connections).toBe(beforeReconnect + 1);
   await expect(status).toContainText("3 live points");
+  // Restarted IDs must admit new observations while retaining the old scan.
+  pointOffset = 10;
   send(1, 1);
   await expect(status).toContainText("6 live points");
   await expect.poll(async () => (await rendered()).count).toBe(6);

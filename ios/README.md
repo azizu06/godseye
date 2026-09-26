@@ -12,7 +12,7 @@ See [the full capture contract](../docs/CAPTURE.md) for the complete inventory, 
 
 Rates are targets, not guaranteed throughput. The app requests both raw and smoothed depth when the combined semantics are supported. "Raw" here means ARKit's unsmoothed scene depth, not access to the LiDAR's underlying laser returns. Confidence is preserved so mapping can reject weak depth measurements. ARKit exposes the camera stream selected by its world-tracking configuration; this app does not claim simultaneous capture from every iPhone lens.
 
-The highest-resolution compatible 4:3 video format is used, preferring a format that also supports high-resolution stills. The wire contract fixes RGB at 960×720; 4K 16:9 streaming would need explicit crop/calibration changes. Native depth dimensions are read at runtime. Still photos retain their own calibration and timestamp and are not assigned depth from another frame.
+The highest-frame-rate compatible 4:3 video format is used, choosing the highest resolution at that rate. High-resolution still capture is offered only when the chosen format supports it. The wire contract fixes RGB at 960×720; 4K 16:9 streaming would need explicit crop/calibration changes. Native depth dimensions are read at runtime. Still photos retain their own calibration and timestamp and are not assigned depth from another frame.
 
 ## Run on an iPhone
 
@@ -48,9 +48,9 @@ Files are written atomically. An interrupted process may leave no summary; compl
 
 ## Responsiveness and compatibility
 
-Only one frame encoding job is active at a time. The network retains at most one pending pose and one pending bundle; old/late frames are dropped to preserve capture order. Sends have a two-second timeout, and connection failures retry with bounded backoff. A reconnect sends `hello` again for the current AR session; it does not merge different coordinate systems. Tracking loss is still sent as pose telemetry, while depth bundles require normal tracking.
+Live RGB-D targets 30 Hz by default, with a dedicated high-priority encoder separate from full-sensor/archive encoding and mesh export. The UI reports encoded/s, sent/s, encoding time and network drops. Each lane permits one job at a time. The network retains one pending pose and one pending bundle with independent timestamp ordering, so a newer pose does not discard a valid delayed bundle. Sends have a two-second timeout, and connection failures retry with bounded backoff. A reconnect sends `hello` again for the current AR session; it does not merge different coordinate systems. Tracking loss is still sent as pose telemetry, while depth bundles require normal tracking.
 
-Full upload uses one request plus one pending packet per kind, exposing replacement/failure counts. Raw motion is sampled at a target 100 Hz and batched at 5 Hz. At serious thermal load, full frame upload falls to 2 Hz, bundles to 5 Hz, and recordings to 1 Hz. Critical temperature stops capture. These policies need sustained testing on the actual mounted phone. Local mesh recording and high-resolution photos can reduce achieved sample rates.
+Full upload uses one request plus one pending packet per kind, with a weighted frame/telemetry/frame/geometry/frame/still schedule. It prioritizes frames without starving other sensor kinds and exposes replacement/failure counts. Raw motion is sampled at a target 100 Hz and batched at 5 Hz. At serious thermal load, full frame upload and recordings fall to 1 Hz, geometry to 0.5 Hz, and live bundles are capped at 15 Hz (never above the selected rate). Critical temperature stops capture. These policies need sustained testing on the actual mounted phone. Local mesh recording and high-resolution photos can reduce achieved sample rates.
 
 The frozen [v1 interface](../docs/INTERFACES.md) is unchanged. Extra data uses HTTP `/capture/ingest` and does not refresh drive health. The backend also publishes v1 live map points and object memory as documented in its README. Neither app nor backend drives hardware.
 

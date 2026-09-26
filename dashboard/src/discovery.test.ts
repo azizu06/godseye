@@ -14,7 +14,7 @@ it("starts unknown and accumulates only newly observed points within range", () 
     sim.tick(0.1);
     state = sim.snapshot().reduce((s, m) => reduceMessage(s, m), state);
   }
-  const positions = state.chunks.flatMap((c) => c.positions);
+  const positions = state.chunks.flatMap((c) => Array.from(c.positions));
   expect(positions.length).toBeGreaterThan(0);
   expect(positions.length).toBeLessThan(makeRoomPoints().positions.length);
   for (let i = 0; i < positions.length; i += 3)
@@ -33,9 +33,9 @@ it("starts unknown and accumulates only newly observed points within range", () 
     sim.tick(0.1);
     state = sim.snapshot().reduce((s, m) => reduceMessage(s, m), state);
   }
-  expect(state.chunks.flatMap((c) => c.positions).length).toBeGreaterThan(
-    saved,
-  );
+  expect(
+    state.chunks.flatMap((c) => Array.from(c.positions)).length,
+  ).toBeGreaterThan(saved);
   sim.setTracking(false);
   sim.tick(1);
   expect(sim.snapshot().some((m) => m.type === "points")).toBe(false);

@@ -74,6 +74,19 @@ See [docs/CAPTURE.md](../docs/CAPTURE.md) for the v2 envelope, full sensor inven
 
 ## Live map points
 
+Dense-capable viewers may negotiate `godseye.points.v2` on `/live`: a little-endian
+uint32 JSON-header length (header padded to a multiple of four), header fields
+`version:2`, `type:points`, `chunk_id`, `session_id`, `map_epoch`, `frame_id`,
+`t_capture`, `count`, `positions:float32_le`, `colors:rgb8_srgb`, followed by XYZ
+float32 meters and RGB uint8 sRGB. Frames contain at most 20,000 points. While a
+dense viewer is connected, mapping targets 30 Hz and samples at least 20,000
+candidate depths; actual output still passes main's voxel-memory/occupancy gates.
+Legacy viewers receive JSON subsets capped at 2,500 points and 4 Hz. With only
+legacy viewers, existing point settings and cadence remain unchanged. Per-viewer
+queues keep two pending point packets and never block phone intake. Capture rate
+and actual Wi-Fi/processing throughput can be lower than these targets.
+
+
 Each valid `/phone` frame bundle can become one `/live` `points` message
 (`backend/mapping.py`, pure and hardware-free). The newest bundle replaces any
 older one still waiting, and at most one computation runs at a time in a worker

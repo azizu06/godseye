@@ -41,6 +41,7 @@ final class PhoneStream {
         let token = generation
         ready = false; busy = true; pending = PendingMessages()
         let task = session.webSocketTask(with: endpoint)
+        task.priority = URLSessionTask.highPriority
         socket = task; task.resume()
         onStatus?("Connecting…")
         send(.string(String(decoding: hello, as: UTF8.self)), token: token) { [weak self] in

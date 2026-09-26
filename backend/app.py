@@ -28,7 +28,8 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform
-from backend.mapping import MappingError, PointChunk, build_point_chunk, points_message
+from backend.mapping import (MappingError, PointChunk, build_point_chunk, points_message,
+                             points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
@@ -38,6 +39,7 @@ from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPo
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
 logger = logging.getLogger(__name__)
+DENSE_MAP_INTERVAL_S = 1 / 30
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
 MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
 POSE_HISTORY = 64  # recent captures kept to check a delayed bundle against its own pose
@@ -147,7 +149,9 @@ def decode_frame(data: bytes) -> Frame:
 class Listener:
     """One /live viewer: control messages plus a small, separate points backlog."""
 
-    def __init__(self):
+    def __init__(self, dense=False):
+        self.dense = dense
+        self.last_points = -1.0
         self.queue = asyncio.Queue(maxsize=32)
         self.points = deque(maxlen=MAP_PENDING_POINTS)
         self.occupancy = None  # full-grid snapshots: only the newest is worth sending
@@ -204,6 +208,7 @@ def create_app(db_path: str | None = None, build_points=None,
     """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
     point_settings = point_settings or PointSettings.from_env()
+    custom_builder = build_points
     build_points = build_points or partial(build_point_chunk, max_points=point_settings.samples)
     car = LoggingCar() if car is None else car
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
@@ -269,7 +274,8 @@ def create_app(db_path: str | None = None, build_points=None,
     register_capture_routes(app)
     register_audio_routes(app, audio_provider)
 
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match"],
+                       expose_headers=["ETag", "X-Capture-Age-Ms"])
 
     def stop(reason):
         app.state.armed = False
@@ -378,11 +384,12 @@ def create_app(db_path: str | None = None, build_points=None,
         same step as the checks, so no reset or disconnect can come between them. It may
         return the stats key to count instead of 'published'.
         """
-        last_start = -interval
+        last_start = -1.0
         last_capture = -1.0
         while True:
             await mailbox.ready.wait()
-            await asyncio.sleep(max(0., last_start + interval - time.monotonic()))
+            cadence = interval() if callable(interval) else interval
+            await asyncio.sleep(max(0., last_start + cadence - time.monotonic()))
             payload, received = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
@@ -413,7 +420,21 @@ def create_app(db_path: str | None = None, build_points=None,
 
     def accept_points(chunk):
         app.state.chunk_id += 1
-        publish(points_message(chunk, app.state.chunk_id))
+        now = time.monotonic()
+        binary = legacy = None
+        for listener in app.state.listeners:
+            if listener.dense:
+                if binary is None:
+                    binary = points_binary(chunk, app.state.chunk_id)
+                listener.points.append(binary)
+            elif not any(v.dense for v in app.state.listeners) or now - listener.last_points >= MAP_INTERVAL_S:
+                if legacy is None:
+                    legacy = points_message(chunk, app.state.chunk_id)
+                listener.points.append(legacy)
+                listener.last_points = now
+            else:
+                continue
+            listener.wake.set()
         app.state.point_memory.commit(chunk.voxel_keys, chunk.t_capture)
 
     def map_update(payload, session_id, map_epoch):
@@ -422,7 +443,10 @@ def create_app(db_path: str | None = None, build_points=None,
         The grid gets every candidate point; only the published chunk is deduped,
         so occupancy evidence keeps accumulating when nothing new is published.
         """
-        candidates = build_points(payload, session_id, map_epoch)
+        dense = any(listener.dense for listener in tuple(app.state.listeners))
+        candidates = (build_point_chunk(payload, session_id=session_id, map_epoch=map_epoch,
+                                       max_points=max(point_settings.samples, DENSE_MAX_POINTS))
+                      if dense and custom_builder is None else build_points(payload, session_id, map_epoch))
         evidence = None
         try:
             evidence = frame_evidence(candidates.positions)
@@ -430,7 +454,7 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')
         try:
-            chunk = app.state.point_memory.select(candidates)
+            chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
         except NoNewPoints:
             chunk = None
         return MapUpdate(candidates.t_capture, evidence, chunk)
@@ -692,7 +716,8 @@ def create_app(db_path: str | None = None, build_points=None,
             grid = app.state.occupancy
             workers.append(asyncio.create_task(frame_worker(
                 owner, session, mailbox, map_update, accept_map(grid), app.state.map_stats,
-                MAP_INTERVAL_S, MAP_MAX_AGE_S)))
+                lambda: DENSE_MAP_INTERVAL_S if any(v.dense for v in app.state.listeners) else MAP_INTERVAL_S,
+                MAP_MAX_AGE_S)))
             workers.append(asyncio.create_task(occupancy_worker(owner, session, grid)))
             detections = LatestFrame()
             if app.state.detector is not None:
@@ -793,8 +818,9 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.websocket('/live')
     async def live(ws: WebSocket):
-        await ws.accept()
-        listener = Listener()
+        dense = POINTS_PROTOCOL in ws.scope.get('subprotocols', [])
+        await ws.accept(subprotocol=POINTS_PROTOCOL if dense else None)
+        listener = Listener(dense)
         app.state.listeners.add(listener)
         async def send():
             await ws.send_json(health())
@@ -809,7 +835,11 @@ def create_app(db_path: str | None = None, build_points=None,
                     if listener.queue.qsize():
                         await ws.send_json(listener.queue.get_nowait())
                     if listener.points:
-                        await ws.send_json(listener.points.popleft())
+                        message = listener.points.popleft()
+                        if isinstance(message, bytes):
+                            await ws.send_bytes(message)
+                        else:
+                            await ws.send_json(message)
                     if listener.occupancy:
                         message, listener.occupancy = listener.occupancy, None
                         await ws.send_json(message)
