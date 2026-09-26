@@ -92,7 +92,6 @@ for (const reset of [false, true])
       });
       await page.goto("/");
       await workspaceAction(page, "Connection settings");
-      await page.getByRole("button", { name: /External feed Connect/ }).click();
       await page
         .getByLabel("Telemetry WebSocket")
         .fill("ws://localhost:9876/live");

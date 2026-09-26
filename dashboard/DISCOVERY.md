@@ -1,5 +1,7 @@
 # Progressive discovery increment
 
+> Current production source policy: [REAL_DATA.md](REAL_DATA.md). Earlier simulator/demo descriptions below apply only to retained test fixtures; the product generates no observations.
+
 Issue #16 follows backend integration PR #15 and the primary [dashboard specification](SPEC.md).
 A new simulated map starts with zero observed points and unknown occupancy.
 Each simulated scan contributes a bounded batch of previously unseen samples within the five-meter sensor range and illustrative viewing angle.

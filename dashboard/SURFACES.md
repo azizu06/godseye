@@ -1,5 +1,7 @@
 # Observed color surfaces
 
+> Current production source policy: [REAL_DATA.md](REAL_DATA.md). Earlier simulator/demo descriptions below apply only to retained test fixtures; the product generates no observations.
+
 Issue #19 continues the goals in [SPEC.md](SPEC.md), [DISCOVERY.md](DISCOVERY.md), [the project spec](../docs/spec-v0.1.md), [INTERFACES.md](../docs/INTERFACES.md), and [CAPTURE.md](../docs/CAPTURE.md).
 
 The default 3D scene renders solid colored triangles rather than dots. Point cloud remains an independent optional layer. Orbit, pan, navigation, pose, sensor scope, trail, memory and intelligence remain available. Unknown space stays empty. Simulation is labeled and never used to fill a live feed.

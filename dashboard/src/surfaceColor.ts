@@ -148,7 +148,7 @@ export function bakeSurfaceColors(
     colors: new Float32Array(colors),
   };
 }
-/** Export referenced vertices only; simulator buffers also contain hidden vertices. */
+/** Export referenced vertices only; buffers may also contain unused vertices. */
 export function serializeSurface(
   patch: SurfacePatch | null,
   cellM: number | null,

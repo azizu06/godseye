@@ -40,7 +40,6 @@ export interface SceneProps {
   mission: Mission;
   selected: string | null;
   onSelect: (id: string) => void;
-  simulated: boolean;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
 }
@@ -767,13 +766,8 @@ export default function Scene(props: SceneProps) {
         createPortal(
           <div className="scene-tools-panel">
             <div className="scene-caption">
-              <span className="live-dot" />{" "}
-              {props.simulated ? "THE STUDIO" : "CURRENT SESSION"}
-              <small>
-                {props.simulated
-                  ? "5 m LiDAR · viewing angle uncalibrated"
-                  : "ARKit world coordinates · meters"}
-              </small>
+              <span className="live-dot" /> CURRENT SESSION
+              <small>ARKit world coordinates · meters</small>
               {props.mission.pose && (
                 <span className="pose-readout">
                   CAMERA <b>X {props.mission.pose.position[0].toFixed(2)}</b>
@@ -797,12 +791,10 @@ export default function Scene(props: SceneProps) {
                   ? "Map capacity reached · prior scan retained · export before reset"
                   : props.persistentSurface || props.surfaces.length
                     ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · retained grid ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
-                    : props.simulated
-                      ? "Discovering color surfaces…"
-                      : props.surfaceStatus === "error" ||
-                          props.surfaceStatus === "unavailable"
-                        ? "Color capture unavailable · point cloud is in Layers"
-                        : "Waiting for color + depth · point cloud is in Layers"}
+                    : props.surfaceStatus === "error" ||
+                        props.surfaceStatus === "unavailable"
+                      ? "Color capture unavailable · point cloud is in Layers"
+                      : "Waiting for color + depth · point cloud is in Layers"}
               </div>
             )}
             <div className="scene-stat">

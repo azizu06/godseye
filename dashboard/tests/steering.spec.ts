@@ -1,5 +1,5 @@
 import {
-  simulator,
+  observedFeed,
   panel,
   workspace,
   workspaceAction,
@@ -69,10 +69,9 @@ for (const interrupt of ["release", "stop"] as const) {
       if (path === "/manual") motion.push(route.request().postDataJSON());
       await route.fulfill({ json: { version: 1, armed, mode } });
     });
-    await simulator(page);
+    await observedFeed(page);
     await page.getByRole("button", { name: "2D", exact: true }).click();
     await workspaceAction(page, "Connection settings");
-    await page.getByRole("button", { name: /External feed Connect/ }).click();
     await page.getByLabel("Enable REST commands").check();
     await page
       .getByLabel("Telemetry WebSocket")
@@ -115,16 +114,14 @@ for (const interrupt of ["release", "stop"] as const) {
 test("map fills the viewport, retained panels are optional, and search does not steer", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   await expect(page.locator(".workspace-drawer")).toHaveCount(0);
   const viewport = page.viewportSize()!;
   const bounds = (await page.locator(".scene-canvas").boundingBox())!;
   expect(bounds.width).toBe(viewport.width);
   expect(bounds.height).toBe(viewport.height);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await panel(page, "Spatial memory");
   await page.getByRole("textbox", { name: "Search objects" }).focus();
   const before = await page
@@ -206,10 +203,9 @@ test("failed Arm response reasserts Stop after the backend applied it", async ({
     }
     return route.fulfill({ json: { version: 1, armed } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");
@@ -251,9 +247,8 @@ test("compact Stop remains available while reconnect has no current health", asy
     stops++;
     return route.fulfill({ json: { version: 1, armed: false } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");

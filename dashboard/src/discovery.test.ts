@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { Simulator, makeRoomPoints } from "./simulator";
+import { Simulator, makeRoomPoints } from "../tests/fixtures/simulator";
 import { decodeCells } from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
 it("starts unknown and accumulates only newly observed points within range", () => {

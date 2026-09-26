@@ -5,7 +5,7 @@
 Build a polished desktop browser workspace for the ShellHacks indoor mapping rover.
 The user authorized a comprehensive spec, a simulator, and implementation on September 26, 2026.
 Optimize for a compelling end-to-end demonstration, visual clarity, and dependable interaction.
-This specification covers the dashboard and its local simulator, not physical actuation or backend perception implementation.
+This specification covers the dashboard, not physical actuation or backend perception implementation. [REAL_DATA.md](REAL_DATA.md) supersedes historical simulator requirements: production displays only received backend observations.
 
 Read these sources whenever intent or integration is uncertain:
 
@@ -37,7 +37,7 @@ Pair clean sans-serif interface text with monospace telemetry.
 Keep the scene legible and immersive using a perspective floor grid, sampled colored room geometry, object markers, a rover heading, and trajectory.
 Avoid decorative charts, fictitious telemetry, excessive precision, and unsupported battery or coverage claims.
 All states have text labels in addition to color.
-Use locally bundled fonts, CSS, vector icons, and programmatic geometry so the core demo works without internet access.
+Use locally bundled fonts, CSS, vector icons, and received geometry so the workspace requires no external presentation assets.
 
 ## Layout and navigation
 
@@ -66,24 +66,20 @@ Occupancy decodes base64 uint8 cells, validates dimensions, and distinguishes un
 Top-down view shares the same spatial data and supports explicit goal placement in Navigate mode.
 3D orbit, zoom, reset, and layer visibility controls are functional.
 A moved-object selection shows an amber dashed connection between the old and new positions plus displacement.
-Only simulation adds known room furniture forms; real feeds never inherit simulation geometry.
+No room or furniture geometry is invented; only received observations are displayed.
 If WebGL fails, provide an actionable fallback and a usable 2D map while preserving Stop and connection controls.
 
 ## Data, trust, and connection behavior
 
-Start in an explicitly labeled local simulation with a populated staged room and disarmed simulated rover.
-Never silently fall back to simulation after real connection failure.
-Source choices are Local simulator and External feed.
-External mode accepts a configurable ws/wss URL and separate http/https API base.
-The default real backend is localhost:8765; the documented existing fake-live feed is localhost:8766/live and has no REST server.
-Settings must make telemetry-only operation possible by disabling command transport.
-Validate supported versions, finite coordinates, payload bounds, enum values, and occupancy dimensions before state updates.
-Ignore unknown message types; malformed messages cannot crash the UI.
+Start with an empty scene and the configured backend connection; REST commands are disabled by default.
+Never generate fallback data after connection failure.
+Connection settings exposes backend addresses and command permission, with no demo or synthetic-source option.
+The default backend is localhost:8765.
 Show connecting, connected, reconnecting, disconnected, and stale states.
 Mark data stale when health is not refreshed for 2 seconds; inhibit ordinary motion controls until fresh telemetry returns.
-Reconnect with bounded retry delays, cancel old listeners/timers on source changes, and clear spatial state on a new connection to avoid mixing uncertain epochs.
+Reconnect with bounded retry delays and cancel old listeners/timers on backend changes. Preserve received history through same-map reconnection, require identity confirmation before resuming, and clear spatial state when the backend configuration or map identity changes.
 Keep real backend health authoritative and separate from transport connection state.
-A successful local /session clears scene state.
+A successful backend /session acknowledgement clears scene state.
 Consume the backend's documented optional session_id/map_epoch fields on points, objects, and events to clear spatial state on backend-initiated map changes.
 
 ## Two-way commands
@@ -101,23 +97,13 @@ New session requires an explicit confirmation because it clears the current disp
 Export downloads a clearly scoped dashboard snapshot of received data; it is not a full backend session export.
 Do not implement any direct car, serial, motor, or vendor command protocol.
 
-## Local simulator
+## Test fixtures
 
-The simulator runs in-process behind the same typed command/message interface as an external backend.
-No simulator action performs a network or hardware command.
-Provide a deterministic hidden furnished room with five potential objects and a rover pose.
-Start with zero observed points, unknown occupancy, and no observed objects.
-Discover points and objects incrementally within the simulated five-meter view, preserve previously observed geometry, and pause discovery on tracking loss.
-Never render hidden room or furniture geometry before observation.
-Object browsing lives in an expandable Spatial Memory panel; there is no separate inventory page.
-See [progressive discovery](DISCOVERY.md) for behavior and validation.
-Objects include a distinctive backpack, chair, plant, bottle, and laptop.
-Simulated arm, manual motion, mode switches, goal navigation, stop, new session, and rescan update coherent simulated state and emit v1 messages.
-Simulated health may show virtual components healthy but every screen and export identifies the source as simulation.
-The relocation demonstration begins from a stopped state: rescan captures a baseline and publishes the backpack's new position and moved event after a brief scanning interval.
-Use a consistent initial position, relocation distance, and stable object identity.
-Offer tracking-loss injection and recovery to verify controls and fault presentation.
-No battery measurement, raw RGB feed, calibrated geometry, or real-world accuracy is invented.
+The former local simulator exists only under automated test fixtures, never in the production app or its source choices.
+Deterministic protocol fixtures validate controls, discovery, and fault handling without hardware.
+Startup without observations has no generated objects, pose, scope, trajectory, health, or geometry.
+Previously received scans remain visible on disconnect, with stale/disconnected status.
+See [REAL_DATA.md](REAL_DATA.md) for the current source policy and [progressive discovery](DISCOVERY.md) for observation behavior.
 
 ## Deferred API coordination
 
@@ -137,18 +123,20 @@ See [the backend integration increment](INTEGRATION.md) for implemented support 
 ## Acceptance criteria
 
 - The app installs, type-checks, and builds with documented commands and pinned lockfile dependencies.
-- The default simulator presents a finished, cohesive desktop interface without external assets or services.
+- Startup without a backend remains empty and waiting, with view controls available.
 - Users can select/search objects, inspect data, switch 3D/2D, toggle layers, and reset the view.
-- The relocation demo visibly links old/new backpack locations with an event and accurate simulated displacement.
-- Simulated controls change state; Stop, tracking loss, release, and focus loss end simulated motion.
-- External fake_live.py renders all seven message families and its labeled synthetic relocation without relying on simulator geometry.
+- Received moved-object events link old/new locations and their reported displacement.
+- Controls use the configured backend; Stop, tracking loss, release, and focus loss end held commands.
+- Isolated test fixtures exercise all seven message families without production-generated geometry.
 - Real backend mode shows its actual disarmed/unavailable state and endpoint errors truthfully.
 - Invalid messages, unsupported types, duplicate chunks, oversized payloads, and dropped connections are handled without crashes or unbounded memory.
 - Keyboard focus, button labels, dialogs, reduced motion, and usable narrow-screen layout are verified.
-- Unit/integration tests cover protocol validation, bounded state, simulator command behavior, and deadman control.
-- Browser tests cover the primary demo, source switching, external telemetry, Stop, and error states; screenshots are inspected for layout and rendering defects.
+- Unit/integration tests cover protocol validation, bounded state, command behavior, and deadman control.
+- Browser tests cover empty startup, backend switching, external telemetry, Stop, and error states; screenshots are inspected for layout and rendering defects.
 
-## Implementation sequence
+## Historical implementation sequence
+
+The initial sequence below records the original build; the current source behavior is governed by REAL_DATA.md.
 
 1. Commit this spec and the execution plan before product implementation.
 2. Build and test typed protocol/state, simulator, and command transport.

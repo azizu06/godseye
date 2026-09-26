@@ -1,4 +1,9 @@
-import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
+import {
+  observedFeed,
+  panel,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { capture } from "./captureFixture";
@@ -82,9 +87,8 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
       },
     });
   });
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");

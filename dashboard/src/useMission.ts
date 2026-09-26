@@ -1,4 +1,3 @@
-import type { SurfacePatch } from "./surfaceTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseMessage,
@@ -8,7 +7,6 @@ import {
   type Message,
 } from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
-import { Simulator } from "./simulator";
 import { DirectionalSteering, type SteeringDirection } from "./steering";
 import {
   defaultConfig,
@@ -20,7 +18,7 @@ import {
 export function useMission() {
   const [config, setConfig] = useState<ConnectionConfig>(defaultConfig);
   const [mission, setMission] = useState(emptyMission);
-  const [connection, setConnection] = useState("connected");
+  const [connection, setConnection] = useState("connecting");
   const [mapConfirmed, setMapConfirmed] = useState(false);
   const confirmedMap = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -32,7 +30,6 @@ export function useMission() {
   const [lastKnownArmed, setLastKnownArmed] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [startedAt, setStartedAt] = useState(Date.now());
-  const simulator = useRef<Simulator | null>(null);
   const manual = useRef<ManualController | null>(null);
   const generation = useRef(0);
   const stopEpoch = useRef(0);
@@ -40,7 +37,6 @@ export function useMission() {
   const controlEpoch = useRef(0);
   const controlBusy = useRef<number | null>(null);
   const heldDirection = useRef<SteeringDirection | null>(null);
-  const [simSurface, setSimSurface] = useState<SurfacePatch | null>(null);
   const [steeringDirection, setSteeringDirection] =
     useState<SteeringDirection | null>(null);
   const directional = useRef<DirectionalSteering | null>(null);
@@ -84,7 +80,7 @@ export function useMission() {
     cancelControl();
     controlBusy.current = null;
     activeMap.current = null;
-    confirmedMap.current = source === "simulator";
+    confirmedMap.current = false;
     setMapConfirmed(confirmedMap.current);
     stopEpoch.current++;
     let disposed = false,
@@ -93,29 +89,11 @@ export function useMission() {
       attempt = 0;
     manual.current?.stop();
     setMission(emptyMission());
-    setSimSurface(null);
     setStartedAt(Date.now());
     setPending(null);
     setUnconfirmedMotion(false);
     setLastKnownArmed(false);
     latchStop(true);
-    if (source === "simulator") {
-      const sim = new Simulator();
-      simulator.current = sim;
-      setConnection("connected");
-      receive(sim.snapshot(true));
-      const interval = setInterval(() => {
-        sim.tick(0.1);
-        receive(sim.snapshot());
-        setSimSurface(sim.getSurface());
-      }, 100);
-      return () => {
-        clearInterval(interval);
-        manual.current?.stop();
-        simulator.current = null;
-      };
-    }
-    simulator.current = null;
     const connect = () => {
       if (disposed) return;
       setConnection(attempt ? "reconnecting" : "connecting");
@@ -272,28 +250,13 @@ export function useMission() {
       body?: Record<string, unknown>,
       signal?: AbortSignal,
     ) => {
-      // Keep Stop actionable across every arming path and acknowledgement gap.
-      if (path === "/arm" || path === "/stop") setUnconfirmedMotion(true);
-      if (config.source === "simulator") {
-        if (!simulator.current) throw Error("Simulator is starting.");
-        const result = simulator.current.command(path, body);
-        if (path === "/session") {
-          setMission(emptyMission());
-          setSimSurface(null);
-          setStartedAt(Date.now());
-        }
-        receive(simulator.current.snapshot(path === "/session"));
-        setSimSurface(simulator.current.getSurface());
-        if (path === "/stop") {
-          setUnconfirmedMotion(false);
-          setLastKnownArmed(false);
-        }
-        return result;
-      }
       if (!config.commands)
         throw Error(
           "This feed is telemetry only. Configure a REST API to send commands.",
         );
+      // Only an attempted command creates uncertainty. A telemetry-only local
+      // rejection sends nothing and must not invent an outstanding motion state.
+      if (path === "/arm" || path === "/stop") setUnconfirmedMotion(true);
       const gen = generation.current;
       const requestedMap = activeMap.current;
       const result = await sendCommand(config.apiUrl, path, body, signal);
@@ -372,7 +335,7 @@ export function useMission() {
     !stopLatched &&
     !pending &&
     mission.health?.armed === true &&
-    (config.source === "simulator" || config.commands);
+    config.commands;
   useEffect(() => {
     if (mission.health) {
       setLastKnownArmed(mission.health.armed);
@@ -484,15 +447,6 @@ export function useMission() {
     },
     [send, notify, config.source, cancelControl, latchStop],
   );
-  const trackingFault = () => {
-    const sim = simulator.current;
-    if (sim) {
-      cancelControl();
-      sim.setTracking(!sim.tracking);
-      manual.current?.stop();
-      receive(sim.snapshot());
-    }
-  };
   const handoff = useCallback(
     async (
       mode: "manual" | "navigate",
@@ -635,7 +589,6 @@ export function useMission() {
   };
   return {
     mission,
-    simSurface,
     rescanBaseline,
     historyStatus,
     config,
@@ -657,7 +610,6 @@ export function useMission() {
     releaseSteering,
     navigate,
     release: cancelControl,
-    trackingFault,
   };
 }
 export type MissionController = ReturnType<typeof useMission>;

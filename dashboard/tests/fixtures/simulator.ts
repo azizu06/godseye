@@ -1,6 +1,6 @@
-import { LIDAR_RANGE_M } from "./sensorProfile";
+import { LIDAR_RANGE_M } from "../../src/sensorProfile";
 import { makeRoomSurfaces, SurfaceDiscovery } from "./simulatorSurfaces";
-import type { SurfacePatch } from "./surfaceTypes";
+import type { SurfacePatch } from "../../src/surfaceTypes";
 import {
   type ChangeEvent,
   type Health,
@@ -8,7 +8,7 @@ import {
   type Mode,
   type Vec3,
   type WorldObject,
-} from "./protocol";
+} from "../../src/protocol";
 
 export const ROOM = { width: 8, depth: 6 };
 export const FURNITURE: { position: Vec3; size: Vec3; color: string }[] = [

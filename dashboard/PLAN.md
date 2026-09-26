@@ -1,5 +1,7 @@
 # Dashboard implementation plan
 
+> Current production source policy: [REAL_DATA.md](REAL_DATA.md). Earlier simulator/demo descriptions below apply only to retained test fixtures; the product generates no observations.
+
 **Goal:** Deliver the desktop spatial-memory experience defined in [SPEC.md](SPEC.md).
 **Architecture:** A React workspace consumes validated v1 messages through either an in-process simulator or a WebSocket/REST transport.
 A bounded state store supplies a Three.js scene and semantic inspection panels.

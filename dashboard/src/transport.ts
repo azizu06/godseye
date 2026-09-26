@@ -1,17 +1,16 @@
 export interface ConnectionConfig {
-  source: "simulator" | "external";
+  source: "external";
   wsUrl: string;
   apiUrl: string;
   commands: boolean;
 }
 export const defaultConfig: ConnectionConfig = {
-  source: "simulator",
+  source: "external",
   wsUrl: "ws://localhost:8765/live",
   apiUrl: "http://localhost:8765",
-  commands: true,
+  commands: false,
 };
 export function validateConfig(config: ConnectionConfig): string | null {
-  if (config.source === "simulator") return null;
   try {
     if (!["ws:", "wss:"].includes(new URL(config.wsUrl).protocol))
       return "Use a ws:// or wss:// telemetry address.";

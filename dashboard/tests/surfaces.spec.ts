@@ -1,4 +1,9 @@
-import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
+import {
+  observedFeed,
+  panel,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { capture } from "./captureFixture";
@@ -82,10 +87,10 @@ function verifyCompressedCapture(
   for (let y = -0.3; y < 2.4; y += 0.2)
     for (let x = -1.8; x < 1.9; x += 0.2) expect(sample(x, y)).not.toBeNull();
 }
-test("default solid surfaces discover progressively and point cloud remains optional", async ({
+test("received solid surfaces render and point cloud remains optional", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   await panel(page, "Scene settings");
   await expect(page.getByTestId("surface-status")).toContainText(
     /color triangles/,
@@ -191,9 +196,8 @@ for (const version of [1, 2])
       }
       return route.fulfill({ json: { version: 1, ok: true } });
     });
-    await simulator(page);
+    await observedFeed(page);
     await workspaceAction(page, "Connection settings");
-    await page.getByRole("button", { name: /External feed Connect/ }).click();
     await page.getByLabel("Enable REST commands").check();
     await page
       .getByLabel("Telemetry WebSocket")
