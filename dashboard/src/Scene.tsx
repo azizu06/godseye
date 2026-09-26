@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { Edges, Grid, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 import type { Mission } from "./state";
 import { decodeCells, type WorldObject } from "./protocol";
-import { FURNITURE } from "./simulator";
 import { ProjectLabels, useSceneLabels } from "./SceneLabels";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 
@@ -39,6 +38,7 @@ export interface SceneProps {
   simulated: boolean;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
+  onViewYaw?: (yaw: number) => void;
 }
 interface Layers {
   points: boolean;
@@ -47,9 +47,22 @@ interface Layers {
   occupancy: boolean;
 }
 
-function Controls({ tool, reset }: { tool: "orbit" | "pan"; reset: number }) {
+function Controls({
+  tool,
+  reset,
+  onViewYaw,
+}: {
+  tool: "orbit" | "pan";
+  reset: number;
+  onViewYaw?: (yaw: number) => void;
+}) {
   const ref = useRef<OrbitControlsImpl>(null);
   const { camera } = useThree();
+  const direction = useRef(new THREE.Vector3());
+  useFrame(() => {
+    camera.getWorldDirection(direction.current);
+    onViewYaw?.(Math.atan2(-direction.current.x, -direction.current.z));
+  });
   useEffect(() => {
     camera.position.set(7.3, 6.5, 8.2);
     ref.current?.target.set(0, 0.2, 0);
@@ -226,23 +239,37 @@ function Trajectory({ mission }: { mission: Mission }) {
 function World({
   mission,
   selected,
-  simulated,
   layers,
+  canGoal,
+  onGoal,
 }: {
   mission: Mission;
   selected: string | null;
-  simulated: boolean;
   layers: Layers;
+  canGoal: boolean;
+  onGoal: (x: number, z: number) => void;
 }) {
   const selectedEvent = mission.events
     .filter(
       (e) =>
-        e.object_id === selected &&
+        (e.object_id === selected || e.new_object_id === selected) &&
         (e.kind === "moved" || e.kind === "possible_move"),
     )
     .at(-1);
   return (
     <>
+      {canGoal && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, -0.01, 0]}
+          onClick={(e) => {
+            if (e.button === 0 && e.delta < 4) onGoal(e.point.x, e.point.z);
+          }}
+        >
+          <planeGeometry args={[40, 40]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
       <ambientLight intensity={1.5} />
       <directionalLight position={[4, 8, 3]} intensity={2} />
       <Grid
@@ -258,59 +285,6 @@ function World({
         fadeStrength={1.6}
         infiniteGrid
       />
-      {simulated && (
-        <group>
-          <mesh position={[0, -0.09, 0]}>
-            <boxGeometry args={[8.12, 0.12, 6.12]} />
-            <meshStandardMaterial color="#101e26" roughness={0.9} />
-            <Edges color="#466774" />
-          </mesh>
-          {FURNITURE.map((f, i) => (
-            <mesh key={i} position={f.position}>
-              <boxGeometry args={f.size} />
-              <meshStandardMaterial
-                color={f.color}
-                transparent
-                opacity={0.15}
-                roughness={0.8}
-              />
-              <Edges color="#517987" threshold={20} />
-            </mesh>
-          ))}
-          <Line
-            points={[
-              [-4, 0, 3],
-              [-4, 0, -3],
-              [4, 0, -3],
-              [4, 0, 3],
-              [-4, 0, 3],
-            ]}
-            color="#7697a2"
-            lineWidth={1}
-          />
-          <Line
-            points={[
-              [-4, 2.3, 3],
-              [-4, 2.3, -3],
-              [4, 2.3, -3],
-            ]}
-            color="#385663"
-            lineWidth={0.8}
-          />
-          {[
-            [-4, 0, 3],
-            [-4, 0, -3],
-            [4, 0, -3],
-          ].map((p, i) => (
-            <Line
-              key={i}
-              points={[p as [number, number, number], [p[0], 2.3, p[2]]]}
-              color="#385663"
-              lineWidth={0.8}
-            />
-          ))}
-        </group>
-      )}
       {layers.points && <Cloud mission={mission} />}
       {layers.occupancy && <OccupancyMesh mission={mission} />}
       {layers.trajectory && <Trajectory mission={mission} />}
@@ -470,7 +444,12 @@ export function Map2D({
         grid ? grid.origin[1] + grid.height * grid.cell_m : 0,
       ) + 0.6;
   const last = mission.events
-    .filter((e) => e.object_id === selected && e.old_position && e.new_position)
+    .filter(
+      (e) =>
+        (e.object_id === selected || e.new_object_id === selected) &&
+        e.old_position &&
+        e.new_position,
+    )
     .at(-1);
   return (
     <svg
@@ -675,6 +654,9 @@ export default function Scene(props: SceneProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+  useEffect(() => {
+    if (view === "2d") props.onViewYaw?.(0);
+  }, [view, props.onViewYaw]);
   const count = props.mission.chunks.reduce(
     (n, c) => n + c.positions.length / 3,
     0,
@@ -707,6 +689,7 @@ export default function Scene(props: SceneProps) {
           <button
             title="Scene layers"
             aria-label="Scene layers"
+            disabled={view === "2d"}
             className={`icon-button ${layerMenu ? "active" : ""}`}
             onClick={() => setLayerMenu(!layerMenu)}
           >
@@ -715,6 +698,7 @@ export default function Scene(props: SceneProps) {
           <button
             title="Reset view · Home"
             aria-label="Reset view"
+            disabled={view === "2d"}
             className="icon-button"
             onClick={() => setReset((x) => x + 1)}
           >
@@ -751,7 +735,7 @@ export default function Scene(props: SceneProps) {
               <Suspense fallback={null}>
                 <World {...props} layers={layers} />
               </Suspense>
-              <Controls tool={tool} reset={reset} />
+              <Controls tool={tool} reset={reset} onViewYaw={props.onViewYaw} />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>
@@ -779,7 +763,7 @@ export default function Scene(props: SceneProps) {
           {props.simulated ? "THE STUDIO" : "CURRENT SESSION"}
           <small>
             {props.simulated
-              ? "8.0 × 6.0 m · staged environment"
+              ? "5 m LiDAR · viewing angle uncalibrated"
               : "ARKit world coordinates · meters"}
           </small>
           {props.mission.pose && (
@@ -811,6 +795,7 @@ export default function Scene(props: SceneProps) {
           <div className="scene-toolbox">
             <button
               aria-label="Orbit tool"
+              disabled={view === "2d"}
               title="Orbit · middle mouse drag"
               className={tool === "orbit" ? "active" : ""}
               onClick={() => setTool("orbit")}
@@ -819,6 +804,7 @@ export default function Scene(props: SceneProps) {
             </button>
             <button
               aria-label="Pan tool"
+              disabled={view === "2d"}
               title="Pan · Shift + middle mouse drag"
               className={tool === "pan" ? "active" : ""}
               onClick={() => setTool("pan")}
@@ -828,6 +814,7 @@ export default function Scene(props: SceneProps) {
             <span />
             <button
               aria-label="View controls help"
+              disabled={view === "2d"}
               onClick={() => setHelp(!help)}
             >
               <HelpCircle size={17} />
@@ -854,7 +841,7 @@ export default function Scene(props: SceneProps) {
             <Crosshair size={22} />
           </div>
         </div>
-        {layerMenu && (
+        {view === "3d" && layerMenu && (
           <div className="scene-popover layers-popover">
             <h4>Scene layers</h4>
             {(Object.keys(layers) as (keyof Layers)[]).map((key) => (
@@ -875,7 +862,7 @@ export default function Scene(props: SceneProps) {
             ))}
           </div>
         )}
-        {help && (
+        {view === "3d" && help && (
           <div className="scene-popover help-popover">
             <h4>Find your perspective</h4>
             <p>
@@ -899,7 +886,8 @@ export default function Scene(props: SceneProps) {
       </div>
       <div className="scene-footer">
         <span>
-          <i className="legend-point" /> Point cloud
+          <i className="legend-point" />{" "}
+          {view === "3d" ? "Point cloud" : "Occupancy"}
         </span>
         <span>
           <i className="legend-rover" /> Rover / phone

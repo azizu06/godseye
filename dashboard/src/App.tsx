@@ -3,25 +3,17 @@ import {
   Activity,
   ArrowRight,
   Box,
-  Check,
   ChevronDown,
-  ChevronRight,
   CircleHelp,
-  Clock3,
-  Cpu,
+  Crosshair,
   Download,
-  Eye,
   Focus,
-  LayoutDashboard,
-  MapPin,
+  Navigation,
   Plus,
-  Radio,
   ScanLine,
   Settings2,
   ShieldAlert,
-  Smartphone,
   Square,
-  Wifi,
   X,
 } from "lucide-react";
 import Scene from "./Scene";
@@ -36,12 +28,17 @@ import {
   Settings,
 } from "./components";
 
+type Panel = "memory" | "intelligence" | "activity" | "controls";
+const panels = [
+  { id: "memory", label: "Spatial memory", icon: Box },
+  { id: "intelligence", label: "Object intelligence", icon: Focus },
+  { id: "activity", label: "Recent activity", icon: Activity },
+  { id: "controls", label: "Rover controls", icon: Navigation },
+] as const;
 export default function App() {
   const controller = useMission();
   const {
     mission,
-    rescanBaseline,
-    historyStatus,
     config,
     setConfig,
     connection,
@@ -51,456 +48,259 @@ export default function App() {
     notice,
     notify,
     now,
-    startedAt,
     trackingFault,
+    historyStatus,
+    rescanBaseline,
   } = controller;
-  const [tab, setTab] = useState<"overview" | "objects" | "activity">(
-      "overview",
-    ),
-    [selected, setSelected] = useState<string | null>("sim-backpack"),
-    [settings, setSettings] = useState(false),
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [settings, setSettings] = useState(false),
     [newSession, setNewSession] = useState(false),
-    [help, setHelp] = useState(false);
-  const [rescanBusy, setRescanBusy] = useState(false);
-  const simulated = config.source === "simulator",
-    object = mission.objects.find((o) => o.id === selected),
-    moves = mission.events.filter((e) => e.kind === "moved");
-  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000)),
-    duration = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
-  const select = (id: string) => setSelected(id);
-  const rescan = async () => {
-    setRescanBusy(true);
-    const ok = await command("/rescan");
-    if (ok) {
-      setSelected(simulated ? "sim-backpack" : selected);
-      setTab("overview");
-      if (simulated) notify("Revisiting the baseline. Watch the backpack…");
-    }
-    if (simulated && ok) setTimeout(() => setRescanBusy(false), 3000);
-    else setRescanBusy(false);
-  };
+    [help, setHelp] = useState(false),
+    [rescanBusy, setRescanBusy] = useState(false);
+  const simulated = config.source === "simulator";
+  const object = mission.objects.find((o) => o.id === selected);
   const sourceLabel = simulated
     ? "Simulation"
     : mission.health?.stop_reason?.toLowerCase().includes("synthetic")
       ? "Synthetic feed"
       : "External feed";
+  const select = (id: string) => {
+    setSelected(id);
+    setPanel("intelligence");
+  };
+  const rescan = async () => {
+    setRescanBusy(true);
+    const ok = await command("/rescan");
+    if (ok && simulated) {
+      setSelected("sim-backpack");
+      setPanel("intelligence");
+      notify("Revisiting the baseline. Watch the backpack…");
+      setTimeout(() => setRescanBusy(false), 3000);
+    } else setRescanBusy(false);
+  };
   return (
-    <div className="app-shell">
-      <aside className="nav-rail">
-        <a
-          className="brand-mark"
-          href="#"
-          aria-label="God's Eye overview"
-          onClick={(e) => {
-            e.preventDefault();
-            setTab("overview");
-          }}
+    <main className="immersive-shell">
+      <h1 className="sr-only">Godseye spatial workspace</h1>
+      <Scene
+        mission={mission}
+        selected={selected}
+        onSelect={select}
+        simulated={simulated}
+        canGoal={controller.canDrive && mission.health?.mode !== "explore"}
+        onGoal={(x, z) => void controller.navigate(x, z)}
+        onViewYaw={controller.setViewYaw}
+      />
+      <div
+        className="workspace-actions heading-actions"
+        aria-label="Workspace actions"
+      >
+        <button
+          className={`source-button ${simulated ? "simulated" : ""}`}
+          onClick={() => setSettings(true)}
+          aria-label="Connection settings"
         >
-          <Eye size={25} />
-        </a>
-        <div className="rail-divider" />
-        <nav aria-label="Workspace">
+          <span className="live-dot" />
+          {sourceLabel}
+          <ChevronDown size={13} />
+        </button>
+        <button className="stop-button" onClick={() => void command("/stop")}>
+          <Square size={13} fill="currentColor" /> STOP ROVER
+        </button>
+        <button
+          className="button subtle"
+          aria-label="Export snapshot"
+          title="Export snapshot"
+          onClick={() => exportMission(controller)}
+        >
+          <Download size={15} />
+          <span>Export snapshot</span>
+        </button>
+        <button
+          className="button secondary"
+          aria-label="New session"
+          title="New session"
+          onClick={() => setNewSession(true)}
+        >
+          <Plus size={16} />
+          <span>New session</span>
+        </button>
+      </div>
+      <div className="workspace-state">
+        <span className={`state-pill ${stale ? "amber" : ""}`}>
+          <i />
+          {connection === "reconnecting"
+            ? "Reconnecting…"
+            : connection === "connecting"
+              ? "Connecting…"
+              : stale
+                ? "Telemetry stale"
+                : "Receiving telemetry"}
+        </span>
+        <span>
+          {!stale && mission.pose?.tracking === "normal"
+            ? "Tracking normal"
+            : "Tracking unavailable"}
+        </span>
+      </div>
+      <nav className="workspace-panels" aria-label="Workspace panels">
+        {panels.map(({ id, label, icon: Icon }) => (
           <button
-            className={tab === "overview" ? "active" : ""}
-            title="Overview"
-            aria-label="Overview"
-            onClick={() => setTab("overview")}
+            key={id}
+            className={panel === id ? "active" : ""}
+            aria-label={label}
+            aria-expanded={panel === id}
+            onClick={() => setPanel(panel === id ? null : id)}
           >
-            <LayoutDashboard size={21} />
+            <Icon size={17} />
+            <span>{label}</span>
+            {id === "memory" && <small>{mission.objects.length}</small>}
           </button>
-          <button
-            className={tab === "objects" ? "active" : ""}
-            title="Object inventory"
-            aria-label="Object inventory"
-            onClick={() => setTab("objects")}
-          >
-            <Box size={21} />
-          </button>
-          <button
-            className={tab === "activity" ? "active" : ""}
-            title="Activity"
-            aria-label="Activity"
-            onClick={() => setTab("activity")}
-          >
-            <Activity size={21} />
-            {moves.length > 0 && <i className="rail-notification" />}
-          </button>
-        </nav>
-        <div className="rail-bottom">
-          <button
-            title="Workspace help"
-            aria-label="Workspace help"
-            onClick={() => setHelp(true)}
-          >
-            <CircleHelp size={20} />
-          </button>
-          <button
-            title="Connection settings"
-            aria-label="Connection settings"
-            onClick={() => setSettings(true)}
-          >
-            <Settings2 size={20} />
-          </button>
-          <div className="avatar">GE</div>
-        </div>
-      </aside>
-      <div className="workspace">
-        <header className="topbar">
-          <div className="brand">
-            <span>GOD’S EYE</span>
-            <span className="brand-separator" />
-            <small>Spatial intelligence</small>
-          </div>
-          <div className="topbar-right">
+        ))}
+        <button aria-label="Workspace help" onClick={() => setHelp(true)}>
+          <CircleHelp size={17} />
+        </button>
+      </nav>
+      {panel && (
+        <aside
+          className="workspace-drawer"
+          aria-label={`${panels.find((p) => p.id === panel)?.label} panel`}
+        >
+          <div className="drawer-heading">
+            <span className="eyebrow">
+              {panels.find((p) => p.id === panel)?.label}
+            </span>
             <button
-              className={`source-button ${simulated ? "simulated" : ""}`}
-              onClick={() => setSettings(true)}
+              className="icon-button"
+              aria-label="Close panel"
+              onClick={() => setPanel(null)}
             >
-              <span className="live-dot" />
-              {sourceLabel}
-              <ChevronDown size={13} />
-            </button>
-            <span className="header-divider" />
-            <button
-              className="stop-button"
-              onClick={() => void command("/stop")}
-            >
-              <Square size={13} fill="currentColor" /> STOP ROVER
+              <X size={17} />
             </button>
           </div>
-        </header>
-        <main>
-          <div className="page-heading">
-            <div>
-              <div className="breadcrumb">
-                WORKSPACE <ChevronRight size={11} /> SESSION 01
+          {panel === "memory" && (
+            <section className="objects-panel">
+              <div className="section-heading">
+                <h2>Spatial memory</h2>
+                <span className="count-badge">{mission.objects.length}</span>
               </div>
-              <h1>
-                {tab === "overview"
-                  ? "A room. Remembered."
-                  : tab === "objects"
-                    ? "Everything, in its place."
-                    : "Every change tells a story."}
-              </h1>
-              <p>
-                {tab === "overview"
-                  ? "See your space. Understand what changed."
-                  : tab === "objects"
-                    ? "A living inventory of the objects in your world."
-                    : "An observation history of your spatial world."}
+              <ObjectList
+                objects={mission.objects}
+                selected={selected}
+                onSelect={select}
+              />
+              <p className="drawer-note">
+                Objects appear as they are observed. Select one to inspect its
+                evidence.
               </p>
-            </div>
-            <div className="heading-actions">
-              <button
-                className="button subtle"
-                onClick={() => exportMission(controller)}
-              >
-                <Download size={15} />
-                Export snapshot
-              </button>
-              <button
-                className="button secondary"
-                onClick={() => setNewSession(true)}
-              >
-                <Plus size={16} />
-                New session
-              </button>
-            </div>
-          </div>
-          <div className="status-strip">
-            <div className="session-status">
-              <span className={`status-orb ${stale ? "warn" : ""}`}>
-                <Radio size={17} />
-              </span>
-              <div>
-                <strong>
-                  {simulated
-                    ? "The Studio"
-                    : sourceLabel === "Synthetic feed"
-                      ? "Synthetic session"
-                      : "Live workspace"}
-                </strong>
-                <span>
-                  {stale
-                    ? connection === "connected"
-                      ? "Telemetry stale"
-                      : connection === "reconnecting"
-                        ? "Reconnecting…"
-                        : connection === "connecting"
-                          ? "Connecting…"
-                          : "Disconnected"
-                    : simulated
-                      ? "Local simulation · no hardware"
-                      : "Receiving telemetry"}
-                </span>
+            </section>
+          )}
+          {panel === "intelligence" && (
+            <Inspector
+              object={object}
+              events={mission.events}
+              now={now}
+              onFocus={() => setPanel(null)}
+            />
+          )}
+          {panel === "activity" && (
+            <section className="activity-panel">
+              <div className="section-heading">
+                <h3 title={historyStatus}>Recent activity</h3>
+                <span className="count-badge">{mission.events.length}</span>
               </div>
-            </div>
-            <div className="strip-divider" />
-            <div className="stat-block">
-              <Box size={16} />
-              <div>
-                <span>OBJECTS</span>
-                <strong>
-                  {mission.objects.length}
-                  <small> recognized</small>
-                </strong>
-              </div>
-            </div>
-            <div className="stat-block">
-              <ScanLine size={17} />
-              <div>
-                <span>CHANGES</span>
-                <strong className={moves.length ? "amber-text" : ""}>
-                  {moves.length}
-                  <small>
-                    {" "}
-                    {moves.length === 1 ? "relocation" : "relocations"}
-                  </small>
-                </strong>
-              </div>
-            </div>
-            <div className="stat-block">
-              <Focus size={17} />
-              <div>
-                <span>TRACKING</span>
-                <strong
-                  className={
-                    !stale && mission.pose?.tracking === "normal"
-                      ? "mint-text"
-                      : "amber-text"
-                  }
-                >
-                  {stale
-                    ? "Unavailable"
-                    : mission.pose?.tracking === "normal"
-                      ? "Normal"
-                      : mission.pose?.tracking === "limited"
-                        ? "Limited"
-                        : "Unavailable"}
-                </strong>
-              </div>
-            </div>
-            <div className="stat-block session-clock">
-              <Clock3 size={16} />
-              <div>
-                <span>SESSION TIME</span>
-                <strong>{duration}</strong>
-              </div>
-            </div>
-          </div>
-          <div className={`main-grid ${tab !== "overview" ? "alternate" : ""}`}>
-            <div className="main-column">
-              {tab === "overview" ? (
-                <>
-                  <Scene
-                    mission={mission}
-                    selected={selected}
-                    onSelect={select}
-                    simulated={simulated}
-                    canGoal={
-                      controller.canDrive && mission.health?.mode === "navigate"
-                    }
-                    onGoal={(x, z) => void command("/goal", { x, z })}
-                  />
-                  <div
-                    className={`demo-banner ${moves.length ? "changed" : ""}`}
-                  >
-                    <div className="demo-icon">
-                      <ScanLine size={23} />
-                    </div>
-                    <div>
-                      <span className="eyebrow">
-                        {simulated
-                          ? "EXPLORE SPATIAL MEMORY"
-                          : "REVISIT YOUR SPACE"}
-                      </span>
-                      <h3>
-                        {moves.length
-                          ? "Same object. A new chapter."
-                          : "What if something moved?"}
-                      </h3>
-                      <p>
-                        {simulated
-                          ? "Rescan the room to discover the backpack in a new location."
-                          : (rescanBaseline ??
-                            "Compare new observations with a saved baseline.")}
-                      </p>
-                    </div>
-                    <button
-                      className="button"
-                      disabled={
-                        rescanBusy ||
-                        !!pending ||
-                        mission.health?.armed ||
-                        stale ||
-                        (!simulated && !config.commands)
-                      }
-                      onClick={() => void rescan()}
-                    >
-                      {rescanBusy
-                        ? "Rescanning…"
-                        : simulated
-                          ? "Run relocation demo"
-                          : "Start rescan"}
-                      {rescanBusy ? (
-                        <ScanLine size={16} className="spin" />
-                      ) : (
-                        <ArrowRight size={16} />
-                      )}
-                    </button>
-                  </div>
-                  <OperatorControls controller={controller} />
-                </>
-              ) : (
-                <section className="collection-panel">
-                  <div className="section-heading">
-                    <div>
-                      {tab === "objects" ? (
-                        <Box size={17} />
-                      ) : (
-                        <Activity size={17} />
-                      )}
-                      <h3>
-                        {tab === "objects"
-                          ? "Object inventory"
-                          : "Session activity"}
-                      </h3>
-                      <span className="count-badge">
-                        {tab === "objects"
-                          ? mission.objects.length
-                          : mission.events.length}
-                      </span>
-                    </div>
-                    <span className="muted small">
-                      {simulated
-                        ? "Simulated observations"
-                        : "Received this connection"}
-                    </span>
-                  </div>
-                  {tab === "objects" ? (
-                    <ObjectList
-                      full
-                      objects={mission.objects}
-                      selected={selected}
-                      onSelect={select}
-                    />
-                  ) : (
-                    <EventList
-                      events={mission.events}
-                      objects={mission.objects}
-                      onSelect={(id) => {
-                        select(id);
-                      }}
-                    />
-                  )}
-                </section>
-              )}
-              <section className="activity-panel">
-                <div className="section-heading">
-                  <div>
-                    <Activity size={16} />
-                    <h3 title={historyStatus}>Recent activity</h3>
-                    <span className="count-badge">{mission.events.length}</span>
-                  </div>
+              <p className="drawer-note">{historyStatus}</p>
+              <EventList
+                events={mission.events}
+                objects={mission.objects}
+                onSelect={select}
+              />
+            </section>
+          )}
+          {panel === "controls" && (
+            <>
+              <OperatorControls controller={controller} />
+              <section className="demo-banner">
+                <ScanLine size={24} />
+                <div>
+                  <span className="eyebrow">
+                    {simulated ? "SIMULATED REVISIT" : "RESCAN BASELINE"}
+                  </span>
+                  <h3>Observe what changed.</h3>
+                  <p>
+                    {simulated
+                      ? "Revisit the backpack and compare its position."
+                      : (rescanBaseline ??
+                        "Save a baseline and watch new observations.")}
+                  </p>
                   <button
-                    className="text-button"
-                    onClick={() => setTab("activity")}
+                    className="button"
+                    disabled={
+                      rescanBusy ||
+                      !!pending ||
+                      mission.health?.armed ||
+                      stale ||
+                      (!simulated && !config.commands) ||
+                      (simulated &&
+                        !mission.objects.some((o) => o.id === "sim-backpack"))
+                    }
+                    onClick={() => void rescan()}
                   >
-                    View all <ArrowRight size={13} />
+                    {rescanBusy
+                      ? "Rescanning…"
+                      : simulated
+                        ? "Run relocation demo"
+                        : "Start rescan"}
+                    <ArrowRight size={14} />
                   </button>
                 </div>
-                <EventList
-                  compact
-                  events={mission.events}
-                  objects={mission.objects}
-                  onSelect={(id) => {
-                    select(id);
-                    setTab("overview");
-                  }}
-                />
               </section>
-            </div>
-            <aside className="right-column">
-              <section className="objects-panel">
-                <div className="section-heading">
-                  <div>
-                    <Box size={16} />
-                    <h3>Spatial memory</h3>
-                    <span className="count-badge">
-                      {mission.objects.length}
-                    </span>
-                  </div>
-                  <span className="live-dot" />
-                </div>
-                <ObjectList
-                  objects={mission.objects}
-                  selected={selected}
-                  onSelect={select}
-                />
-              </section>
-              <section className="inspector-panel">
-                <Inspector
-                  object={object}
-                  events={mission.events}
-                  now={now}
-                  onFocus={() => setTab("overview")}
-                />
-              </section>
-            </aside>
-          </div>
-          <footer className="workspace-footer">
-            <div className="health-items">
-              {(
-                [
-                  { key: "phone", label: "iPhone", icon: Smartphone },
-                  { key: "detector", label: "Perception", icon: Cpu },
-                  { key: "car", label: "Rover", icon: Wifi },
-                ] as const
-              ).map(({ key, label, icon: Icon }) => (
-                <span
-                  key={key}
-                  title={`${label}: ${stale ? "unavailable" : (mission.health?.[key] ?? "down")}`}
+              <div className="drawer-tools">
+                <button
+                  className="button subtle"
+                  onClick={() => setSettings(true)}
                 >
-                  <Icon size={12} />
-                  {label}
-                  <i
-                    className={
-                      !stale && mission.health?.[key] === "ok" ? "ok" : "down"
-                    }
-                  />
-                </span>
-              ))}
-            </div>
-            <span className="footer-note">
-              {simulated
-                ? "SIMULATED DATA · NO HARDWARE CONNECTED"
-                : mission.health?.stop_reason || "ARKit world frame · v1"}
-            </span>
-            {simulated ? (
-              <button className="text-button" onClick={trackingFault}>
-                {mission.pose?.tracking === "normal" ? (
-                  <ShieldAlert size={12} />
-                ) : (
-                  <Check size={12} />
-                )}{" "}
-                {mission.pose?.tracking === "normal"
-                  ? "Test tracking loss"
-                  : "Restore tracking"}
-              </button>
-            ) : (
-              <button className="text-button" onClick={() => setSettings(true)}>
-                Configure connection <Settings2 size={12} />
-              </button>
-            )}
-          </footer>
-        </main>
-      </div>
+                  <Settings2 size={14} /> Connection settings
+                </button>
+                {simulated && (
+                  <button className="button subtle" onClick={trackingFault}>
+                    <ShieldAlert size={14} />
+                    {mission.pose?.tracking === "normal"
+                      ? "Test tracking loss"
+                      : "Restore tracking"}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
+      )}
+      {panel !== "controls" && (
+        <div className="flight-controls">
+          <OperatorControls controller={controller} compact />
+        </div>
+      )}
+      <footer className="telemetry-bar">
+        <span className="telemetry-brand">
+          <Crosshair size={13} /> GOD’S EYE
+        </span>
+        <span className="footer-note">
+          {simulated
+            ? "SIMULATED DATA · NO HARDWARE CONNECTED"
+            : (mission.health?.stop_reason ??
+              "Live backend · ARKit world meters")}
+        </span>
+        <span>
+          {mission.objects.length} objects ·{" "}
+          {mission.events.filter((e) => e.kind === "moved").length} confirmed
+          moves
+        </span>
+      </footer>
       {notice && (
-        <div role="status" className="toast">
-          <Radio size={17} />
+        <div className="toast" role="status">
           <span>{notice}</span>
-          <button aria-label="Dismiss notification" onClick={() => notify("")}>
-            <X size={16} />
+          <button aria-label="Dismiss notice" onClick={() => notify("")}>
+            <X size={15} />
           </button>
         </div>
       )}
@@ -508,10 +308,18 @@ export default function App() {
         <Settings
           onStop={() => void command("/stop")}
           config={config}
-          onSave={(next) => {
+          onSave={async (next) => {
             controller.release();
-            setSelected(next.source === "simulator" ? "sim-backpack" : null);
+            if (
+              config.source === "external" &&
+              config.commands &&
+              mission.health?.armed
+            ) {
+              if (!(await command("/stop"))) return false;
+            }
             setConfig(next);
+            setSelected(null);
+            return true;
           }}
           onClose={() => setSettings(false)}
         />
@@ -537,9 +345,8 @@ export default function App() {
               className="button primary"
               disabled={!!pending}
               onClick={async () => {
-                const ok = await command("/session");
-                if (ok) {
-                  setSelected(simulated ? "sim-backpack" : null);
+                if (await command("/session")) {
+                  setSelected(null);
                   setNewSession(false);
                 }
               }}
@@ -556,43 +363,32 @@ export default function App() {
           onClose={() => setHelp(false)}
         >
           <div className="help-content">
-            <p>
-              God’s Eye connects a live map with persistent object observations,
-              so you can see what is here and what has changed.
-            </p>
-            <h3>
-              <MapPin size={17} /> Explore the scene
-            </h3>
+            <h3>Find your perspective</h3>
             <p>
               Middle-drag to orbit, Shift + middle-drag to pan, and scroll to
-              zoom. Use the Orbit and Pan tools for left-button dragging. Press
-              Home to reset.
+              zoom. The visible Orbit and Pan tools work with the primary mouse
+              button. Home resets the view.
             </p>
-            <h3>
-              <Box size={17} /> Follow an object
-            </h3>
+            <h3>Move through the world</h3>
             <p>
-              Select a marker or inventory row to inspect confidence, position,
-              and received history. Amber indicates a detected change.
+              Standard keeps arrow-key steering and click-to-navigate available
+              together. Arrow directions follow your view. The rover turns
+              toward the requested direction before moving forward. Release the
+              keys to stop steering.
             </p>
-            <h3>
-              <ScanLine size={17} /> Try the demo
-            </h3>
             <p>
-              Leave the simulator disarmed and run the relocation demo. The
-              backpack moves 1.6 meters and its old and new positions appear
-              together.
+              Arm explicitly before moving. Stop disarms. Explore is a separate
+              mode. The real car adapter remains logging-only.
             </p>
-            <div className="info-note">
-              <ShieldAlert size={18} />
-              <p>
-                Simulation is always labeled. The real backend currently cannot
-                drive hardware, and unsupported actions show an error.
-              </p>
-            </div>
+            <h3>Look a little closer</h3>
+            <p>
+              Open Spatial Memory, Object Intelligence, or Recent Activity to
+              inspect observations. New maps start unknown and keep the surfaces
+              they discover.
+            </p>
           </div>
         </Dialog>
       )}
-    </div>
+    </main>
   );
 }

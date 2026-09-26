@@ -125,25 +125,32 @@ export function Settings({
   onStop,
 }: {
   config: ConnectionConfig;
-  onSave: (config: ConnectionConfig) => void;
+  onSave: (config: ConnectionConfig) => Promise<boolean>;
   onClose: () => void;
   onStop: () => void;
 }) {
   const [draft, setDraft] = useState(config),
     [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   return (
     <Dialog title="Connect your world" onClose={onClose} onStop={onStop}>
       <p className="dialog-intro">
         Choose a source for your spatial workspace.
       </p>
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           const issue = validateConfig(draft);
           setError(issue);
           if (!issue) {
-            onSave(draft);
-            onClose();
+            setSaving(true);
+            const changed = await onSave(draft);
+            setSaving(false);
+            if (changed) onClose();
+            else
+              setError(
+                "Could not stop the previous backend. Connection unchanged; retry Stop before switching.",
+              );
           }
         }}
       >
@@ -263,7 +270,7 @@ export function Settings({
           <button type="button" className="button subtle" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" type="submit">
+          <button className="button primary" type="submit" disabled={saving}>
             {draft.source === "simulator"
               ? "Start simulator"
               : "Connect source"}
@@ -550,11 +557,21 @@ export function EventList({
 }
 export function OperatorControls({
   controller,
+  compact = false,
 }: {
   controller: MissionController;
+  compact?: boolean;
 }) {
-  const { mission, command, pending, stale, canDrive, drive, release, config } =
-    controller;
+  const {
+    mission,
+    command,
+    pending,
+    stale,
+    canDrive,
+    steer,
+    releaseSteering,
+    config,
+  } = controller;
   const health = mission.health,
     simulation = config.source === "simulator",
     available = simulation || config.commands;
@@ -564,30 +581,34 @@ export function OperatorControls({
     health?.phone === "ok" &&
     health.car === "ok" &&
     health.detector === "ok";
-  const control = (label: string, icon: ReactNode, v: number, w: number) => (
+  const control = (
+    label: string,
+    icon: ReactNode,
+    direction: "up" | "down" | "left" | "right",
+  ) => (
     <button
       aria-label={label}
       title={`${label} · hold to move`}
-      disabled={!canDrive || health?.mode !== "manual"}
+      disabled={!canDrive || health?.mode === "explore"}
       onPointerDown={(e) => {
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
-        drive(v, w);
+        steer(direction);
       }}
-      onPointerUp={release}
-      onPointerCancel={release}
-      onLostPointerCapture={release}
-      onBlur={release}
+      onPointerUp={releaseSteering}
+      onPointerCancel={releaseSteering}
+      onLostPointerCapture={releaseSteering}
+      onBlur={releaseSteering}
       onKeyDown={(e) => {
         if ((e.key === " " || e.key === "Enter") && !e.repeat) {
           e.preventDefault();
-          drive(v, w);
+          steer(direction);
         }
       }}
       onKeyUp={(e) => {
         if (e.key === " " || e.key === "Enter") {
           e.preventDefault();
-          release();
+          releaseSteering();
         }
       }}
     >
@@ -595,7 +616,7 @@ export function OperatorControls({
     </button>
   );
   return (
-    <section className="operator-panel">
+    <section className={`operator-panel ${compact ? "compact" : ""}`}>
       <div className="section-heading">
         <div>
           <Navigation size={16} />
@@ -610,37 +631,48 @@ export function OperatorControls({
         <div className="mode-control">
           <span className="eyebrow">CONTROL MODE</span>
           <div className="segmented mode-tabs">
-            {(["manual", "navigate", "explore"] as const).map((mode) => (
+            {(["standard", "explore"] as const).map((mode) => (
               <button
                 key={mode}
                 disabled={!available || !!pending || stale}
-                className={health?.mode === mode ? "active" : ""}
-                onClick={() => void command("/mode", { mode })}
+                className={
+                  (
+                    mode === "explore"
+                      ? health?.mode === "explore"
+                      : health?.mode !== "explore"
+                  )
+                    ? "active"
+                    : ""
+                }
+                onClick={() => {
+                  if (mode === "explore" || health?.mode === "explore")
+                    void command("/mode", {
+                      mode: mode === "standard" ? "manual" : "explore",
+                    });
+                }}
               >
-                {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                {mode === "standard" ? "Standard" : "Explore"}
               </button>
             ))}
           </div>
           <p>
-            {health?.mode === "navigate"
-              ? "Arm, then select a destination in the 2D map."
-              : health?.mode === "explore"
-                ? simulation
-                  ? "Simulated exploration follows a staged route."
-                  : "Exploration requires backend support."
-                : "Hold a direction to move. Release to stop."}
+            {health?.mode === "explore"
+              ? simulation
+                ? "Simulated exploration · autonomous movement"
+                : "Exploration requires backend support"
+              : "Arrow keys to steer · click the map to navigate"}
           </p>
         </div>
         <div className="drive-pad">
-          {control("Drive forward", <ArrowUp size={17} />, 0.15, 0)}
+          {control("Move up", <ArrowUp size={17} />, "up")}
           <div>
-            {control("Turn left", <ArrowLeft size={17} />, 0, 0.4)}
+            {control("Move left", <ArrowLeft size={17} />, "left")}
             <span>
               <Navigation size={15} />
             </span>
-            {control("Turn right", <ArrowRight size={17} />, 0, -0.4)}
+            {control("Move right", <ArrowRight size={17} />, "right")}
           </div>
-          {control("Drive backward", <ArrowDown size={17} />, -0.1, 0)}
+          {control("Move down", <ArrowDown size={17} />, "down")}
         </div>
         <div className="arm-control">
           <button

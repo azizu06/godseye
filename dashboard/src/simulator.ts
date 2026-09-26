@@ -1,3 +1,4 @@
+import { LIDAR_RANGE_M } from "./sensorProfile";
 import {
   type ChangeEvent,
   type Health,
@@ -59,7 +60,7 @@ export function makeRoomPoints() {
 export class Simulator {
   elapsed = 0;
   position: Vec3 = [0.1, 0.16, 1.7];
-  yaw = Math.PI;
+  yaw = 2.55;
   health: Health = {
     phone: "ok",
     car: "ok",
@@ -79,13 +80,29 @@ export class Simulator {
   private rescanAt: number | null = null;
   private moved = false;
   private origin = Date.now() / 1000;
+  private room = makeRoomPoints();
+  private discovered = new Set<number>();
+  private seenObjects = new Set<string>();
+  private pendingPoints: number[] = [];
+  private cursor = 0;
+  private chunkId = 0;
+  private cells = new Uint8Array(80 * 60);
+  private gridDirty = true;
+  private lastGrid = -1;
   constructor() {
     this.reset();
   }
   private reset() {
     this.elapsed = 0;
+    this.discovered.clear();
+    this.seenObjects.clear();
+    this.pendingPoints = [];
+    this.cursor = this.chunkId = 0;
+    this.cells.fill(0);
+    this.gridDirty = true;
+    this.lastGrid = -1;
     this.position = [0.1, 0.16, 1.7];
-    this.yaw = Math.PI;
+    this.yaw = 2.55;
     this.velocity = 0;
     this.turn = 0;
     this.lastManual = -Infinity;
@@ -110,23 +127,98 @@ export class Simulator {
       ["bottle", [-2.6, 0.6, 0.3], 0.91],
       ["laptop", [1.25, 0.8, -1.9], 0.98],
     ];
-    this.objects = initial.map(([cls, position, confidence], i) => ({
+    this.objects = initial.map(([cls, position, confidence]) => ({
       id: `sim-${cls.replace("potted ", "")}`,
       class: cls,
       position,
       confidence,
-      first_seen: this.origin - 45 + i * 5,
+      first_seen: this.origin,
       last_seen: this.origin,
-      observations: 18 + i * 7,
+      observations: 0,
       state: "present",
     }));
-    this.events = this.objects.map((o, i) => ({
-      kind: "new",
-      object_id: o.id,
-      new_position: o.position,
-      t: this.origin - 45 + i * 5,
-    }));
+    this.events = [];
   }
+  private visible(point: Vec3, yaw = this.yaw): boolean {
+    const delta = point.map((v, i) => v - this.position[i]);
+    const distance = Math.hypot(...delta);
+    const ground = Math.hypot(delta[0], delta[2]);
+    if (
+      distance > LIDAR_RANGE_M ||
+      ground < 0.01 ||
+      (delta[0] * Math.sin(yaw) + delta[2] * Math.cos(yaw)) / ground <
+        Math.cos(Math.PI / 6)
+    )
+      return false;
+    // Ray/box intersection against hidden furniture prevents seeing through it.
+    return !FURNITURE.some((box) => {
+      let near = 0,
+        far = 1;
+      for (let axis = 0; axis < 3; axis++) {
+        const min = box.position[axis] - box.size[axis] / 2;
+        const max = box.position[axis] + box.size[axis] / 2;
+        if (Math.abs(delta[axis]) < 1e-8) {
+          if (this.position[axis] < min || this.position[axis] > max)
+            return false;
+        } else {
+          const a = (min - this.position[axis]) / delta[axis];
+          const b = (max - this.position[axis]) / delta[axis];
+          near = Math.max(near, Math.min(a, b));
+          far = Math.min(far, Math.max(a, b));
+          if (near > far) return false;
+        }
+      }
+      return near > 0.001 && near * distance < distance - 0.06;
+    });
+  }
+  private scan() {
+    const total = this.room.positions.length / 3;
+    for (let checked = 0, added = 0; checked < 1800 && added < 240; checked++) {
+      const index = this.cursor++ % total;
+      if (this.discovered.has(index)) continue;
+      const point = this.room.positions.slice(index * 3, index * 3 + 3) as Vec3;
+      if (!this.visible(point)) continue;
+      this.discovered.add(index);
+      this.pendingPoints.push(index);
+      added++;
+    }
+    for (const object of this.objects) {
+      if (!this.visible(object.position)) continue;
+      if (!this.seenObjects.has(object.id)) {
+        this.seenObjects.add(object.id);
+        object.first_seen = this.origin + this.elapsed;
+        this.events.push({
+          kind: "new",
+          object_id: object.id,
+          new_position: [...object.position],
+          t: object.first_seen,
+        });
+      }
+      object.last_seen = this.origin + this.elapsed;
+      object.observations++;
+    }
+    if (this.elapsed - this.lastGrid >= 0.5) {
+      this.lastGrid = this.elapsed;
+      for (let i = 0; i < this.cells.length; i++) {
+        if (this.cells[i]) continue;
+        const x = -4 + ((i % 80) + 0.5) * 0.1,
+          z = -3 + (Math.floor(i / 80) + 0.5) * 0.1;
+        if (!this.visible([x, this.position[1], z])) continue;
+        const blocked = FURNITURE.some(
+          (f) =>
+            Math.abs(x - f.position[0]) <= f.size[0] / 2 &&
+            Math.abs(z - f.position[2]) <= f.size[2] / 2 &&
+            f.position[1] - f.size[1] / 2 <= this.position[1],
+        );
+        this.cells[i] =
+          blocked || i % 80 === 0 || i % 80 === 79 || i < 80 || i >= 80 * 59
+            ? 2
+            : 1;
+        this.gridDirty = true;
+      }
+    }
+  }
+
   setTracking(ok: boolean) {
     this.tracking = ok;
     this.health.phone = ok ? "ok" : "stale";
@@ -206,6 +298,23 @@ export class Simulator {
         if (!this.tracking) throw Error("Restore tracking before rescanning.");
         if (this.health.armed)
           throw Error("Stop the rover before starting the relocation demo.");
+        if (!this.seenObjects.has("sim-backpack"))
+          throw Error(
+            "Observe the backpack before running its relocation demo.",
+          );
+        {
+          const target: Vec3 = this.moved
+            ? [1.4, 0.45, 0.5]
+            : [-0.2, 0.45, 0.5];
+          const heading = Math.atan2(
+            target[0] - this.position[0],
+            target[2] - this.position[2],
+          );
+          if (!this.visible(target, heading))
+            throw Error(
+              "Move to a clear view of the backpack area before running this demo.",
+            );
+        }
         this.rescanAt = this.elapsed + 2.5;
         this.health.stop_reason = "SIMULATION · revisiting baseline";
         break;
@@ -276,7 +385,26 @@ export class Simulator {
         ];
       }
     }
-    if (this.rescanAt !== null && this.elapsed >= this.rescanAt) {
+    if (this.rescanAt !== null) {
+      const targetX = this.moved ? 1.4 : -0.2;
+      const desired = Math.atan2(
+        targetX - this.position[0],
+        0.5 - this.position[2],
+      );
+      const delta = Math.atan2(
+        Math.sin(desired - this.yaw),
+        Math.cos(desired - this.yaw),
+      );
+      this.yaw += Math.sign(delta) * Math.min(Math.abs(delta), 0.5 * dt);
+    }
+    const nextBagPosition: Vec3 = this.moved
+      ? [1.4, 0.45, 0.5]
+      : [-0.2, 0.45, 0.5];
+    if (
+      this.rescanAt !== null &&
+      this.elapsed >= this.rescanAt &&
+      this.visible(nextBagPosition)
+    ) {
       const bag = this.objects[0],
         old = [...bag.position] as Vec3;
       bag.position = this.moved ? [1.4, 0.45, 0.5] : [-0.2, 0.45, 0.5];
@@ -295,6 +423,7 @@ export class Simulator {
       this.rescanAt = null;
       this.health.stop_reason = "SIMULATION · rescan complete";
     }
+    if (this.tracking) this.scan();
   }
   snapshot(includeRoom = false): Message[] {
     const messages: Message[] = [
@@ -309,7 +438,9 @@ export class Simulator {
       {
         version: 1,
         type: "objects",
-        objects: this.objects.map((o) => ({ ...o, position: [...o.position] })),
+        objects: this.objects
+          .filter((o) => this.seenObjects.has(o.id))
+          .map((o) => ({ ...o, position: [...o.position] })),
       },
       { version: 1, type: "path", points: this.path.map((p) => [...p]) },
       ...this.events.map((e) => ({
@@ -318,22 +449,23 @@ export class Simulator {
         ...e,
       })),
     ];
-    if (includeRoom) {
+    // At least 160 unique samples per immutable chunk keeps this finite room
+    // below the dashboard's 120-chunk cap, so discovery is retained on revisit.
+    if (this.pendingPoints.length >= 160) {
+      const samples = this.pendingPoints.splice(0);
       messages.push({
         version: 1,
         type: "points",
-        chunk_id: 1,
-        ...makeRoomPoints(),
+        chunk_id: ++this.chunkId,
+        positions: samples.flatMap((i) =>
+          this.room.positions.slice(i * 3, i * 3 + 3),
+        ),
+        colors: samples.flatMap((i) =>
+          this.room.colors.slice(i * 3, i * 3 + 3),
+        ),
       });
-      const cells = Array.from({ length: 80 * 60 }, (_, i) => {
-        const x = i % 80,
-          z = Math.floor(i / 80);
-        return x === 0 || x === 79 || z === 0 || z === 59
-          ? 2
-          : x > 65 && z < 12
-            ? 0
-            : 1;
-      });
+    }
+    if (includeRoom || this.gridDirty) {
       messages.push({
         version: 1,
         type: "occupancy",
@@ -341,8 +473,9 @@ export class Simulator {
         cell_m: 0.1,
         width: 80,
         height: 60,
-        cells: btoa(String.fromCharCode(...cells)),
+        cells: btoa(String.fromCharCode(...this.cells)),
       });
+      this.gridDirty = false;
     }
     return messages;
   }

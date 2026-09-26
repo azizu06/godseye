@@ -1,3 +1,4 @@
+import { panel } from "./helpers";
 import { test, expect } from "@playwright/test";
 test("scoped history, live overlap, map reset and rescan acknowledgement", async ({
   page,
@@ -76,16 +77,24 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await panel(page, "Recent activity");
   await expect(
     page.getByRole("heading", { name: "Recent activity" }),
   ).toHaveAttribute("title", "Saved + live history");
   await expect(page.locator(".activity-panel .count-badge")).toHaveText("1");
   await expect(page.getByText("Same object. A new chapter.")).toHaveCount(0);
-  await page.locator(".objects-panel .object-row").click();
+  await panel(page, "Spatial memory");
+  await page.locator(".objects-panel .object-row").first().click();
   await expect(
     page.getByText("Possible relocation", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Candidate identity: candidate")).toBeVisible();
+  await panel(page, "Spatial memory");
+  await page.locator(".objects-panel .object-row").last().click();
+  await expect(page.locator(".old-marker")).toHaveCount(1);
+  await page.getByRole("button", { name: "2D", exact: true }).click();
+  await expect(page.locator("svg.map2d line")).toHaveCount(1);
+  await panel(page, "Rover controls");
   await page.getByRole("button", { name: "Start rescan", exact: true }).click();
   await expect(
     page.getByText("Baseline saved · 1 objects · watching observations"),
@@ -93,6 +102,7 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
   await expect(
     page.getByRole("button", { name: "Start rescan", exact: true }),
   ).toBeEnabled();
+  await panel(page, "Rover controls");
   await page.getByRole("button", { name: "Start rescan", exact: true }).click();
   await expect.poll(() => rescanCalls).toBe(2);
   send({
@@ -103,11 +113,13 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
     objects: [],
   });
   releaseRescan();
+  await panel(page, "Spatial memory");
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(0);
   await expect(
     page.getByText("Baseline saved · 1 objects · watching observations"),
   ).toHaveCount(0);
   await expect(page.locator(".scene-stat>strong")).toHaveText("0");
+  await panel(page, "Recent activity");
   await expect(page.locator(".activity-panel .count-badge")).toHaveText("0");
   await expect(
     page.getByRole("heading", { name: "Recent activity" }),

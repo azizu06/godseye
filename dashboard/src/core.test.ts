@@ -142,6 +142,7 @@ describe("operator simulation", () => {
   it("rescans to one confirmed relocation with stable identity and displacement", () => {
     const sim = new Simulator();
     const old = [...sim.objects[0].position];
+    sim.tick(0.1);
     sim.command("/rescan");
     sim.tick(3.1);
     const events = sim.snapshot().filter((m) => m.type === "event");
@@ -157,6 +158,7 @@ describe("operator simulation", () => {
   });
   it("resets all accumulated mission data on a new session", () => {
     const sim = new Simulator();
+    sim.tick(0.1);
     sim.command("/rescan");
     sim.tick(4);
     sim.command("/session");
@@ -182,6 +184,7 @@ describe("simulated motion consistency", () => {
   });
   it("cannot rearm during a rescan and tracking loss cancels change claims", () => {
     const sim = new Simulator();
+    sim.tick(0.1);
     sim.command("/rescan");
     expect(() => sim.command("/arm")).toThrow(/rescan/i);
     sim.setTracking(false);

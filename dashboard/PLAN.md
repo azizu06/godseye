@@ -7,7 +7,8 @@ A bounded state store supplies a Three.js scene and semantic inspection panels.
 
 ## Constraints and review focus
 
-- Scope changes to dashboard/; preserve the frozen shared interface and backend.
+- Keep frontend changes in dashboard/ and preserve the frozen shared interface.
+- The user subsequently authorized backend integration; narrowly scoped backend transport fixes are covered by issue #14 and reviewed PR #17.
 - All coordinates are ARKit Y-up meters; never show synthetic content as real data.
 - Faults, source changes, and focus loss must end manual commands.
 - Ignore unknown messages; reject invalid known payloads and bound accumulated data.
@@ -31,3 +32,5 @@ Work proceeds on codex/dashboard-mission-control in the existing clean checkout,
 
 The initial dashboard PR implements the simulator and frozen v1 transport.
 A subsequent PR pulls current main and integrates additive backend session identity, event history, and rescan responses with explicit tests.
+
+The final workspace refinement in issue #16 preserves information components as expandable overlays, adds progressive discovery and turn-first directional steering, and makes the scene fill the viewport by default.

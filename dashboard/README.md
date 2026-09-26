@@ -21,11 +21,16 @@ The real car adapter remains logging-only and cannot arm hardware.
 
 ## Demo
 
+The map fills the screen; open Spatial Memory, Object Intelligence, or Recent Activity from the floating panel controls.
+Objects and point-cloud surfaces appear as the simulator observes them and remain in spatial memory.
 Select an object to inspect its position, confidence, observation history, and state.
-Run the relocation demo to move the simulated backpack and reveal the previous location, displacement, and event evidence.
+Open Rover Controls and run the relocation demo to move the simulated backpack and reveal the previous location, displacement, and event evidence.
 Use middle-drag to orbit, Shift + middle-drag to pan, the wheel to zoom, or the visible Orbit/Pan tools with the primary mouse button.
 The 2D tab provides a top-down map when inspecting occupancy or selecting a navigation goal.
-Arm explicitly before moving; hold a direction button to drive and release to stop.
+Arm explicitly before moving.
+Standard offers both arrow-key steering and click-to-navigate in the 3D scene or 2D map.
+Arrow directions follow the view; the rover turns in place toward the requested direction before moving forward.
+Release the key to stop steering.
 Focus loss ends held commands, while STOP disarms the rover.
 Explore and navigation are simulated and do not imply hardware support.
 
