@@ -81,11 +81,15 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
   ).toHaveAttribute("title", "Saved + live history");
   await expect(page.locator(".activity-panel .count-badge")).toHaveText("1");
   await expect(page.getByText("Same object. A new chapter.")).toHaveCount(0);
-  await page.locator(".objects-panel .object-row").click();
+  await page.locator(".objects-panel .object-row").first().click();
   await expect(
     page.getByText("Possible relocation", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Candidate identity: candidate")).toBeVisible();
+  await page.locator(".objects-panel .object-row").last().click();
+  await expect(page.locator(".old-marker")).toHaveCount(1);
+  await page.getByRole("button", { name: "2D", exact: true }).click();
+  await expect(page.locator("svg.map2d line")).toHaveCount(1);
   await page.getByRole("button", { name: "Start rescan", exact: true }).click();
   await expect(
     page.getByText("Baseline saved · 1 objects · watching observations"),
