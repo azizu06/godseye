@@ -130,7 +130,7 @@ describe("calibrated capture surfaces", () => {
     depth[3] = 5.1;
     depth[5] = 3;
     const confidence = Array(16).fill(2);
-    confidence[4] = 1;
+    confidence[4] = 0;
     const patch = decodeCaptureSurface(fixture(1, () => {}, depth, confidence));
     expect(patch.indices.length).toBeLessThan(54);
     expect(patch.indices.length).toBeGreaterThan(0);
@@ -197,4 +197,111 @@ describe("calibrated capture surfaces", () => {
     expect(patch.indices.length).toBeGreaterThan(1000);
     expect([...patch.indices]).not.toContain(0);
   });
+  it("covers measured medium-confidence walls with the coarse preview", () => {
+    const patch = decodeCaptureSurface(
+      fixture(1, () => {}, Array(16).fill(2), Array(16).fill(1)),
+    );
+    expect(patch.positions.length / 3).toBe(16);
+    expect(patch.indices.length / 3).toBe(18);
+  });
+
+  it("uses larger live triangles without clipping the last measured image row or column", () => {
+    const patch = decodeCaptureSurface(
+      fixture(
+        1,
+        (h) => {
+          h.depth = { ...h.depth, width: 256, height: 256, len: 256 * 256 * 4 };
+          h.confidence = {
+            ...h.confidence,
+            width: 256,
+            height: 256,
+            len: 256 * 256,
+          };
+        },
+        Array(256 * 256).fill(2),
+        Array(256 * 256).fill(1),
+      ),
+    );
+    expect(patch.positions.length / 3).toBeGreaterThan(2000);
+    expect(patch.positions.length / 3).toBeLessThanOrEqual(3072);
+    const uv = patch.uvs!;
+    expect(uv[0]).toBeCloseTo(0.5 / 256);
+    expect(uv[1]).toBeCloseTo(1 - 0.5 / 256);
+    expect(uv[uv.length - 2]).toBeCloseTo(255.5 / 256);
+    expect(uv[uv.length - 1]).toBeCloseTo(1 - 255.5 / 256);
+    expect(patch.indices.length / 3).toBeGreaterThan(4000);
+  });
+
+  it("retains a continuous steep wall rather than mistaking coarse-cell slope for a depth break", () => {
+    const depths = Array.from({ length: 256 * 256 }, (_, index) => {
+      const u = (((index % 256) + 0.5) * 8) / 256;
+      return 2 / (1 - ((u - 4) / 16) * Math.tan(Math.PI / 3));
+    });
+    const patch = decodeCaptureSurface(
+      fixture(
+        1,
+        (h) => {
+          h.depth = { ...h.depth, width: 256, height: 256, len: 256 * 256 * 4 };
+          h.confidence = {
+            ...h.confidence,
+            width: 256,
+            height: 256,
+            len: 256 * 256,
+          };
+        },
+        depths,
+        Array(256 * 256).fill(2),
+      ),
+    );
+    const side = Math.sqrt(patch.positions.length / 3);
+    expect(patch.indices.length / 6).toBeGreaterThan((side - 1) ** 2 * 0.99);
+  });
+
+  it.each(["missing", "nan", "silhouette", "invalid-confidence"])(
+    "does not bridge skipped native %s pixels inside a coarse cell",
+    (kind) => {
+      const depths = Array(256 * 256).fill(2),
+        confidence = Array(256 * 256).fill(1);
+      for (let row = 0; row < 256; row++) {
+        const index = row * 256 + 2;
+        if (kind === "nan") depths[index] = NaN;
+        else if (kind === "silhouette") depths[index] = 2.5;
+        else confidence[index] = kind === "missing" ? 0 : 255;
+      }
+      const patch = decodeCaptureSurface(
+        fixture(
+          1,
+          (h) => {
+            h.depth = {
+              ...h.depth,
+              width: 256,
+              height: 256,
+              len: 256 * 256 * 4,
+            };
+            h.confidence = {
+              ...h.confidence,
+              width: 256,
+              height: 256,
+              len: 256 * 256,
+            };
+          },
+          depths,
+          confidence,
+        ),
+      );
+      expect(patch.indices.length).toBeGreaterThan(1000);
+      expect([...patch.indices]).not.toContain(0);
+    },
+  );
+
+  it.each([3, 255])(
+    "rejects malformed confidence %s at retained samples",
+    (confidence) => {
+      const patch = decodeCaptureSurface(
+        fixture(1, () => {}, Array(16).fill(2), Array(16).fill(confidence)),
+      );
+      expect(patch.positions.length).toBe(0);
+      expect(patch.indices.length).toBe(0);
+    },
+  );
 });

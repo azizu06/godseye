@@ -82,6 +82,9 @@ test("default solid surfaces discover progressively and point cloud remains opti
   await expect(page.getByTestId("surface-status")).toContainText(
     /color triangles/,
   );
+  await expect(page.getByTestId("surface-status")).toContainText(
+    "Coarse preview",
+  );
   await page.getByRole("button", { name: "Scene layers", exact: true }).click();
   await expect(
     page.getByLabel("Color surfaces", { exact: true }),
@@ -196,6 +199,9 @@ for (const version of [1, 2])
       .click();
     await expect(page.getByTestId("surface-status")).toContainText(
       "color triangles",
+    );
+    await expect(page.getByTestId("surface-status")).toContainText(
+      "Coarse preview",
     );
     await expect(page.locator(".scene-stat > span")).toHaveText("MAP VERTICES");
     const download = page.waitForEvent("download");

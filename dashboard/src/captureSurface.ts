@@ -2,7 +2,9 @@ import type { CapturedSurface } from "./surfaceTypes";
 
 type RecordValue = Record<string, unknown>;
 const MAX_PACKET = 32 * 1024 * 1024;
-const MAX_VERTICES = 12_288; // Native 256×192 depth at stride two.
+// Coarse display geometry: native 256×192 depth uses about stride four.
+const MAX_VERTICES = 3_072;
+const supportedConfidence = (value: number) => value === 1 || value === 2;
 function fail(message: string): never {
   throw Error(`Invalid surface capture: ${message}`);
 }
@@ -267,6 +269,17 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
     stride++;
   const cols = Math.ceil(dw / stride),
     rows = Math.ceil(dh / stride);
+  // Spread samples across the full image so coarsening does not clip its edges.
+  const sampleColumns = Array.from({ length: cols }, (_, i) =>
+    cols === 1 ? 0 : Math.round((i * (dw - 1)) / (cols - 1)),
+  );
+  const sampleRows = Array.from({ length: rows }, (_, i) =>
+    rows === 1 ? 0 : Math.round((i * (dh - 1)) / (rows - 1)),
+  );
+  const sampleSpan = Math.max(
+    cols === 1 ? 1 : Math.ceil((dw - 1) / (cols - 1)),
+    rows === 1 ? 1 : Math.ceil((dh - 1) / (rows - 1)),
+  );
   const lookup = new Int32Array(cols * rows).fill(-1);
   const positions: number[] = [],
     uvs: number[] = [],
@@ -274,12 +287,12 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
     indices: number[] = [];
   for (let row = 0; row < rows; row++)
     for (let col = 0; col < cols; col++) {
-      const r = row * stride,
-        c = col * stride,
+      const r = sampleRows[row],
+        c = sampleColumns[col],
         pixel = r * dw + c;
       const depth = view.getFloat32(depthOffset + pixel * 4, true);
       if (
-        view.getUint8(confidenceOffset + pixel) !== 2 ||
+        !supportedConfidence(view.getUint8(confidenceOffset + pixel)) ||
         !Number.isFinite(depth) ||
         depth < 0.05 ||
         depth > 5
@@ -314,10 +327,22 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
       high = Math.max(depths[a], depths[b], depths[c]);
     // Do not bridge silhouettes. These are conservative rendering tolerances,
     // not sensor accuracy claims or inferred surfaces across missing readings.
-    if (high - low > Math.max(0.05, 0.03 * low)) return;
+    // Coarse cells have already checked every native neighbor for a depth
+    // break. Their full span can legitimately be larger on a slanted wall.
+    if (stride === 1 && high - low > Math.max(0.05, 0.03 * low)) return;
     const maxEdge = Math.max(
       0.1,
-      3 * high * stride * Math.max(iw / dw / k[0], ih / dh / k[4]),
+      3 * high * sampleSpan * Math.max(iw / dw / k[0], ih / dh / k[4]) +
+        // Native neighbor checks already establish continuous depth support.
+        // Account for its measured range span when bounding a slanted edge.
+        (stride > 1
+          ? (high - low) *
+            Math.hypot(
+              1,
+              Math.max(k[6], iw - k[6]) / k[0],
+              Math.max(k[7], ih - k[7]) / k[4],
+            )
+          : 0),
     );
     for (const [i, j] of [
       [a, b],
@@ -339,15 +364,17 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
       if (stride > 1) {
         // Subsampling must not connect across an invalid strip hidden between
         // retained vertices. Conservatively require support across the cell.
-        let supported = true,
-          low = Infinity,
-          high = -Infinity;
-        for (let r = row * stride; r <= (row + 1) * stride && supported; r++)
-          for (let c = col * stride; c <= (col + 1) * stride; c++) {
+        let supported = true;
+        for (
+          let r = sampleRows[row];
+          r <= sampleRows[row + 1] && supported;
+          r++
+        )
+          for (let c = sampleColumns[col]; c <= sampleColumns[col + 1]; c++) {
             const pixel = r * dw + c,
               depth = view.getFloat32(depthOffset + pixel * 4, true);
             if (
-              view.getUint8(confidenceOffset + pixel) !== 2 ||
+              !supportedConfidence(view.getUint8(confidenceOffset + pixel)) ||
               !Number.isFinite(depth) ||
               depth < 0.05 ||
               depth > 5
@@ -355,10 +382,26 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
               supported = false;
               break;
             }
-            low = Math.min(low, depth);
-            high = Math.max(high, depth);
+            // Test native adjacent samples rather than the whole coarse-cell
+            // depth span: a continuous slope is not an object silhouette.
+            const neighbors = [
+              ...(c > sampleColumns[col] ? [pixel - 1] : []),
+              ...(r > sampleRows[row] ? [pixel - dw] : []),
+            ];
+            if (
+              neighbors.some((neighbor) => {
+                const other = view.getFloat32(depthOffset + neighbor * 4, true);
+                return (
+                  Math.abs(depth - other) >
+                  Math.max(0.05, 0.03 * Math.min(depth, other))
+                );
+              })
+            ) {
+              supported = false;
+              break;
+            }
           }
-        if (!supported || high - low > Math.max(0.05, 0.03 * low)) continue;
+        if (!supported) continue;
       }
       const a = row * cols + col,
         b = a + cols;

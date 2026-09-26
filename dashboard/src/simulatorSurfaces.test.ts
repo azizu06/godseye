@@ -25,7 +25,7 @@ it("starts with no surface and progressively reveals only in-range, in-view tria
   const firstIndices = [...first.indices];
   scan(sim);
   const surface = sim.getSurface()!;
-  expect(surface.indices.length).toBeGreaterThan(first.indices.length);
+  expect(surface.indices.length).toBeGreaterThanOrEqual(first.indices.length);
   expect([...first.indices]).toEqual(firstIndices);
   expect(surface.positions).toBe(first.positions);
   expect(surface.colors).toBe(first.colors);
@@ -133,16 +133,91 @@ it("requires the centroid and every vertex to be visible before retaining a tria
 });
 
 it("bounds a discovery step instead of publishing the entire hidden room", () => {
-  const geometry = makeRoomSurfaces(FURNITURE);
+  const room = makeRoomSurfaces(FURNITURE);
+  const geometry = {
+    ...room,
+    indices: new Uint32Array([
+      ...room.indices,
+      ...room.indices,
+      ...room.indices,
+    ]),
+  };
   const discovery = new SurfaceDiscovery(geometry);
   let checks = 0;
   discovery.scan(() => {
     checks++;
     return true;
   });
-  expect(checks).toBeLessThanOrEqual(900 * 4);
-  expect(discovery.getSurface()!.indices.length).toBe(900 * 3);
-  expect(discovery.getSurface()!.indices.length).toBeLessThan(
-    geometry.indices.length,
-  );
+  expect(checks).toBeLessThanOrEqual(3600 * 7);
+  expect(discovery.getSurface()!.indices.length).toBe(3600 * 3);
+  const first = discovery.getSurface()!;
+  expect(first.indices.length).toBeLessThan(geometry.indices.length);
+  for (let i = 0; i < 10; i++) discovery.scan(() => true);
+  expect(discovery.getSurface()!.indices).toEqual(geometry.indices);
+  expect(first.indices.length).toBe(3600 * 3);
+  discovery.reset();
+  expect(discovery.getSurface()).toBeNull();
+  discovery.scan(() => true);
+  expect(discovery.getSurface()!.indices).toEqual(first.indices);
+});
+
+const surfaceArea = (surface: SurfacePatch) => {
+  let area = 0;
+  for (let i = 0; i < surface.indices.length; i += 3) {
+    const p = [0, 1, 2].map((j) => [
+      ...surface.positions.slice(
+        surface.indices[i + j] * 3,
+        surface.indices[i + j] * 3 + 3,
+      ),
+    ]);
+    const a = p[1].map((v, axis) => v - p[0][axis]);
+    const b = p[2].map((v, axis) => v - p[0][axis]);
+    area +=
+      Math.hypot(
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+      ) / 2;
+  }
+  return area;
+};
+
+it("covers the stationary visible scene with coarse patches within two ticks", () => {
+  const sim = new Simulator();
+  scan(sim, 2);
+  const early = sim.getSurface()!;
+  const earlyArea = surfaceArea(early);
+  expect(earlyArea).toBeGreaterThan(13);
+  expect(earlyArea / (early.indices.length / 3)).toBeGreaterThan(0.025);
+  scan(sim, 100);
+  expect(earlyArea / surfaceArea(sim.getSurface()!)).toBeGreaterThan(0.95);
+});
+
+it("does not bridge an occluder crossing a coarse triangle edge", () => {
+  const discovery = new SurfaceDiscovery({
+    id: "edge-shadow",
+    positions: new Float32Array([0, 0, 0, 0.3, 0, 0, 0, 0, 0.3]),
+    indices: new Uint32Array([0, 1, 2]),
+  });
+  discovery.scan(([x, , z]) => Math.abs(x - 0.15) > 1e-6 || z > 0.01);
+  expect(discovery.getSurface()).toBeNull();
+});
+
+it("keeps the room doorway open at coarse resolution", () => {
+  const geometry = makeRoomSurfaces(FURNITURE);
+  let wallTriangles = 0;
+  for (let i = 0; i < geometry.indices.length; i += 3) {
+    const points = [0, 1, 2].map((j) => [
+      ...geometry.positions.slice(
+        geometry.indices[i + j] * 3,
+        geometry.indices[i + j] * 3 + 3,
+      ),
+    ]);
+    if (!points.every((p) => Math.abs(p[2] + 3) < 1e-6)) continue;
+    wallTriangles++;
+    const x = points.reduce((sum, p) => sum + p[0], 0) / 3,
+      y = points.reduce((sum, p) => sum + p[1], 0) / 3;
+    expect(Math.abs(x) < 0.6 && y < 1.8).toBe(false);
+  }
+  expect(wallTriangles).toBeGreaterThan(10);
 });
