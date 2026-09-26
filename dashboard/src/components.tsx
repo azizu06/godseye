@@ -125,25 +125,32 @@ export function Settings({
   onStop,
 }: {
   config: ConnectionConfig;
-  onSave: (config: ConnectionConfig) => void;
+  onSave: (config: ConnectionConfig) => Promise<boolean>;
   onClose: () => void;
   onStop: () => void;
 }) {
   const [draft, setDraft] = useState(config),
     [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   return (
     <Dialog title="Connect your world" onClose={onClose} onStop={onStop}>
       <p className="dialog-intro">
         Choose a source for your spatial workspace.
       </p>
       <form
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           const issue = validateConfig(draft);
           setError(issue);
           if (!issue) {
-            onSave(draft);
-            onClose();
+            setSaving(true);
+            const changed = await onSave(draft);
+            setSaving(false);
+            if (changed) onClose();
+            else
+              setError(
+                "Could not stop the previous backend. Connection unchanged; retry Stop before switching.",
+              );
           }
         }}
       >
@@ -263,7 +270,7 @@ export function Settings({
           <button type="button" className="button subtle" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" type="submit">
+          <button className="button primary" type="submit" disabled={saving}>
             {draft.source === "simulator"
               ? "Start simulator"
               : "Connect source"}
@@ -357,7 +364,9 @@ export function Inspector({
         </p>
       </div>
     );
-  const history = events.filter((e) => e.object_id === object.id),
+  const history = events.filter(
+      (e) => e.object_id === object.id || e.new_object_id === object.id,
+    ),
     move = history
       .filter((e) => e.kind === "moved" || e.kind === "possible_move")
       .at(-1);
@@ -442,6 +451,10 @@ export function Inspector({
               ? "This object was observed in a new position."
               : "Identity is uncertain. Review the spatial evidence."}
           </p>
+          {move.new_object_id && (
+            <p>Candidate identity: {move.new_object_id}</p>
+          )}
+          {move.rescan_id && <p>Rescan #{move.rescan_id}</p>}
           <div className="displacement">
             <strong>
               {move.displacement_m?.toFixed(2) ?? "—"}
@@ -476,7 +489,7 @@ export function Inspector({
               </span>
             </div>
           ))}
-        <p>History received during this connection.</p>
+        <p>Bounded saved and live observations.</p>
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 """/phone bundle -> bounded /live points chunk, over the real transport."""
+import asyncio
 import json
 import struct
 import threading
@@ -51,6 +52,72 @@ def wait_for(predicate, timeout=5.):
 
 
 class MapTransportTests(unittest.TestCase):
+    def test_phone_reconnect_preserves_chunk_ids_within_the_same_map(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            for frame_id in (1, 2):
+                with client.websocket_connect('/phone') as phone:
+                    phone.send_json(hello())
+                    phone.send_bytes(frame(frame_id=frame_id, t_capture=float(frame_id)))
+                    chunk = next_of(live, 'points')
+                    self.assertEqual(chunk['chunk_id'], frame_id)
+                    self.assertEqual(chunk['session_id'], 'map-session')
+                wait_for(lambda: client.app.state.phone is None)
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello(epoch=2))
+                phone.send_bytes(fresh(frame(frame_id=3, t_capture=3.), map_epoch=2))
+                chunk = next_of(live, 'points')
+                self.assertEqual((chunk['chunk_id'], chunk['map_epoch']), (1, 2))
+
+    def test_reset_flushes_old_map_control_messages_for_a_slow_live_viewer(self):
+        # Hold the actual /live sender at its initial path so old-map updates
+        # accumulate in the backend, rather than merely slowing the test reader.
+        blocked, release = threading.Event(), threading.Event()
+        app = create_app(':memory:')
+
+        async def slow_live(scope, receive, send):
+            async def gated_send(message):
+                if scope.get('path') == '/live' and message['type'] == 'websocket.send':
+                    body = json.loads(message['text'])
+                    if body['type'] == 'path' and not blocked.is_set():
+                        blocked.set()
+                        while not release.is_set():
+                            await asyncio.sleep(.01)
+                await send(message)
+            await app(scope, receive, gated_send)
+
+        with TestClient(slow_live) as client, client.websocket_connect('/live') as live:
+            self.assertTrue(blocked.wait(5))
+            try:
+                with client.websocket_connect('/phone') as old:
+                    old.send_json(hello('old-session'))
+                    old.send_bytes(frame('old-session'))
+                    wait_for(lambda: app.state.map_stats['published'] == 1)
+                wait_for(lambda: app.state.phone is None)
+                self.assertEqual(client.post('/session').status_code, 200)
+                with client.websocket_connect('/phone') as new:
+                    new.send_json(hello('new-session'))
+                    new.send_bytes(frame('new-session', frame_id=7))
+                    wait_for(lambda: app.state.map_stats['published'] == 2)
+                    release.set()
+                    messages = []
+                    # /stop publishes a terminal marker after every map update;
+                    # read through it so stale controls after a point are caught.
+                    client.post('/stop')
+                    while True:
+                        message = live.receive_json()
+                        messages.append(message)
+                        if message['type'] == 'health' and message['stop_reason'] == 'operator_stop':
+                            break
+            finally:
+                release.set()
+            self.assertFalse(any(m.get('session_id') == 'old-session' for m in messages))
+            self.assertEqual(sum(m['type'] == 'pose' for m in messages), 1)
+            self.assertEqual([m['frame_id'] for m in messages if m['type'] == 'points'], [7])
+            self.assertTrue(any(m['type'] == 'objects' and m['session_id'] == 'new-session'
+                                for m in messages))
+            self.assertTrue(any(m['type'] == 'health' and m['stop_reason'] == 'session_reset'
+                                for m in messages))
+
     def test_one_bounded_chunk_with_known_world_geometry(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
             with client.websocket_connect('/phone') as phone:

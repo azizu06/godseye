@@ -40,6 +40,8 @@ export default function App() {
   const controller = useMission();
   const {
     mission,
+    rescanBaseline,
+    historyStatus,
     config,
     setConfig,
     connection,
@@ -62,9 +64,7 @@ export default function App() {
   const [rescanBusy, setRescanBusy] = useState(false);
   const simulated = config.source === "simulator",
     object = mission.objects.find((o) => o.id === selected),
-    moves = mission.events.filter(
-      (e) => e.kind === "moved" || e.kind === "possible_move",
-    );
+    moves = mission.events.filter((e) => e.kind === "moved");
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000)),
     duration = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
   const select = (id: string) => setSelected(id);
@@ -74,13 +74,10 @@ export default function App() {
     if (ok) {
       setSelected(simulated ? "sim-backpack" : selected);
       setTab("overview");
-      notify(
-        simulated
-          ? "Revisiting the baseline. Watch the backpack…"
-          : "Rescan requested. Waiting for backend observations.",
-      );
+      if (simulated) notify("Revisiting the baseline. Watch the backpack…");
     }
-    setTimeout(() => setRescanBusy(false), 3000);
+    if (simulated && ok) setTimeout(() => setRescanBusy(false), 3000);
+    else setRescanBusy(false);
   };
   const sourceLabel = simulated
     ? "Simulation"
@@ -325,7 +322,8 @@ export default function App() {
                       <p>
                         {simulated
                           ? "Rescan the room to discover the backpack in a new location."
-                          : "Compare new observations with a saved baseline."}
+                          : (rescanBaseline ??
+                            "Compare new observations with a saved baseline.")}
                       </p>
                     </div>
                     <button
@@ -401,7 +399,7 @@ export default function App() {
                 <div className="section-heading">
                   <div>
                     <Activity size={16} />
-                    <h3>Recent activity</h3>
+                    <h3 title={historyStatus}>Recent activity</h3>
                     <span className="count-badge">{mission.events.length}</span>
                   </div>
                   <button
@@ -510,10 +508,18 @@ export default function App() {
         <Settings
           onStop={() => void command("/stop")}
           config={config}
-          onSave={(next) => {
+          onSave={async (next) => {
             controller.release();
+            if (
+              config.source === "external" &&
+              config.commands &&
+              mission.health?.armed
+            ) {
+              if (!(await command("/stop"))) return false;
+            }
             setSelected(next.source === "simulator" ? "sim-backpack" : null);
             setConfig(next);
+            return true;
           }}
           onClose={() => setSettings(false)}
         />

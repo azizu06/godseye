@@ -332,17 +332,23 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
 
     def set_session(session):
         stop('session_reset')
+        if app.state.session != session:
+            app.state.chunk_id = 0
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
         app.state.capture.clear()
         app.state.rich_capture.reset()
-        app.state.chunk_id = 0
         for listener in app.state.listeners:
             listener.points.clear()
+            # Pose/path/health are unscoped v1 messages. Do not let a slow
+            # viewer receive a previous map's queued state beside new points.
+            while not listener.queue.empty():
+                listener.queue.get_nowait()
         app.state.db.execute('INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
                              (*session, int(time.time()*1000)))
         app.state.db.commit()
         app.state.changes.activate(session)
+        publish(health())
         publish(objects_message(session))
         publish(dict(version=1, type='path', points=[]))
 

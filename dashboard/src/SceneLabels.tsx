@@ -60,7 +60,7 @@ export function useSceneLabels(
     const event = mission.events
       .filter(
         (e) =>
-          e.object_id === selected &&
+          (e.object_id === selected || e.new_object_id === selected) &&
           (e.kind === "moved" || e.kind === "possible_move"),
       )
       .at(-1);

@@ -237,7 +237,7 @@ function World({
   const selectedEvent = mission.events
     .filter(
       (e) =>
-        e.object_id === selected &&
+        (e.object_id === selected || e.new_object_id === selected) &&
         (e.kind === "moved" || e.kind === "possible_move"),
     )
     .at(-1);
@@ -470,7 +470,12 @@ export function Map2D({
         grid ? grid.origin[1] + grid.height * grid.cell_m : 0,
       ) + 0.6;
   const last = mission.events
-    .filter((e) => e.object_id === selected && e.old_position && e.new_position)
+    .filter(
+      (e) =>
+        (e.object_id === selected || e.new_object_id === selected) &&
+        e.old_position &&
+        e.new_position,
+    )
     .at(-1);
   return (
     <svg
@@ -707,6 +712,7 @@ export default function Scene(props: SceneProps) {
           <button
             title="Scene layers"
             aria-label="Scene layers"
+            disabled={view === "2d"}
             className={`icon-button ${layerMenu ? "active" : ""}`}
             onClick={() => setLayerMenu(!layerMenu)}
           >
@@ -715,6 +721,7 @@ export default function Scene(props: SceneProps) {
           <button
             title="Reset view · Home"
             aria-label="Reset view"
+            disabled={view === "2d"}
             className="icon-button"
             onClick={() => setReset((x) => x + 1)}
           >
@@ -811,6 +818,7 @@ export default function Scene(props: SceneProps) {
           <div className="scene-toolbox">
             <button
               aria-label="Orbit tool"
+              disabled={view === "2d"}
               title="Orbit · middle mouse drag"
               className={tool === "orbit" ? "active" : ""}
               onClick={() => setTool("orbit")}
@@ -819,6 +827,7 @@ export default function Scene(props: SceneProps) {
             </button>
             <button
               aria-label="Pan tool"
+              disabled={view === "2d"}
               title="Pan · Shift + middle mouse drag"
               className={tool === "pan" ? "active" : ""}
               onClick={() => setTool("pan")}
@@ -828,6 +837,7 @@ export default function Scene(props: SceneProps) {
             <span />
             <button
               aria-label="View controls help"
+              disabled={view === "2d"}
               onClick={() => setHelp(!help)}
             >
               <HelpCircle size={17} />
@@ -854,7 +864,7 @@ export default function Scene(props: SceneProps) {
             <Crosshair size={22} />
           </div>
         </div>
-        {layerMenu && (
+        {view === "3d" && layerMenu && (
           <div className="scene-popover layers-popover">
             <h4>Scene layers</h4>
             {(Object.keys(layers) as (keyof Layers)[]).map((key) => (
@@ -875,7 +885,7 @@ export default function Scene(props: SceneProps) {
             ))}
           </div>
         )}
-        {help && (
+        {view === "3d" && help && (
           <div className="scene-popover help-popover">
             <h4>Find your perspective</h4>
             <p>
@@ -899,7 +909,8 @@ export default function Scene(props: SceneProps) {
       </div>
       <div className="scene-footer">
         <span>
-          <i className="legend-point" /> Point cloud
+          <i className="legend-point" />{" "}
+          {view === "3d" ? "Point cloud" : "Occupancy"}
         </span>
         <span>
           <i className="legend-rover" /> Rover / phone

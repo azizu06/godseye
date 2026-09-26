@@ -40,6 +40,9 @@ export interface Occupancy {
   cells: string;
 }
 export interface ChangeEvent {
+  id?: string;
+  rescan_id?: string;
+  new_object_id?: string | null;
   kind: "new" | "moved" | "possible_move" | "not_found";
   object_id: string;
   old_position?: Vec3 | null;
@@ -47,7 +50,17 @@ export interface ChangeEvent {
   displacement_m?: number | null;
   t: number;
 }
-type Wire<T extends string, P> = { version: 1; type: T } & P;
+export interface MapScope {
+  session_id?: string | null;
+  map_epoch?: number | null;
+}
+type Wire<T extends string, P> = { version: 1; type: T } & MapScope & P;
+export function mapKey(scope: MapScope): string | null | undefined {
+  if (scope.session_id === undefined && scope.map_epoch === undefined)
+    return undefined;
+  if (scope.session_id === null && scope.map_epoch === null) return null;
+  return JSON.stringify([scope.session_id, scope.map_epoch]);
+}
 export type Message =
   | Wire<"health", Health>
   | Wire<"pose", Pose>
@@ -74,6 +87,21 @@ export function parseMessage(raw: unknown): Message | null {
     if (!raw || typeof raw !== "object") return null;
     const m = raw as Record<string, unknown>;
     if (m.version !== 1) return null;
+    if (m.session_id !== undefined || m.map_epoch !== undefined) {
+      const empty =
+        m.session_id === null && m.map_epoch === null && m.type === "objects";
+      if (
+        !empty &&
+        !(
+          typeof m.session_id === "string" &&
+          m.session_id.length > 0 &&
+          m.session_id.length <= 256 &&
+          Number.isSafeInteger(m.map_epoch) &&
+          Number(m.map_epoch) >= 0
+        )
+      )
+        return null;
+    }
     let valid = false;
     switch (m.type) {
       case "health":
@@ -162,6 +190,14 @@ export function parseMessage(raw: unknown): Message | null {
         break;
       case "event":
         valid =
+          [m.id, m.rescan_id].every(
+            (id) =>
+              id === undefined ||
+              (typeof id === "string" && id.length > 0 && id.length <= 256),
+          ) &&
+          (m.new_object_id == null ||
+            (typeof m.new_object_id === "string" &&
+              m.new_object_id.length <= 256)) &&
           member(m.kind, ["new", "moved", "possible_move", "not_found"]) &&
           typeof m.object_id === "string" &&
           isFiniteNumber(m.t) &&
@@ -176,4 +212,32 @@ export function parseMessage(raw: unknown): Message | null {
   } catch {
     return null;
   }
+}
+
+export function parseEventHistory(
+  raw: unknown,
+  expectedKey: string,
+): Message[] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (
+    data.version !== 1 ||
+    !Array.isArray(data.events) ||
+    data.events.length > 2000
+  )
+    return null;
+  const envelope = parseMessage({ ...data, type: "objects", objects: [] });
+  if (!envelope || mapKey(envelope) !== expectedKey) return null;
+  const events = data.events.map((event) =>
+    parseMessage({
+      ...event,
+      version: 1,
+      type: "event",
+      session_id: envelope.session_id,
+      map_epoch: envelope.map_epoch,
+    }),
+  );
+  return events.every((event): event is Message => event !== null)
+    ? events
+    : null;
 }

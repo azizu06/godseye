@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parseMessage, type Message } from "./protocol";
+import {
+  parseMessage,
+  parseEventHistory,
+  mapKey,
+  type MapScope,
+  type Message,
+} from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
 import { Simulator } from "./simulator";
 import {
@@ -15,6 +21,8 @@ export function useMission() {
   const [connection, setConnection] = useState("connected");
   const [notice, setNotice] = useState<string | null>(null);
   const [stopLatched, setStopLatched] = useState(true);
+  const [rescanBaseline, setRescanBaseline] = useState<string | null>(null);
+  const [historyStatus, setHistoryStatus] = useState("Live events only");
   const [pending, setPending] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [startedAt, setStartedAt] = useState(Date.now());
@@ -22,6 +30,7 @@ export function useMission() {
   const manual = useRef<ManualController | null>(null);
   const generation = useRef(0);
   const stopEpoch = useRef(0);
+  const activeMap = useRef<string | null>(null);
   const receive = useCallback(
     (messages: Message[]) =>
       setMission((s) =>
@@ -42,6 +51,8 @@ export function useMission() {
   }, [notice]);
   useEffect(() => {
     const gen = ++generation.current;
+    activeMap.current = null;
+    stopEpoch.current++;
     let disposed = false,
       timer: ReturnType<typeof setTimeout> | undefined,
       socket: WebSocket | undefined,
@@ -80,6 +91,8 @@ export function useMission() {
       socket.onopen = () => {
         if (disposed) return;
         attempt = 0;
+        activeMap.current = null;
+        stopEpoch.current++;
         setMission(emptyMission());
         setStartedAt(Date.now());
         setConnection("connected");
@@ -87,7 +100,17 @@ export function useMission() {
       socket.onmessage = (e) => {
         if (disposed || gen !== generation.current) return;
         const message = parseMessage(e.data);
-        if (message) receive([message]);
+        if (message) {
+          const key = mapKey(message);
+          if (key !== undefined && key !== activeMap.current) {
+            activeMap.current = key;
+            setStartedAt(Date.now());
+            stopEpoch.current++;
+            manual.current?.stop();
+            setStopLatched(true);
+          }
+          receive([message]);
+        }
       };
       socket.onerror = () => {
         if (!disposed) setConnection("reconnecting");
@@ -111,6 +134,52 @@ export function useMission() {
       }
     };
   }, [config, receive]);
+  useEffect(() => {
+    setRescanBaseline(null);
+    setStopLatched(true);
+    manual.current?.stop();
+    if (
+      config.source !== "external" ||
+      !config.commands ||
+      connection !== "connected" ||
+      !mission.mapKey
+    ) {
+      setHistoryStatus("Live events only");
+      return;
+    }
+    const abort = new AbortController();
+    let active = true;
+    const gen = generation.current;
+    const key = mission.mapKey;
+    setHistoryStatus("Loading saved history…");
+    const timeout = setTimeout(() => abort.abort(), 4000);
+    void fetch(`${config.apiUrl.replace(/\/$/, "")}/events`, {
+      signal: abort.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw Error("History unavailable");
+        const messages = parseEventHistory(await response.json(), key);
+        if (!messages) throw Error("History does not match the active map");
+        if (active && gen === generation.current) {
+          setMission((state) =>
+            state.mapKey === key
+              ? messages.reduce((s, m) => reduceMessage(s, m), state)
+              : state,
+          );
+          setHistoryStatus("Saved + live history");
+        }
+      })
+      .catch(() => {
+        if (active)
+          setHistoryStatus("Saved history unavailable · live events only");
+      })
+      .finally(() => clearTimeout(timeout));
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+      abort.abort();
+    };
+  }, [config, connection, mission.mapKey]);
   const send = useCallback(
     async (
       path: string,
@@ -132,10 +201,24 @@ export function useMission() {
           "This feed is telemetry only. Configure a REST API to send commands.",
         );
       const gen = generation.current;
+      const requestedMap = activeMap.current;
       const result = await sendCommand(config.apiUrl, path, body, signal);
       if (gen !== generation.current) return result;
       if (path === "/session") {
-        setMission(emptyMission());
+        const ack = parseMessage({
+          ...(result as MapScope),
+          version: 1,
+          type: "objects",
+          objects: [],
+        });
+        const key = ack && mapKey(ack);
+        if (activeMap.current !== requestedMap && activeMap.current !== key)
+          return result;
+        // /live can publish the reset snapshot before the REST reply arrives.
+        if (key && activeMap.current !== key) {
+          activeMap.current = key;
+          receive([ack!]);
+        }
         setStartedAt(Date.now());
       }
       return result;
@@ -180,9 +263,43 @@ export function useMission() {
       if (["/stop", "/mode", "/session"].includes(path)) setStopLatched(true);
       if (path === "/stop") stopEpoch.current++;
       const commandEpoch = stopEpoch.current;
+      const requestMap = activeMap.current;
       if (path !== "/stop") setPending(path);
       try {
-        await send(path, body);
+        const result = await send(path, body);
+        if (
+          path === "/rescan" &&
+          config.source === "external" &&
+          gen === generation.current
+        ) {
+          const ack = result as MapScope & {
+            version?: number;
+            rescan_id?: string;
+            baseline_objects?: number;
+          };
+          if (
+            ack.version !== 1 ||
+            !(typeof ack.rescan_id === "string" && ack.rescan_id.length > 0) ||
+            !Number.isSafeInteger(ack.baseline_objects) ||
+            Number(ack.baseline_objects) < 0
+          )
+            throw Error(
+              "Rescan response was not a valid baseline acknowledgement.",
+            );
+          if (
+            !requestMap ||
+            requestMap !== activeMap.current ||
+            mapKey(ack) !== requestMap ||
+            commandEpoch !== stopEpoch.current
+          )
+            return false;
+          setRescanBaseline(
+            `Baseline saved · ${ack.baseline_objects} objects · watching observations`,
+          );
+          notify(
+            `Baseline saved for ${ack.baseline_objects} objects. Watching new observations.`,
+          );
+        }
         if (
           path === "/arm" &&
           (gen !== generation.current || commandEpoch !== stopEpoch.current)
@@ -202,7 +319,7 @@ export function useMission() {
         if (gen === generation.current && path !== "/stop") setPending(null);
       }
     },
-    [send, notify],
+    [send, notify, config.source],
   );
   const trackingFault = () => {
     const sim = simulator.current;
@@ -218,6 +335,8 @@ export function useMission() {
   };
   return {
     mission,
+    rescanBaseline,
+    historyStatus,
     config,
     setConfig,
     connection,

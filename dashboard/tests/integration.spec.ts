@@ -180,6 +180,7 @@ test("old source arm completion reasserts stop after switching to simulator", as
     await route.fulfill({ json: { version: 1, ok: true } });
   });
   await page.goto("/");
+  await page.getByRole("button", { name: "2D", exact: true }).click();
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;
@@ -194,8 +195,8 @@ test("old source arm completion reasserts stop after switching to simulator", as
   await page
     .getByRole("button", { name: "Start simulator", exact: true })
     .click();
-  await expect(page.locator(".objects-panel .object-row")).toHaveCount(5);
   releaseArm();
+  await expect(page.locator(".objects-panel .object-row")).toHaveCount(5);
   await expect.poll(() => stopCalls).toBe(2);
   await expect(
     page.getByRole("button", { name: "Drive forward", exact: true }),
@@ -236,7 +237,7 @@ test("Python fake-live source renders relocation without simulator geometry", as
   expect(await page.locator(".map2d polyline").count()).toBe(1);
 });
 
-test("real backend remains disarmed and returns unsupported rescan honestly", async ({
+test("real backend remains disarmed and rejects a baseline before observations", async ({
   page,
 }) => {
   test.skip(
@@ -262,7 +263,9 @@ test("real backend remains disarmed and returns unsupported rescan honestly", as
   ).toBeDisabled();
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(0);
   await page.getByRole("button", { name: "Start rescan", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(/not implemented/i);
+  await expect(page.getByRole("status")).toContainText(
+    /No active map|Nothing observed/i,
+  );
   await page.getByRole("button", { name: "STOP ROVER", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Stop acknowledged");
 });
@@ -326,4 +329,88 @@ test("late session response cannot clear a newly selected simulator", async ({
       ),
     ),
   ).toBeGreaterThan(10000);
+});
+
+test("older arm completion cannot override a live map reset", async ({
+  page,
+}) => {
+  let resetMap: () => void = () => {};
+  let armed = false,
+    stopCalls = 0,
+    releaseArm: () => void = () => {},
+    armStarted: () => void = () => {};
+  const started = new Promise<void>((r) => (armStarted = r)),
+    gate = new Promise<void>((r) => (releaseArm = r));
+  await page.routeWebSocket("ws://localhost:9876/live", (ws) => {
+    const update = () => {
+      ws.send(
+        JSON.stringify({
+          version: 1,
+          type: "health",
+          phone: "ok",
+          car: "ok",
+          detector: "ok",
+          pose_age_ms: 5,
+          mode: "manual",
+          armed,
+          stop_reason: null,
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          version: 1,
+          type: "pose",
+          position: [0, 0.2, 0],
+          yaw_rad: 0,
+          tracking: "normal",
+        }),
+      );
+    };
+    resetMap = () =>
+      ws.send(
+        JSON.stringify({
+          version: 1,
+          type: "objects",
+          session_id: "new-room",
+          map_epoch: 2,
+          objects: [],
+        }),
+      );
+    ws.send(
+      JSON.stringify({
+        version: 1,
+        type: "objects",
+        session_id: "old-room",
+        map_epoch: 1,
+        objects: [],
+      }),
+    );
+    update();
+    const id = setInterval(update, 100);
+    ws.onClose(() => clearInterval(id));
+  });
+  await page.route("http://localhost:9876/**", async (route) => {
+    if (route.request().url().endsWith("/arm")) {
+      armStarted();
+      await gate;
+      armed = true;
+    }
+    if (route.request().url().endsWith("/stop")) {
+      stopCalls++;
+      armed = false;
+    }
+    await route.fulfill({ json: { version: 1, ok: true } });
+  });
+  await page.goto("/");
+  await external(page, "ws://localhost:9876/live", true);
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
+  await started;
+  resetMap();
+  await page.waitForTimeout(100);
+  releaseArm();
+  await expect.poll(() => stopCalls).toBe(1);
+  await expect(
+    page.getByRole("button", { name: "Drive forward", exact: true }),
+  ).toBeDisabled();
+  expect(armed).toBe(false);
 });
