@@ -4,7 +4,7 @@ Follow [SPEC.md](SPEC.md), [SURFACES.md](SURFACES.md), [DISCOVERY.md](DISCOVERY.
 
 The approved goal is to preserve every observed region of a room with color while bounding memory, instead of showing only a rolling window of recent camera views. Keep a cumulative, spatially compacted triangle map beneath the existing recent textured views. Bake same-frame image color at calibrated UVs into linear vertex color before releasing each camera texture. Recent views supply detail; the accumulated map remains after those views are replaced/evicted. Point-cloud mode uses accumulated colored vertices when available, retaining the raw recent-points stream only as a fallback for feeds without RGB-D.
 
-A worker owns geometry integration and spatial clustering, keeping large merges off the UI thread. Start at approximately 2 cm clustering, deduplicate overlapping observations and coarsen globally at the 1,000,000-triangle / 500,000-vertex geometry budget. Only observed triangle topology may contribute geometry. Preserve small disconnected observed components with representative observed geometry instead of silently erasing them. If fragmentation cannot fit the budget, retain the existing map and explicitly report capacity rather than dropping oldest regions. The scene shows accumulated-map resolution/count separately from recent-view detail. Limit each integration to one worker operation; an aborted caller must drain that operation before another can start. Bound coarsening to 12 iterations and 6,000,000 triangle visits per integration, with existing support-check limits unchanged, failing atomically at capacity if necessary.
+A worker owns geometry integration and spatial clustering, keeping large merges off the UI thread. Deduplicate identical observed vertices/triangles and simplify supported planar regions, retaining finer observed detail while below the 1,000,000-triangle / 500,000-vertex geometry budget. Apply spatial clustering only when that budget is exceeded, starting at approximately 2 cm and coarsening globally as necessary. Only observed triangle topology may contribute geometry. Preserve small disconnected observed components with representative observed geometry instead of silently erasing them. If fragmentation cannot fit the budget, retain the existing map and explicitly report capacity rather than dropping oldest regions. The scene shows accumulated-map resolution/count separately from recent-view detail. Limit each integration to one worker operation; an aborted caller must drain that operation before another can start. Bound coarsening to 12 iterations and 6,000,000 triangle visits per integration, with existing support-check limits unchanged, failing atomically at capacity if necessary.
 The triangle allowance supports dense meshes near the 500,000-vertex limit; the raw point-only fallback retains up to 500,000 points and 1,000 chunks.
 Allow up to 30 seconds for one worker fusion at this larger budget while retaining the separate 4-second network/image deadline and one-outstanding-operation limit.
 
@@ -35,3 +35,33 @@ Recent image textures remain unchanged above the accumulated map.
 Only compact retained positions, colors and triangle indices count toward the existing 500,000-vertex / 1,000,000-triangle limits; no full-resolution planar evidence cache is retained.
 Repeated shifted/noisy observations remain subject to normal spatial deduplication and capacity limits; this is not perfect multi-view registration or unlimited retention.
 Show the accumulated map's retained vertex count in the scene when available, with raw received-point count as the fallback.
+
+## Retained image detail
+
+Issue #46 addresses camera texture detail disappearing after the recent-view cache evicts a view.
+Before planar compression, sample the same-frame JPEG inside each supported coarse triangle, comparing quarter-edge/interior samples with interpolated corner colors in linear RGB.
+Where a sampled channel differs by more than 0.06, subdivide that existing triangle and sample its new vertices; leave uniform walls and smooth gradients coarse.
+Use shared edge midpoints, at most four refinement levels, and at most 6,144 vertices per normal capture frame.
+If the budget is exhausted, retain the parent face rather than dropping coverage.
+This is bounded appearance refinement over existing observed geometry: no new depth measurements, inferred surfaces, or filled holes.
+Sparse samples cannot guarantee preservation of every pixel or arbitrary fine texture.
+
+Color sampling/refinement and persistent integration run in the same single-flight worker.
+Publish the recent calibrated texture as soon as decoding finishes, before awaiting fusion; this reduces display latency but does not increase capture/poll frequency.
+Do not mark a frame integrated before fusion completes, so cancellation and transient failure can retry it.
+Under-budget maps avoid spatial clustering that would immediately erase the new detail.
+Export `cell_m: 0` means no spatial clustering has yet been applied; after budget coarsening, the value records the largest grid applied, not sensor accuracy or a uniform triangle size.
+Budget coarsening still trades retained detail for bounded memory and may reduce small-region coverage as previously documented.
+Physical motion blur, tracking drift, overlapping noisy surfaces, and moving-object ghosts remain limitations; this change does not claim to repair them.
+
+Capacity coarsening also checks an 8-second cooperative processing deadline inside its long loops and bounds support indexing to four million bucket entries and 500,000 spatial buckets.
+If those limits are reached, fail atomically with explicit capacity status, preserve the prior accumulated map and continue showing bounded recent textures.
+The 30-second caller timeout remains an outer bound; the coarsening deadline excludes initial append/planar processing and small checkpoint intervals.
+This guard can stop accumulation during a long overlapping scan; export/reset remains necessary at capacity, and no indefinite scan quality is promised.
+
+Persistent integration also selects approximately distinct observations while every decoded recent texture still refreshes.
+Compare against at most 16 successfully fused view descriptors from the same source/map: within 10 cm camera displacement and 5 degrees forward-direction change, skip fusion only if every referenced vertex and triangle centroid lies within 5 cm Euclidean distance of prior observed samples.
+Any unmatched sample admits the whole frame; a stationary camera can therefore contribute newly supported depth or moved foreground surfaces.
+Descriptors contain at most 12,000 probes each, clear with source/map lifecycle, and never record failed fusion.
+This finite support test is approximate; sub-5 cm changes, unsampled interiors, and purely photographic changes may wait for a different view, while current textures still update.
+It bounds duplicate accumulation during small camera motions but is not full registration, exact geometric coverage proof, dynamic-object removal, or unlimited revisit deduplication.

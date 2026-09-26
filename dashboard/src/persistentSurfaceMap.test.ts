@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PersistentSurfaceMap } from "./persistentSurfaceMap";
 import type { SurfacePatch } from "./surfaceTypes";
 
@@ -188,4 +188,31 @@ it("does not fill an unobserved hole inside a connected scanned floor when coars
         });
         expect(inside(x, z, p[0], p[1], p[2])).toBe(false);
       }
+});
+
+it("fails an expired coarsening job atomically while retaining the prior map", () => {
+  const map = new PersistentSurfaceMap({
+    maxVertices: 500,
+    maxTriangles: 1000,
+  });
+  map.add(plane(0));
+  const prior = map.snapshot();
+  const detailed = plane(2, 0, 1, 30);
+  for (let i = 0; i < detailed.colors!.length; i++)
+    detailed.colors![i] = i % 2 ? 0.1 : 0.9;
+  let calls = 0;
+  const clock = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => (++calls <= 2 ? 0 : 9001));
+  try {
+    expect(() => map.add(detailed)).toThrow(/capacity.*processing time/);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(map.snapshot()).toBe(prior);
+    expect(map.cellM).toBe(0);
+  } finally {
+    clock.mockRestore();
+  }
+  // A bounded failure does not poison the map or its next small integration.
+  map.add(plane(4));
+  expect(covers(map.snapshot()!, 4)).toBe(true);
 });

@@ -1,3 +1,5 @@
+import type { SurfaceViewpoint } from "./surfaceKeyframes";
+import type { ColorPixels } from "./surfaceColor";
 import type { SurfacePatch } from "./surfaceTypes";
 export interface MapSnapshot {
   patch: SurfacePatch | null;
@@ -18,7 +20,12 @@ export class SurfaceMapClient {
       { type: "module" },
     );
   }
-  add(patch: SurfacePatch, signal: AbortSignal): Promise<MapSnapshot> {
+  add(
+    patch: SurfacePatch,
+    signal: AbortSignal,
+    image?: ColorPixels,
+    viewpoint?: SurfaceViewpoint,
+  ): Promise<MapSnapshot> {
     if (this.outstanding) return Promise.reject(Error("Map worker busy"));
     if (signal.aborted)
       return Promise.reject(Error("Map integration cancelled"));
@@ -64,7 +71,7 @@ export class SurfaceMapClient {
       this.worker.addEventListener("message", message);
       this.worker.addEventListener("error", error);
       try {
-        this.worker.postMessage({ id, patch });
+        this.worker.postMessage({ id, patch, image, viewpoint });
       } catch {
         fail(Error("Map worker unavailable"));
       }
