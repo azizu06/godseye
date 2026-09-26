@@ -34,6 +34,13 @@ def hello(session='map-session', epoch=1):
                 map_epoch=epoch, supports_scene_depth=True, supports_mesh=False)
 
 
+def pose(t_capture, tracking='normal'):
+    return dict(version=1, type='pose', session_id='map-session', map_epoch=1,
+                frame_id=int(t_capture * 100), t_capture=t_capture,
+                t_wall_ms=int(time.time() * 1000), tracking=tracking,
+                transform=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 30, 1])
+
+
 def next_of(ws, wanted, limit=60):
     for _ in range(limit):
         message = ws.receive_json()
@@ -51,6 +58,75 @@ def wait_for(predicate, timeout=5.):
 
 
 class MapTransportTests(unittest.TestCase):
+    def test_encoder_latency_does_not_starve_points_or_rewind_latest_pose(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                phone.send_json(pose(10.1))
+                next_of(live, 'pose')
+                received = client.app.state.pose_at
+                phone.send_bytes(frame(frame_id=1000, t_capture=10.0))
+                chunk = next_of(live, 'points')
+                # Frame has its own rotated pose at (1,2,3), not the newer (10,20,30).
+                np.testing.assert_allclose(np.array(chunk['positions']).reshape(-1, 3)[:, 0], -1)
+                self.assertEqual(chunk['t_capture'], 10.0)
+                self.assertEqual(client.app.state.pose.t_capture, 10.1)
+                self.assertEqual(client.app.state.pose_at, received)
+                status = client.get('/capture/status').json()
+                self.assertEqual(status['position'], [10, 20, 30])
+                self.assertEqual(status['mapping']['published'], 1)
+                self.assertEqual(status['frame']['metadata']['frame_id'], 1000)
+                # A second delayed bundle can advance the map without refreshing health.
+                phone.send_bytes(frame(frame_id=1005, t_capture=10.05))
+                self.assertEqual(next_of(live, 'points')['frame_id'], 1005)
+                self.assertEqual(client.app.state.pose_at, received)
+                self.assertEqual(client.get('/health').json()['phone'], 'stale')
+
+    def test_equal_time_and_duplicate_bundles_never_refresh_pose_watchdog(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                phone.send_json(pose(10))
+                next_of(live, 'pose')
+                received = client.app.state.pose_at
+                phone.send_bytes(frame(frame_id=1000, t_capture=10))
+                next_of(live, 'points')
+                phone.send_bytes(frame(frame_id=1000, t_capture=10))
+                wait_for(lambda: client.app.state.map_stats['discarded_order'] == 1)
+                self.assertEqual(client.app.state.pose_at, received)
+                self.assertEqual(client.app.state.map_stats['published'], 1)
+
+    def test_frames_captured_before_tracking_loss_are_not_mapped_after_recovery(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                phone.send_json(pose(10.1, 'limited'))
+                next_of(live, 'pose')
+                phone.send_json(pose(10.2))
+                wait_for(lambda: client.app.state.pose.t_capture == 10.2)
+                phone.send_bytes(frame(t_capture=10.05))
+                wait_for(lambda: client.app.state.capture.count == 1)
+                self.assertEqual(client.app.state.map_stats['published'], 0)
+                phone.send_bytes(frame(frame_id=2, t_capture=10.15))
+                self.assertEqual(next_of(live, 'points')['frame_id'], 2)
+
+    def test_inflight_result_is_discarded_if_tracking_was_lost(self):
+        started, release = threading.Event(), threading.Event()
+        def gated(payload, session_id, epoch):
+            started.set()
+            release.wait(5)
+            return build_point_chunk(payload, session_id, epoch)
+        with TestClient(create_app(':memory:', build_points=gated)) as client:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                phone.send_bytes(frame(t_capture=10))
+                self.assertTrue(started.wait(5))
+                phone.send_json(pose(10.1, 'not_available'))
+                wait_for(lambda: client.app.state.tracking_lost_capture == 10.1)
+                release.set()
+                wait_for(lambda: client.app.state.map_stats['discarded_tracking'] == 1)
+                self.assertEqual(client.app.state.map_stats['published'], 0)
+
     def test_one_bounded_chunk_with_known_world_geometry(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
             with client.websocket_connect('/phone') as phone:

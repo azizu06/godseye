@@ -184,6 +184,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         app.state.phone = None
         app.state.pose = None
         app.state.pose_at = None
+        app.state.tracking_lost_capture = -1.0
         app.state.armed = False
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
@@ -292,6 +293,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             # The map may have reset or the phone left while this was computing.
             if app.state.phone is not owner or app.state.session != session:
                 stats['discarded_reset'] += 1
+            elif result.t_capture <= app.state.tracking_lost_capture:
+                stats['discarded_tracking'] += 1
             elif result.t_capture <= last_capture or time.monotonic() - received > max_age:
                 stats['discarded_stale'] += 1
             else:
@@ -334,6 +337,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         stop('session_reset')
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
         app.state.chunk_id = 0
@@ -361,6 +365,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         pose = app.state.pose
         return dict(version=1, **app.state.capture.status(), health=health(),
                     rich=app.state.rich_capture.status(),
+                    mapping=dict(app.state.map_stats),
                     tracking=None if pose is None else pose.tracking,
                     position=None if pose is None else pose.transform[12:15])
 
@@ -473,6 +478,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                     owner, session, detections, object_locator(owner), accept_objects, app.state.detect_stats,
                     DETECT_INTERVAL_S, DETECT_MAX_AGE_S)))
             last_capture = -1.0
+            last_frame_capture = -1.0
             last_pose_publish = -1.0
             while True:
                 message = await ws.receive()
@@ -489,30 +495,50 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                         raise ValueError('frame must be binary')
                 if (pose.session_id, pose.map_epoch) != app.state.session:
                     raise ValueError('session/epoch mismatch; reconnect with hello')
-                if pose.tracking != 'normal':
-                    stop('tracking_lost')
-                # Do not let delayed data refresh the watchdog or overwrite newer poses.
-                if pose.t_capture < last_capture or abs(time.time()*1000 - pose.t_wall_ms) > 250:
-                    stop('pose_stale')
+                is_frame = isinstance(pose, Frame)
+                # Images finish encoding after newer poses have already arrived. Their
+                # own calibration/transform remains authoritative for mapping; do not
+                # let them rewind the current pose or refresh its watchdog receipt.
+                if abs(time.time()*1000 - pose.t_wall_ms) > 250:
+                    if is_frame:
+                        app.state.map_stats['discarded_wall_time'] += 1
+                    else:
+                        stop('pose_stale')
                     continue
-                last_capture = pose.t_capture
-                app.state.pose = pose
-                app.state.pose_at = time.monotonic()
+                if is_frame:
+                    if (pose.t_capture <= last_frame_capture or
+                            pose.t_capture < last_capture - MAP_MAX_AGE_S):
+                        app.state.map_stats['discarded_order'] += 1
+                        continue
+                    last_frame_capture = pose.t_capture
+                    app.state.map_stats['received'] += 1
+                elif pose.t_capture <= last_capture:
+                    continue
+                newest_pose = pose.t_capture > last_capture
+                if newest_pose:
+                    last_capture = pose.t_capture
+                    app.state.pose = pose
+                    app.state.pose_at = time.monotonic()
+                    if pose.tracking != 'normal':
+                        app.state.tracking_lost_capture = pose.t_capture
+                        stop('tracking_lost')
                 app.state.db.execute(
                     'INSERT OR REPLACE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,tracking,intrinsics_json) VALUES(?,?,?,?,?,?,?,?)',
                     (pose.session_id, pose.map_epoch, pose.frame_id, pose.t_capture, pose.t_wall_ms,
                      json.dumps(pose.transform), pose.tracking,
                      json.dumps(pose.image.intrinsics) if isinstance(pose, Frame) else None))
                 app.state.db.commit()
-                if isinstance(pose, Frame):
+                if is_frame:
                     app.state.capture.update(message['bytes'], pose.model_dump())
-                if isinstance(pose, Frame) and pose.tracking == 'normal':
+                if is_frame and pose.tracking == 'normal' and pose.t_capture > app.state.tracking_lost_capture:
                     if mailbox.put(message['bytes']):
                         app.state.map_stats['replaced'] += 1
                     if app.state.detector is not None and detections.put(message['bytes']):
                         app.state.detect_stats['replaced'] += 1
+                elif is_frame:
+                    app.state.map_stats['discarded_tracking'] += 1
                 now = time.monotonic()
-                if now - last_pose_publish >= 1/15:
+                if newest_pose and now - last_pose_publish >= 1/15:
                     last_pose_publish = now
                     transform = pose.transform
                     publish(dict(version=1, type='pose', position=transform[12:15],

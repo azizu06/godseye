@@ -10,16 +10,19 @@ public struct SensorMessage {
 }
 
 /// One pending pose and one pending bundle, plus the caller's single in-flight send.
-/// A slow encoder must never send an older frame after a newer pose.
+/// Pose and image encoding have different latency. Order each stream independently
+/// so a fresh encoded bundle can follow a newer pose without losing its own pose.
 public struct PendingMessages {
     private var pose: SensorMessage?
     private var frame: SensorMessage?
-    private var lastSent = -Double.infinity
+    private var lastPose = -Double.infinity
+    private var lastFrame = -Double.infinity
     public private(set) var dropped = 0
     public init() {}
 
     public mutating func offer(_ message: SensorMessage) {
-        guard message.capture.isFinite, message.capture >= lastSent else { dropped += 1; return }
+        let watermark = message.isFrame ? lastFrame : lastPose
+        guard message.capture.isFinite, message.capture > watermark else { dropped += 1; return }
         let previous = message.isFrame ? frame : pose
         if let previous, previous.capture > message.capture { dropped += 1; return }
         if previous != nil { dropped += 1 }
@@ -36,7 +39,10 @@ public struct PendingMessages {
             else { value = f; frame = nil }
         } else if let p = pose { value = p; pose = nil }
         else { value = frame; frame = nil }
-        if let value { lastSent = value.capture }
+        if let value {
+            if value.isFrame { lastFrame = value.capture }
+            else { lastPose = value.capture }
+        }
         return value
     }
 }

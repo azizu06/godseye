@@ -104,7 +104,7 @@ export function usePointCloud() {
           setFeed((s) => ({ ...s, phone: message.phone }));
         } else if (
           message.type === "pose" &&
-          ["normal", "limited", "unavailable"].includes(message.tracking)
+          ["normal", "limited", "not_available"].includes(message.tracking)
         ) {
           setFeed((s) => ({ ...s, tracking: message.tracking }));
         }
@@ -136,7 +136,7 @@ export function usePointCloud() {
     feed.phone !== "down" &&
     feed.phone !== "stale" &&
     feed.tracking !== "limited" &&
-    feed.tracking !== "unavailable";
+    feed.tracking !== "not_available";
   let label = live ? "Live RGB + depth" : "Waiting for RGB + depth";
   if (feed.connection === "connecting") label = "Connecting to point feed";
   if (feed.connection === "offline") label = "Feed disconnected";
@@ -146,6 +146,8 @@ export function usePointCloud() {
     label = "No fresh depth";
   if (feed.connection === "connected" && feed.tracking === "limited")
     label = "Tracking limited";
+  if (feed.connection === "connected" && feed.tracking === "not_available")
+    label = "Tracking unavailable";
   if (feed.connection === "connected" && feed.phone === "down")
     label = "Phone offline";
   return { cloud, live, label, rejected: feed.rejected };

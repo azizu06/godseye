@@ -45,7 +45,13 @@ and rover base heading remain future work.
 
 Phone freshness uses local monotonic receipt age and requires a wall timestamp
 within 250 ms of the Mac clock. Synchronize phone/Mac wall clocks for the demo.
-Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
+Capture ordering is independent for poses and binary frames, since image encoding
+can finish after a newer pose arrives. A delayed frame keeps its own camera pose
+for projection and never rewinds the latest pose or refreshes the pose watchdog.
+Duplicate/out-of-order frames and frames over 1 s behind the newest pose are
+discarded; the 250 ms wall-time bound still applies. Frames captured before the
+latest tracking loss cannot enter the map, including work already in flight.
+Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
 
@@ -103,8 +109,16 @@ Hand-off checks. **iOS:** send a bundle per the `docs/INTERFACES.md` layout
 that a wall in front of the phone appears in front of the pose in ARKit world
 coordinates and does not orbit when the phone turns. **Dashboard:** subscribe
 to `ws://<mac>:8765/live`, append `points` chunks (colors 0..1), cap the total,
-and reset on a new `session_id`. Neither real-device nor dashboard paths were
-exercised in this slice; the shared checkpoint passes only when both are.
+and reset on a new `session_id`. The dashboard suite now exercises binary phone
+input through a real isolated backend into rendered points, including encoder
+latency. The Swift contract check verifies projected coordinates and colors.
+Physical RGB/depth registration and tracking drift still require the phone.
+
+`GET /capture/status` includes a `mapping` object with backend-lifetime counters
+(`received`, `published`, `replaced`, `rejected`, `failed`, `discarded_order`,
+`discarded_wall_time`, `discarded_tracking`, `discarded_stale`, `discarded_reset`;
+absent counters are zero). Use these alongside `received_frames` and `frame_hz`
+to distinguish missing bundles, poor depth, encoding delay, and computation errors.
 
 ## Live objects
 

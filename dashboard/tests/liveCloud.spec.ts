@@ -112,6 +112,9 @@ test("disconnected scans stay visible, stop claiming live, and clear on reconnec
   send({ version: 1, type: "pose", tracking: "limited" });
   await expect(status).toContainText("Tracking limited");
   await expect(status).toHaveAttribute("data-live", "false");
+  send({ version: 1, type: "pose", tracking: "not_available" });
+  await expect(status).toContainText("Tracking unavailable");
+  await expect(status).toHaveAttribute("data-live", "false");
   const previous = connections.length;
   await connections.at(-1)!.close({ code: 1012, reason: "Fixture reconnect" });
   await expect(status).toContainText("Feed disconnected");

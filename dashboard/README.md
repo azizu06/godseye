@@ -83,6 +83,7 @@ handles the live connection, reconnects, and status.
 npm run build
 npm run format:check
 npx playwright install chromium
+python3 -m pip install -r ../backend/requirements-test.txt
 npm test
 ```
 
@@ -90,5 +91,9 @@ Tests cover world positions, color conversion, bounded accumulation, map
 resets, malformed data, reconnects, and rendered point updates through mocked
 WebSockets. Browser tests also exercise mouse/keyboard navigation, framing,
 camera independence, window resizing, and absence of rover commands. Test
-fixtures never feed the real phone backend. Physical-device visual validation
-is still needed for a particular phone's calibration and tracking quality.
+fixtures never feed the real phone backend. The pipeline test launches an isolated
+backend on an ephemeral local port with an in-memory database and no recording,
+sends calibrated binary RGB/depth frames behind newer poses, and checks rendered
+geometry in the browser. It uses `python3` by default; set `GODSEYE_PYTHON` to the
+Python executable containing your backend dependencies if needed. Physical-device
+visual validation is still needed for a particular phone's calibration and tracking quality.
