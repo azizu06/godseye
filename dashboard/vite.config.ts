@@ -1,14 +1,41 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
-export default defineConfig({
-  plugins: [react()],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          three: ["three", "@react-three/fiber", "@react-three/drei"],
+export default defineConfig(({ mode }) => {
+  const { GODSEYE_BACKEND_URL } = loadEnv(mode, process.cwd(), "GODSEYE_");
+  let target: string | undefined;
+  if (GODSEYE_BACKEND_URL) {
+    const backend = new URL(GODSEYE_BACKEND_URL);
+    if (
+      !["http:", "https:"].includes(backend.protocol) ||
+      backend.username ||
+      backend.password ||
+      backend.pathname !== "/" ||
+      backend.search ||
+      backend.hash
+    )
+      throw Error("GODSEYE_BACKEND_URL must be an HTTP(S) backend origin");
+    target = backend.origin;
+  }
+  // Only the configured backend and viewer routes can be reached through this relay.
+  const proxy = target
+    ? {
+        "^/live(?:\\?|$)": { target, ws: true },
+        "^/capture(?:/|\\?|$)": { target },
+        "^/health(?:\\?|$)": { target },
+      }
+    : undefined;
+  return {
+    plugins: [react()],
+    server: { proxy },
+    preview: { proxy },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            three: ["three", "@react-three/fiber", "@react-three/drei"],
+          },
         },
       },
     },
-  },
+  };
 });

@@ -46,6 +46,8 @@ test("live RGB-depth points render, update color, and never steer the viewing ca
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const { canvas, status, send, rendered } = await openFeed(page);
+  await expect(status).toHaveAttribute("data-source", source);
+  await expect(status).toContainText("Backend 127.0.0.1:8797");
   const empty = await rendered();
   send(wall());
   await expect(status).toContainText("900 points");

@@ -2,11 +2,18 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { PointCloudStore, POINTS_PROTOCOL } from "./pointCloud";
 import { CloudWorker } from "./cloudWorker";
 
-export function liveEndpoint(pageURL: string): string | null {
+export function liveEndpoint(
+  pageURL: string,
+  defaultEndpoint?: string,
+): string | null {
   const page = new URL(pageURL);
-  const requested = page.searchParams.get("live");
+  const requested = page.searchParams.get("live") ?? defaultEndpoint?.trim();
   if (requested === "off") return null;
-  const endpoint = requested ? new URL(requested) : new URL(page.origin);
+  const relative = requested?.startsWith("/") && !requested.startsWith("//");
+  const endpoint = requested
+    ? new URL(requested, relative ? page.origin : undefined)
+    : new URL(page.origin);
+  if (relative) endpoint.protocol = page.protocol === "https:" ? "wss:" : "ws:";
   if (!requested) {
     endpoint.protocol = page.protocol === "https:" ? "wss:" : "ws:";
     endpoint.port = "8765";
@@ -42,7 +49,10 @@ export function usePointCloud() {
   useEffect(() => {
     let endpoint: string | null;
     try {
-      endpoint = liveEndpoint(window.location.href);
+      endpoint = liveEndpoint(
+        window.location.href,
+        import.meta.env.VITE_LIVE_URL,
+      );
     } catch {
       setFeed((s) => ({ ...s, connection: "invalid" }));
       return;

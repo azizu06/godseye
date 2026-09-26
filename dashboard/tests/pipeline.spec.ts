@@ -1,9 +1,21 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { createServer, type ViteDevServer } from "vite";
 
-for (const mode of ["small", "legacy", "dense", "textured"]) {
-  const count = mode === "small" || mode === "legacy" ? 300 : 20_000;
+for (const mode of [
+  "small",
+  "legacy",
+  "dense",
+  "textured",
+  "relay",
+  "relay-legacy",
+]) {
+  const relayed = mode.startsWith("relay");
+  const fixtureMode =
+    mode === "relay" ? "small" : mode === "relay-legacy" ? "legacy" : mode;
+  const count =
+    fixtureMode === "small" || fixtureMode === "legacy" ? 300 : 20_000;
   test(`binary phone RGB + depth renders ${mode} frames through the real backend`, async ({
     page,
   }, testInfo) => {
@@ -11,13 +23,14 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
       process.env.GODSEYE_PYTHON || "python3",
       [
         "tests/support/phone_backend.py",
-        ...(mode === "small" ? [] : [`--${mode}`]),
+        ...(fixtureMode === "small" ? [] : [`--${fixtureMode}`]),
       ],
       {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
       },
     );
     let phone: WebSocket | undefined;
+    let relay: ViteDevServer | undefined;
     let poses: ReturnType<typeof setInterval> | undefined;
     let stderr = "";
     const captureRequests: string[] = [];
@@ -64,7 +77,38 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
           }
         })
         .toBe(true);
-      await page.goto(`/?live=${encodeURIComponent(`${ws}/live`)}`);
+      if (relayed) {
+        const oldBackend = process.env.GODSEYE_BACKEND_URL;
+        const oldFeed = process.env.VITE_LIVE_URL;
+        try {
+          process.env.GODSEYE_BACKEND_URL = http;
+          process.env.VITE_LIVE_URL = "/live";
+          relay = await createServer({
+            configFile: fileURLToPath(
+              new URL("../vite.config.ts", import.meta.url),
+            ),
+            cacheDir: testInfo.outputPath("vite-cache"),
+            server: { host: "127.0.0.1", port: 0 },
+            logLevel: "error",
+          });
+        } finally {
+          if (oldBackend === undefined) delete process.env.GODSEYE_BACKEND_URL;
+          else process.env.GODSEYE_BACKEND_URL = oldBackend;
+          if (oldFeed === undefined) delete process.env.VITE_LIVE_URL;
+          else process.env.VITE_LIVE_URL = oldFeed;
+        }
+        await relay.listen();
+        const address = relay.httpServer!.address();
+        if (!address || typeof address === "string")
+          throw Error("Relay did not bind");
+        await page.goto(`http://127.0.0.1:${address.port}/`);
+        await expect(page.getByRole("status")).toHaveAttribute(
+          "data-source",
+          `ws://127.0.0.1:${address.port}/live`,
+        );
+      } else {
+        await page.goto(`/?live=${encodeURIComponent(`${ws}/live`)}`);
+      }
       const status = page.getByRole("status", { name: "Point cloud status" });
       const canvas = page.getByRole("application", {
         name: "Interactive 3D viewport",
@@ -145,7 +189,7 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
         .toBe(2);
       await expect(status).toHaveAttribute("data-surfaces", "true");
       expect(captureRequests).toContain("/capture/surface.bin");
-      if (mode === "legacy") {
+      if (fixtureMode === "legacy") {
         expect(captureRequests).toContain("/capture/status");
         expect(captureRequests).toContain("/capture/frame.bin");
       } else {
@@ -255,6 +299,7 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
     } finally {
       clearInterval(poses);
       phone?.close();
+      await relay?.close();
       backend.kill("SIGTERM");
     }
   });

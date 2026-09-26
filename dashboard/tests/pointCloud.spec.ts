@@ -147,6 +147,42 @@ test("feed URLs follow the viewing laptop and allow an explicit source", () => {
   ).toThrow();
 });
 
+test("a configured backend is shared across browsers and explicit URLs still win", () => {
+  const configured = "ws://10.0.0.44:8765/live";
+  for (const page of ["http://localhost:5173/", "http://10.0.0.68:5173/"])
+    expect(liveEndpoint(page, configured)).toBe(configured);
+  expect(
+    liveEndpoint("http://localhost:5173/?live=off", configured),
+  ).toBeNull();
+  expect(
+    liveEndpoint(
+      "http://localhost:5173/?live=ws%3A%2F%2Fother.test%3A8765%2Flive",
+      configured,
+    ),
+  ).toBe("ws://other.test:8765/live");
+  expect(liveEndpoint("http://localhost:5173/", "   ")).toBe(
+    "ws://localhost:8765/live",
+  );
+  expect(() =>
+    liveEndpoint("http://localhost:5173/", "https://bad.test"),
+  ).toThrow();
+});
+
+test("relative feed URLs use the dashboard server for the shared relay", () => {
+  expect(liveEndpoint("http://10.0.0.68:5173/", "/live")).toBe(
+    "ws://10.0.0.68:5173/live",
+  );
+  expect(liveEndpoint("https://scan.test/", "/live")).toBe(
+    "wss://scan.test/live",
+  );
+  expect(liveEndpoint("http://localhost:5173/?live=/live")).toBe(
+    "ws://localhost:5173/live",
+  );
+  expect(() =>
+    liveEndpoint("http://localhost:5173/", "//other.test/live"),
+  ).toThrow();
+});
+
 test("point buffer retains two million distinct samples and uploads appended ranges only", () => {
   const cloud = new PointCloudStore();
   expect(MAX_POINTS).toBe(2_000_000);

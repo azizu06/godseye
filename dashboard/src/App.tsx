@@ -47,6 +47,7 @@ export default function App() {
         aria-live="off"
         data-live={live}
         data-surfaces={showSurfaces}
+        data-source={source ?? undefined}
       >
         {label} · {cloud.count.toLocaleString()} points
         {showSurfaces
@@ -55,6 +56,7 @@ export default function App() {
         {surfaces.capacity ? " · surface memory full" : ""}
         {cloud.evicted > 0 ? " · buffer full; older points replaced" : ""}
         {rejected > 0 ? ` · ${rejected} invalid packets skipped` : ""}
+        {source ? ` · Backend ${new URL(source).host}` : ""}
       </div>
       <p className="navigation-hint" id="navigation-help">
         <span>

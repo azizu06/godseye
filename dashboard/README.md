@@ -26,6 +26,32 @@ The dashboard uses the selected backend for both points and camera/depth surface
 keep the `live` query parameter when bookmarking or reopening the dashboard.
 Use `/?live=off` for an empty viewport without a backend connection.
 
+To use one backend by default for every browser and device, copy `.env.example`
+to `.env.local`, set `VITE_LIVE_URL=ws://<backend IP>:8765/live`, and restart the
+dev server (or rebuild for production). The local settings file is gitignored.
+An explicit `?live=` still overrides this default, including `?live=off`.
+The status line shows the selected backend address so viewers can check that
+they are using the same feed. Other devices open `http://<dashboard laptop IP>:5173/`;
+`localhost` refers to each device itself. A configured backend URL is public
+browser configuration and must not contain credentials.
+
+For multiple viewers, the dev/preview server can relay the feed through the same
+address that serves the dashboard. This is useful when a browser can reach the
+dashboard laptop but cannot directly reach the phone's backend. Set these in
+`.env.local`, then restart Vite:
+
+```dotenv
+VITE_LIVE_URL=/live
+GODSEYE_BACKEND_URL=http://<backend IP>:8765
+```
+
+Open the plain dashboard URL, without an old `?live=ws://...` override. Vite
+forwards `/live`, `/capture` and `/health` to that fixed backend, including binary
+frames and conditional RGB-D requests. Each viewer still has its own live
+subscription; no phone data is duplicated or replayed by the relay. Keep the
+iPhone pointed at `ws://<backend IP>:8765/phone`. A static production host needs
+equivalent reverse-proxy routes; the Vite relay runs only in dev/preview.
+
 ## Navigation
 
 - **Right-drag:** orbit around the current view target.
