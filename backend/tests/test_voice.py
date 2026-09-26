@@ -78,7 +78,7 @@ class GroundingTests(unittest.TestCase):
     def objects(self, count):
         return [dict(id=f'o{i}', **{'class': 'chair'}, position=[i, 0., 1.], confidence=.9, first_seen=10.,
                      last_seen=100. - i, observations=3, state='present',
-                     identity=dict(label='red chair' if i == 0 else None, status='labeled' if i == 0 else 'pending',
+                     identity=dict(label='red chair' if i == 0 else 'guess', status='labeled' if i == 0 else 'pending',
                                    reason=None, source='gemini'))
                 for i in range(count)]
 
@@ -89,7 +89,7 @@ class GroundingTests(unittest.TestCase):
         first = context['objects'][0]
         self.assertEqual(first['last_seen_s_ago'], 60)
         self.assertEqual(first['label'], 'red chair')
-        self.assertNotIn('label', context['objects'][1])  # unlabeled or pending is not a description
+        self.assertNotIn('label', context['objects'][1])  # only a completed label is a description
         self.assertNotIn('id', first)
         self.assertFalse(context['map']['live'])
         self.assertNotIn('route', context)
@@ -235,7 +235,7 @@ class VoiceRouteTests(unittest.TestCase):
         self.assertNotIn('backpack', text.lower())
         self.assertNotIn('boom', text)
 
-    def test_one_question_in_flight_and_per_map_budget(self):
+    def test_one_question_in_flight_and_process_budget(self):
         with tempfile.TemporaryDirectory() as folder:
             voice = providers(answerer=FakeAnswerer(delay=.5))
             with TestClient(create_app(seeded(folder), voice_providers=voice, voice_budget=2)) as client:
@@ -253,7 +253,9 @@ class VoiceRouteTests(unittest.TestCase):
                 self.assertEqual(client.post('/voice/ask', content=CLIP, headers=WEBM).status_code, 200)
                 limited = client.post('/voice/ask', content=CLIP, headers=WEBM)
                 self.assertEqual(limited.status_code, 429)
-                self.assertEqual(limited.json()['detail'], 'Voice question limit reached for this map')
+                self.assertIn('limit reached', limited.json()['detail'])
+                client.post('/session')  # a new map does not reset spend
+                self.assertEqual(client.post('/voice/ask', content=CLIP, headers=WEBM).status_code, 429)
             self.assertEqual(len(voice.transcriber.calls), 2)
 
 

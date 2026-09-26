@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import Scene from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
+import { VoiceAsk } from "./VoiceAsk";
 import { useMission } from "./useMission";
 import {
   Dialog,
@@ -472,6 +473,7 @@ export default function App() {
           )}
         </aside>
       )}
+      <VoiceAsk config={config} />
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>

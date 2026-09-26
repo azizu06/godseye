@@ -27,7 +27,7 @@ MAX_CONTEXT_CHANGES = 20
 MAX_ROUTE_POINTS = 32
 MAX_EXTRAS = 4096
 TRANSCRIBE_S, ANSWER_S, SPEAK_S = 15, 12, 15
-DEFAULT_BUDGET = 50  # questions per map per backend process; never retried automatically
+DEFAULT_BUDGET = 100  # paid questions per backend process (a new map does not reset it); never retried
 
 
 class Transcriber(Protocol):
@@ -126,7 +126,7 @@ def _clean(text, limit):
 def register_voice_routes(app, providers, budget, evidence):
     """`evidence()` -> dict(session, objects, events, live, scout, route, extras) of the shown map."""
     busy = asyncio.Lock()
-    asked = {}
+    asked = 0
 
     @app.get('/voice')
     async def voice_status():
@@ -134,6 +134,7 @@ def register_voice_routes(app, providers, budget, evidence):
 
     @app.post('/voice/ask')
     async def voice_ask(request: Request):
+        nonlocal asked
         if providers is None:
             raise HTTPException(503, 'Voice Q&A unavailable')
         mime = request.headers.get('content-type', '').split(';')[0].strip().lower()
@@ -154,9 +155,9 @@ def register_voice_routes(app, providers, budget, evidence):
         async with busy:
             found = evidence()
             session = found['session']
-            if asked.get(session, 0) >= budget:
-                raise HTTPException(429, 'Voice question limit reached for this map')
-            asked[session] = asked.get(session, 0) + 1
+            if asked >= budget:
+                raise HTTPException(429, 'Voice question limit reached; restart the backend to allow more')
+            asked += 1
             result = dict(version=1, session_id=session[0] if session else None,
                           map_epoch=session[1] if session else None, status='no_speech', question=None,
                           answer=None, evidence=dict(objects=len(found['objects']), changes=len(found['events'])),
