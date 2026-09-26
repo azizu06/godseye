@@ -8,13 +8,20 @@ from dataclasses import dataclass
 import logging
 import math
 import time
-
-from backend.drive import CarAdapter
+from typing import Literal, Protocol
 
 logger = logging.getLogger(__name__)
 MAX_SPEED_MPS = .2  # contract hard maximums
 MAX_YAW_RATE_RPS = .5
 MAX_LEASE_S = .25  # the phase-2 command validity
+
+
+class CarAdapter(Protocol):
+    """Implemented in `backend.drive`; see its module docstring for the contract."""
+
+    def send(self, v_mps: float, yaw_rate_rps: float) -> None: ...
+    def zero(self) -> None: ...
+    def health(self) -> Literal['ok', 'stale', 'down']: ...
 
 
 @dataclass(frozen=True)

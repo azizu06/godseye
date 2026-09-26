@@ -20,13 +20,13 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.changes import ChangeTracker
-from backend.drive import CarAdapter, LoggingCar
+from backend.drive import LoggingCar
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
-from backend.motion import Motion, MotionLimits
+from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory

@@ -7,20 +7,12 @@ loop, so it must return promptly (do blocking I/O on the adapter's own thread)
 and raise when a command or zero was not handed off.
 """
 import logging
-from typing import Literal, Protocol
 
 logger = logging.getLogger(__name__)
-CarHealth = Literal['ok', 'stale', 'down']
 
 
 def drive(v_mps: float, yaw_rate_rps: float) -> None:
     logger.info('DRIVE STUB v_mps=%s yaw_rate_rps=%s (not transmitted)', v_mps, yaw_rate_rps)
-
-
-class CarAdapter(Protocol):
-    def send(self, v_mps: float, yaw_rate_rps: float) -> None: ...
-    def zero(self) -> None: ...
-    def health(self) -> CarHealth: ...
 
 
 class LoggingCar:
@@ -39,7 +31,7 @@ class LoggingCar:
 class FakeCar:
     """Records every call and reports whatever health a test or smoke run sets; moves nothing."""
 
-    def __init__(self, health: CarHealth = 'ok'):
+    def __init__(self, health='ok'):
         self.state = health
         self.calls = []  # ('send', v_mps, yaw_rate_rps) or ('zero',)
         self.error = None  # raised from send() and zero() when set, like a dropped link
