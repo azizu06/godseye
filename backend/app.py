@@ -2,6 +2,7 @@
 import asyncio
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 import json
 import logging
 import math
@@ -27,6 +28,7 @@ from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
+from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
 logger = logging.getLogger(__name__)
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
@@ -157,15 +159,21 @@ class LatestFrame:
         return item
 
 
-def create_app(db_path: str | None = None, build_points=build_point_chunk,
-               detector=None, weights: str | None = None, capture_directory: str | None = None) -> FastAPI:
+def create_app(db_path: str | None = None, build_points=None,
+               detector=None, weights: str | None = None, capture_directory: str | None = None,
+               point_settings: PointSettings | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
+
+    Its candidate points pass through a per-map voxel memory (`point_settings`,
+    default from GODSEYE_POINT* variables) so chunks carry mostly new surface.
 
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
     Without a detector, `weights` names existing local YOLO weights to load at
     startup; with neither, object detection is off and health reports it down.
     """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
+    point_settings = point_settings or PointSettings.from_env()
+    build_points = build_points or partial(build_point_chunk, max_points=point_settings.samples)
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
 
     @asynccontextmanager
@@ -195,6 +203,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             (None if db_path == ':memory:' else os.environ.get('GODSEYE_CAPTURE_DIR', 'backend/captures')))
         app.state.capture_ingest_lock = asyncio.Lock()
         app.state.chunk_id = 0
+        app.state.point_memory = VoxelMemory(point_settings)
         app.state.map_stats = Counter()
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
@@ -288,6 +297,9 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
+            except NoNewPoints:
+                stats['no_new_points'] += 1
+                continue
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
@@ -313,9 +325,14 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
     def accept_points(chunk):
         app.state.chunk_id += 1
         publish(points_message(chunk, app.state.chunk_id))
+        app.state.point_memory.commit(chunk.voxel_keys, chunk.t_capture)
 
     def map_into(grid):
-        """Point computation that also folds its world points into the session's grid."""
+        """Point computation that also folds its world points into the session's grid.
+
+        The grid gets every candidate point; only the published chunk is deduped,
+        so occupancy evidence keeps accumulating when nothing new is published.
+        """
         def compute(payload, session_id, map_epoch):
             chunk = build_points(payload, session_id, map_epoch)
             try:
@@ -323,7 +340,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             except Exception:  # an occupancy bug must not cost the live points
                 app.state.occupancy_stats['failed'] += 1
                 logger.exception('occupancy update failed')
-            return chunk
+            return app.state.point_memory.select(chunk)
         return compute
 
     async def occupancy_worker(owner, session, grid):
@@ -379,6 +396,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         if app.state.session != session:
             app.state.chunk_id = 0
             app.state.occupancy = OccupancyGrid(session)
+            app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
         app.state.capture.clear()
