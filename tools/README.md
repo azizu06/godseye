@@ -37,16 +37,31 @@ $HOME/.venvs/godseye/bin/python -m pip install -r backend/requirements-test.txt
 $HOME/.venvs/godseye/bin/python -m tools.car_smoke [--delayed-bundles]
 ```
 
-`tools/car_smoke.py` starts the real backend on a free loopback port (task-local temp DB,
-capture recording off, no weights) and streams `fake_phone.py`'s deterministic world (floor,
-10 cm low box, 50 cm box, ray-cast depth) through the real `/phone` pipeline. It exits nonzero
-unless `/live` occupancy shows both boxes occupied, open floor free, the shadow behind the
-box and the area behind the phone unknown, two runs give identical grids, and the backend
-stays disarmed (`car: down`, `/arm` 409, only zero `DRIVE STUB` lines, `drive.py` logging-only).
-About 15 s; bounded by a 90 s timeout per phase. It does not test `/goal`, manual lease or
-command safety. `--delayed-bundles` also streams `delayed_bundle_stream()` (bundles 80 ms behind
-33 ms poses, Sai's iOS ordering) and only reports the outcome; on main it maps nothing and
-reports `pose_stale`. Use that fixture, asserted, once pose-freshness ordering lands.
+`tools/car_smoke.py` starts the default backend on a free loopback port (task-local
+DB, recording off, no weights) and streams the deterministic floor + 10 cm low box +
+50 cm ordinary box through `/phone`. It asserts reproducible `/live` occupancy,
+unknown shadow/behind-phone space, and that the default logging adapter stays down
+and refuses `/arm`.
+
+The same command then runs `tools/car_rehearsal.py` against the real app's test
+WebSocket/REST transport with a healthy **FakeCar**, offline empty detector, and
+explicit **TEST** calibration that describes no real rover. Survey frames cover the
+starting footprint; `/goal` produces a path and bounded commands through the motion
+pump. A stationary FakeCar ends in `no_progress`, an empty path and terminal zero.
+The rehearsal also asserts uncalibrated goal/explore refusal, unknown/off-grid/blocked
+goals, stale sensing despite fresh poses, accepted repeats without new published
+points, expired manual lease zero, and phone disconnect/reconnect generation isolation.
+It owns and cleans up its servers, feeder threads and temporary DBs. About 30 s;
+90 s per socket mapping phase. `--delayed-bundles` retains the informational encoder
+latency probe; it is not a physical capture or movement test.
+
+**Remaining real-car checkpoint:** Tomiwa must supply measured chassis/bumpers,
+clearance/lowest hazard height, phone mount offset and yaw alignment. Verify steering
+sign, ability to turn in place, speed response/stopping distance, car-side independent
+stop/watchdog and emergency stop on hardware. The Mac command lease is not that
+watchdog. Connecting a physical adapter or live actuation needs a **separate explicit
+live-actuation approval**. TEST calibration, passing backend tests and FakeCar motion
+logs authorize none of those steps. No physical adapter exists in this rehearsal.
 
 Offline validation (no sockets, camera, car, or weights):
 

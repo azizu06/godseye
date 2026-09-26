@@ -4,7 +4,8 @@
 Starts the real backend on a free loopback port with a task-local database, capture
 recording off and no weights, streams the deterministic floor + low box + ordinary box world
 of tools/fake_phone.py, and exits nonzero unless occupancy is reproducible and the system
-stays disarmed with only zero drive stubs. No device, GPU, cloud, key or car is touched.
+default adapter stays disarmed, then a TEST-calibrated FakeCar follows a goal with
+bounded commands and fail-closed stops. No device, GPU, cloud, key or car is touched.
 """
 import argparse
 import asyncio
@@ -197,10 +198,12 @@ async def run(port, delayed):
             check((first["origin"], first["width"], first["height"], first["cells"]) ==
                   (second["origin"], second["width"], second["height"], second["cells"]),
                   "occupancy differs between two identical runs")
-            notes = ""
+            from tools.car_rehearsal import rehearsal
+            commands = await asyncio.to_thread(rehearsal, str(workdir / 'fake-car.db'))
+            notes = f"; calibrated FakeCar rehearsal: {commands} bounded sends, terminal STOP/zero, refusal and reconnect checks"
             if delayed:
                 points, reason = await asyncio.wait_for(delayed_probe(port), DEADLINE_S)
-                notes = f"; delayed-bundle probe (not asserted): {points} points chunks, stop_reason={reason}"
+                notes += f"; delayed-bundle probe (not asserted): {points} points chunks, stop_reason={reason}"
             await asyncio.sleep(.5)
             drives = assert_disarmed(port, (workdir / "server.log").read_text())
             print(f"car smoke PASS: {first['width']}x{first['height']} grid reproducible, floor_y={first['floor_y']}, "

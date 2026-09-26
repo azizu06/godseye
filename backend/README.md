@@ -254,11 +254,9 @@ Calibration never arms or drives.
 Tested on synthetic floors and boxes only (`backend/tests/test_calibration.py`),
 with TEST values that describe no real car.
 
-Navigation (below) does not consume this yet. Its planner reads the grid's
-`snapshot()`, which uses the same calibrated threshold. It still uses its
-placeholder radius and margin, plans through unknown cells, and does not check
-`blockers`. Wiring `/goal` and explore to refuse unless ready and to inflate by
-`inflation_m` belongs to the navigation owner.
+Navigation consumes this handle in worker threads. Both goals and exploration refuse
+its blockers, absent sensing, and sensing older than 1 s (`NavSettings.map_max_age_s`).
+Pose freshness cannot substitute for accepted depth evidence. See Navigation below.
 
 ## Live objects
 
@@ -417,28 +415,34 @@ while the default car reports down, so runs are exercised by tests with
   while planning` and the old goal never moves. Explore starts by itself
   whenever the backend is armed in `explore` mode and drives to the nearest
   reachable frontier (a known-free cell next to unknown or the edge of the cropped
-  grid), then the next, until none is left. Before any floor is mapped, goals plan
-  straight through unknown and explore waits in place with zero drive.
-- **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, occupied
-  cells inflated by a 0.15 m radius plus 0.03 m margin, line-of-sight shortcuts,
-  waypoints at most 0.25 m apart, at most 200,000 expansions. Unknown cells are
-  traversable at 3x the cost of free ones (depth sees only a few meters ahead)
-  and the grid is padded with unknown so goals beyond the mapped area still plan
-  (up to 1,000,000 cells).
+  grid), then the next, until none is left. Before a calibrated floor is mapped, both goals and explore stop with the
+  map readiness reason; neither can move into unknown space.
+- **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, line-of-sight
+  shortcuts, waypoints at most 0.25 m apart, at most 200,000 expansions. Every path
+  cell must be known free throughout the calibrated `inflation_m` footprint disc.
+  Clearance counts entire occupied/unknown cell squares and off-grid space, not
+  just cell centers; this deliberately rejects some tight passages that fit at a
+  single point. No start/goal snapping or unknown padding can escape a blocker.
+  The pure planner's legacy simulation defaults are overridden at the snapshot seam.
+  Explore selects the nearest reachable boundary of footprint-clear known floor,
+  inset from unknown space so its footprint stays observed; it completes when none remains.
 - **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
   place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
-- **Replanning:** a full replan from the current pose about once per second; a
-  new map revision also triggers a blocked-path check (at most 4 Hz) that halts
-  and replans at once when the rest of the path now passes within the inflation
-  radius of an occupied cell. Reaching an explore frontier discards its pending
-  planning/check work before selecting the next frontier, so a late replan cannot
-  restore a completed target. `path` is published only when its points change,
-  and new `/live` viewers get the current path.
+- **Replanning:** a full replan from the current pose about once per second; snapshot
+  checks run at most 4 Hz regardless of `/live` publication. Each reads accepted
+  sensing time, and a new revision checks the remaining path. An obstructed path
+  ends the run with `path_blocked`, zeroes and disarms. Current and next-tick pursuit
+  footprint positions must also remain clear, so pursuit cannot cut an unsafe corner.
+  Reaching an explore frontier discards pending planning/check work before selecting
+  the next frontier (the landed exploration race fix). `path` is published only when
+  its points change, and new `/live` viewers get the current path.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the
-  reason. `arrived`, `explore_complete`; `no_path`, `search_limit`,
+  reason. Map blockers (`calibration_missing`, `calibration_unverified`, unmeasured
+  fields, `obstacle_min_unsupported`, `no_floor`), `map_unknown`, `sensing_stale`,
+  `path_blocked`; `arrived`, `explore_complete`; `no_path`, `search_limit`,
   `destination_blocked` (goal occupied or inside the inflation), `destination_unknown`,
   `out_of_bounds`, `start_blocked`; `pose_stale` (no pose within 250 ms),
   `tracking_lost`; `no_progress` (motion commanded while the pose moved under
@@ -453,8 +457,8 @@ while the default car reports down, so runs are exercised by tests with
   turn with +Y up, and the car adapter must confirm that sign; heading is the
   camera forward, so the phone must face the rover's direction of travel (no
   mount calibration); turning in place assumes a skid- or differential-steer
-  base; radius, margin, speeds and tolerances are placeholders, not measured car
-  parameters. With a car that never moves (`FakeCar`), a live run ends with
+  base. Radius and margin now come from the explicit calibration; speeds and
+  follower tolerances remain software limits, not measured car-response parameters. With a car that never moves (`FakeCar`), a live run ends with
   `no_progress` after 5 s.
 - **Tests:** `backend/tests/test_navigation.py` (planner, follower, 400 x 400
   timing) and `backend/tests/test_navigator.py` (runs against a kinematic

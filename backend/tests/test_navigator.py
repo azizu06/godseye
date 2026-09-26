@@ -16,7 +16,9 @@ from backend.drive import FakeCar
 from backend.motion import MotionLimits
 from backend.navigation import FollowerConfig, Grid, PlannerConfig, path_blocked, plan_path
 from backend.navigator import Navigator, NavSettings, RoverPose
-from backend.occupancy import CELL_M
+from backend.occupancy import CELL_M, OccupancySnapshot
+from tools.car_rehearsal import TEST_CALIBRATION, PhoneScene, wait_for
+from backend.calibration import RoverCalibration
 from backend.tests.test_objects import FakeDetector
 
 UNKNOWN, FREE, OCCUPIED = 0, 1, 2
@@ -43,6 +45,9 @@ def enclosed():
 
 
 def initial_plan(grid_cells, start, goal, config=PlannerConfig()):
+    from dataclasses import replace
+    config = replace(config, unknown_traversable=False, footprint_clearance=True,
+                     snap_radius_m=0., start_snap_radius_m=0.)
     result = plan_path(Grid.from_array(grid_cells, origin=(0., 0.), cell_m=CELL_M), start, goal, config)
     assert result.ok, result.reason
     return result
@@ -70,9 +75,9 @@ class FakeOccupancy:
     def snapshot(self):
         if self.fail:
             raise RuntimeError('snapshot failed')
-        if self.cells is None:
-            return self.revision, None, None
-        return self.revision, (0., 0.), self.cells
+        return OccupancySnapshot(('TEST', 1), self.revision, time.monotonic(),
+                                 () if self.cells is not None else ('no_floor',), .18,
+                                 (0., 0.), CELL_M, self.cells, 0.)
 
 
 class Rover:
@@ -105,8 +110,8 @@ class Harness:
         self.rover, self.occupancy = rover, occupancy
         self.stops, self.paths, self.modes = [], [], set()
         self.armed, self.mode, self.generation = True, mode, 1
-        self.nav = Navigator(NavSettings(**{**FAST, **settings}), pose=rover.pose,
-                             occupancy=lambda: self.occupancy, submit=self.submit, stop=self.stop,
+        self.nav = Navigator(NavSettings(**{**FAST, "follower": FollowerConfig(lookahead_m=.1), **settings}), pose=rover.pose,
+                             occupancy=self.occupancy.snapshot, submit=self.submit, stop=self.stop,
                              publish=self.publish, armed_mode=lambda: self.mode if self.armed else None)
 
     def submit(self, generation, mode, v, w):
@@ -176,28 +181,18 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.rover.commands[moved:], [(0., 0.)])  # only the stop's zero
         self.assertEqual(h.modes, {'navigate'})
 
-    async def test_wall_seen_mid_run_blocks_the_path_and_the_run_replans_around_it(self):
-        occupancy = FakeOccupancy(cells(UNKNOWN))
+    async def test_wall_seen_mid_run_stops_and_zeroes_the_blocked_path(self):
+        occupancy = FakeOccupancy(cells())
         start, goal = (.5, .5), (2.5, .5)
-        initial = initial_plan(occupancy.cells, start, goal)  # straight through unknown
-
+        initial = initial_plan(occupancy.cells, start, goal)
         def reveal_wall(rover):
             if rover.x > .9 and occupancy.revision == 1:
                 occupancy.set(walled(occupancy.cells))
-        # No periodic replan: only the blocked-path check on the map update can save the run.
         h = Harness(Rover(*start, math.pi / 2, on_move=reveal_wall), occupancy, replan_s=100.)
         h.nav.start_goal(goal, initial, h.generation)
         await h.finished()
-        self.assert_stopped(h, 'arrived')
+        self.assert_stopped(h, 'path_blocked')
         self.assertEqual(occupancy.revision, 2)
-        grid = Grid.from_array(occupancy.cells, origin=(0., 0.), cell_m=CELL_M)
-        self.assertTrue(path_blocked(grid, initial.points))
-        detour = h.paths[1]
-        self.assertFalse(path_blocked(grid, detour))
-        self.assertGreater(max(z for _, z in detour), 2.2)
-        for x, z in h.rover.trace:
-            if 1.3 < x < 1.7:
-                self.assertGreater(z, 2.2)
 
     async def test_map_update_that_seals_the_goal_stops_with_no_path(self):
         occupancy = FakeOccupancy(cells())
@@ -310,22 +305,12 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(h.nav.active)
         self.assertEqual(h.paths, [initial.points, []])
 
-    async def test_explore_waits_for_a_floor_without_moving_and_survives_map_updates(self):
-        occupancy = FakeOccupancy(None)  # no floor estimated yet
-        rover = Rover(1.5, .75, 0.)
-        h = Harness(rover, occupancy, mode='explore')
+    async def test_explore_refuses_a_map_without_floor(self):
+        h = Harness(Rover(1.5, .75, 0.), FakeOccupancy(None), mode='explore')
         h.nav.start_explore(h.generation)
-        for _ in range(5):
-            await asyncio.sleep(.03)
-            occupancy.set(None)  # new evidence, still no floor
-        self.assertTrue(h.nav.active)
-        self.assertEqual(h.stops, [])
-        self.assertEqual(set(rover.commands), {(0., 0.)})
-        corridor = cells(UNKNOWN)
-        corridor[5:25, 5:55] = FREE
-        occupancy.set(corridor)
-        await wait_until(lambda: h.paths and any(v > 0 for v, _ in rover.commands))
-        await h.nav.aclose()
+        await h.finished()
+        self.assert_stopped(h, 'no_floor')
+        self.assertFalse(any(v or w for v, w in h.rover.commands))
 
     async def test_explore_visits_frontiers_and_stops_when_the_map_is_closed(self):
         await self.explore_visits_frontiers_and_closes()
@@ -362,11 +347,12 @@ class LiveNavigationTests(unittest.TestCase):
     refresh the detector's last-result time to stand in for a healthy detector."""
 
     def setUp(self):
-        self.t_capture = 0.
+        self.t_capture = 100.
 
     def app(self, **settings):
         self.car = FakeCar()
-        self.backend = create_app(':memory:', car=self.car, detector=FakeDetector(), **settings)
+        self.backend = create_app(':memory:', car=self.car, detector=FakeDetector(),
+                                  calibration=RoverCalibration.model_validate(TEST_CALIBRATION), **settings)
         return self.backend
 
     def stream(self, phone, seconds):
@@ -381,11 +367,11 @@ class LiveNavigationTests(unittest.TestCase):
                     map_epoch=1, supports_scene_depth=True, supports_mesh=True)
 
     def pose(self, tracking='normal'):
-        # Identity rotation: camera forward is world -Z, so yaw is pi; position (2, 3, 4).
+        # Pose at the surveyed origin, camera facing +Z (yaw zero).
         self.t_capture += .02
         return dict(version=1, type='pose', session_id='nav-session', map_epoch=1, frame_id=1,
                     t_capture=self.t_capture, t_wall_ms=int(time.time() * 1000),
-                    transform=[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 2., 3., 4., 1.],
+                    transform=[-1., 0., 0., 0., 0., 1., 0., 0., 0., 0., -1., 0., 0., 0., 0., 1.],
                     tracking=tracking)
 
     def keep_fresh(self, phone, condition, timeout=3.):
@@ -401,6 +387,10 @@ class LiveNavigationTests(unittest.TestCase):
             time.sleep(.02)
 
     def arm(self, client, phone, mode):
+        wait_for(lambda: client.app.state.occupancy is not None)
+        if client.app.state.occupancy.revision == 0:
+            source = PhoneScene(client, phone, 'nav-session', hello_sent=True)
+            source.survey()
         self.assertEqual(client.post('/mode', json={'mode': mode}).status_code, 200)
         self.keep_fresh(phone, lambda: client.get('/health').json()['phone'] == 'ok')
         response = client.post('/arm')
@@ -416,10 +406,10 @@ class LiveNavigationTests(unittest.TestCase):
     def test_goal_requires_arming_in_navigate_mode(self):
         with TestClient(self.app()) as client, client.websocket_connect('/phone') as phone:
             phone.send_json(self.hello())
-            self.assertEqual(client.post('/goal', json={'x': 2., 'z': 3.}).status_code, 409)
+            self.assertEqual(client.post('/goal', json={'x': 0., 'z': .5}).status_code, 409)
             for mode in ('manual', 'explore'):
                 self.arm(client, phone, mode)
-                self.assertEqual(client.post('/goal', json={'x': 2., 'z': 3.}).status_code, 409)
+                self.assertEqual(client.post('/goal', json={'x': 0., 'z': .5}).status_code, 409)
             self.assertFalse(client.app.state.nav.kind == 'goal')
 
     def test_goal_publishes_its_path_drives_through_the_motion_pump_and_stop_clears_it(self):
@@ -427,12 +417,12 @@ class LiveNavigationTests(unittest.TestCase):
                 client.websocket_connect('/live') as live, client.websocket_connect('/phone') as phone:
             phone.send_json(self.hello())
             self.arm(client, phone, 'navigate')
-            response = client.post('/goal', json={'x': 2., 'z': 3.})  # 1 m straight ahead, unmapped
+            response = client.post('/goal', json={'x': 0., 'z': .5})  # 0.5 m ahead on calibrated surveyed floor
             self.assertEqual(response.status_code, 200, response.text)
             body = response.json()
             self.assertEqual(body['version'], 1)
-            self.assertEqual(body['points'][-1], [2., 3.])
-            self.assertEqual(body['points'][0], [2., 4.])
+            self.assertEqual(body['points'][-1], [0., .5])
+            self.assertEqual(body['points'][0], [0., 0.])
             self.assertEqual(self.next_path(live, bool)['points'], body['points'])
             self.keep_fresh(phone, lambda: any(v > 0 for v, _ in self.sends()))
             self.assertEqual(client.app.state.nav.kind, 'goal')
@@ -457,7 +447,7 @@ class LiveNavigationTests(unittest.TestCase):
                 client.websocket_connect('/phone') as phone:
             phone.send_json(self.hello())
             self.arm(client, phone, 'navigate')
-            self.assertEqual(client.post('/goal', json={'x': 2., 'z': 3.}).status_code, 200)
+            self.assertEqual(client.post('/goal', json={'x': 0., 'z': .5}).status_code, 200)
             self.keep_fresh(phone, lambda: len(self.sends()) >= 5)
             self.assertEqual({v for v, _ in self.sends() if v > 0}, {.05})
 
@@ -474,7 +464,7 @@ class LiveNavigationTests(unittest.TestCase):
             phone.send_json(self.hello())
             self.arm(client, phone, 'navigate')
             answer = []
-            request = threading.Thread(target=lambda: answer.append(client.post('/goal', json={'x': 2., 'z': 3.})))
+            request = threading.Thread(target=lambda: answer.append(client.post('/goal', json={'x': 0., 'z': .5})))
             request.start()
             self.assertTrue(planning.wait(5))
             client.post('/stop')
@@ -509,7 +499,7 @@ class LiveNavigationTests(unittest.TestCase):
                 with client.websocket_connect('/phone') as phone:
                     phone.send_json(self.hello())
                     self.arm(client, phone, 'navigate')
-                    self.assertEqual(client.post('/goal', json={'x': 2., 'z': 3.}).status_code, 200)
+                    self.assertEqual(client.post('/goal', json={'x': 0., 'z': .5}).status_code, 200)
                     self.assertTrue(client.app.state.nav.active)
                     if trigger is not None:
                         trigger(client, phone)
@@ -527,14 +517,12 @@ class LiveNavigationTests(unittest.TestCase):
         self.assertEqual(client.app.state.stop_reason, reason)
         self.assertEqual(client.app.state.nav.path, [])
 
-    def test_explore_runs_while_armed_in_explore_mode_and_stop_ends_it(self):
+    def test_explore_runs_with_a_calibrated_floor_and_stop_ends_it(self):
         with TestClient(self.app()) as client, client.websocket_connect('/phone') as phone:
             phone.send_json(self.hello())
             self.arm(client, phone, 'explore')
-            self.keep_fresh(phone, lambda: client.app.state.nav.kind == 'explore')
             self.keep_fresh(phone, lambda: len(self.sends()) >= 5)
-            # No frames means no floor yet: explore waits in place, holding a zero command.
-            self.assertEqual(set(self.sends()), {(0., 0.)})
+            self.assertTrue(client.app.state.nav.active)
             client.post('/stop')
             self.assertFalse(client.app.state.nav.active)
             self.assertFalse(client.get('/health').json()['armed'])
