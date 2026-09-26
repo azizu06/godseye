@@ -33,6 +33,8 @@ export function usePointCloud() {
     rejected: 0,
   });
   const [now, setNow] = useState(Date.now());
+  const [map, setMap] = useState<string | null>(null);
+  const [source, setSource] = useState<string | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
@@ -49,6 +51,7 @@ export function usePointCloud() {
       setFeed((s) => ({ ...s, connection: "disabled" }));
       return;
     }
+    setSource(endpoint);
     let disposed = false,
       attempt = 0,
       socket: WebSocket | undefined;
@@ -83,6 +86,7 @@ export function usePointCloud() {
       current.onopen = () => {
         if (disposed || current !== socket) return;
         attempt = 0;
+        setMap(null);
         processor.reset();
         setFeed({
           connection: "connected",
@@ -114,6 +118,13 @@ export function usePointCloud() {
         if (message.type === "points") {
           processor.ingest(message);
         } else if (message.type === "objects") {
+          if (
+            typeof message.session_id === "string" &&
+            message.session_id.length > 0 &&
+            Number.isSafeInteger(message.map_epoch) &&
+            message.map_epoch > 0
+          )
+            setMap(JSON.stringify([message.session_id, message.map_epoch]));
           processor.announce(message);
         } else if (
           message.type === "health" &&
@@ -177,5 +188,16 @@ export function usePointCloud() {
     label = "Tracking unavailable";
   if (feed.connection === "connected" && feed.phone === "down")
     label = "Phone offline";
-  return { cloud, live, label, rejected: feed.rejected };
+  return {
+    cloud,
+    live,
+    label,
+    rejected: feed.rejected,
+    source,
+    map,
+    canCapture:
+      feed.connection === "connected" &&
+      feed.phone === "ok" &&
+      feed.tracking === "normal",
+  };
 }

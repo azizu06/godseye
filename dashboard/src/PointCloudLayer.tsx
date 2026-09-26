@@ -19,12 +19,19 @@ const roundSplats: PointsMaterial["onBeforeCompile"] = (shader) => {
   );
 };
 
-export default memo(function PointCloud({ cloud }: { cloud: PointCloudStore }) {
+export default memo(function PointCloud({
+  cloud,
+  visible = true,
+}: {
+  cloud: PointCloudStore;
+  visible?: boolean;
+}) {
   const uploaded = useRef(-1);
   const geometry = useRef<BufferGeometry>(null);
   const invalidate = useThree((state) => state.invalidate);
   useEffect(() => cloud.subscribe(invalidate), [cloud, invalidate]);
   useFrame(() => {
+    if (!visible) return;
     const version = cloud.snapshot();
     if (version === uploaded.current) return;
     const buffer = geometry.current;
@@ -43,7 +50,7 @@ export default memo(function PointCloud({ cloud }: { cloud: PointCloudStore }) {
     }
   });
   return (
-    <points frustumCulled={false}>
+    <points frustumCulled={false} visible={visible}>
       <bufferGeometry ref={geometry}>
         <bufferAttribute
           attach="attributes-position"

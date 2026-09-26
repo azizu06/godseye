@@ -2,14 +2,17 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
-for (const dense of [false, true]) {
-  const count = dense ? 20_000 : 300;
-  test(`binary phone RGB + depth renders ${dense ? "dense" : "small"} frames through the real backend`, async ({
+for (const mode of ["small", "dense", "textured"]) {
+  const count = mode === "small" ? 300 : 20_000;
+  test(`binary phone RGB + depth renders ${mode} frames through the real backend`, async ({
     page,
   }, testInfo) => {
     const backend = spawn(
       process.env.GODSEYE_PYTHON || "python3",
-      ["tests/support/phone_backend.py", ...(dense ? ["--dense"] : [])],
+      [
+        "tests/support/phone_backend.py",
+        ...(mode === "small" ? [] : [`--${mode}`]),
+      ],
       {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
       },
@@ -135,7 +138,20 @@ for (const dense of [false, true]) {
               .published,
         )
         .toBe(2);
+      await expect(status).toHaveAttribute("data-surfaces", "true");
+      await canvas.press("p");
+      await expect(status).toHaveAttribute("data-surfaces", "false");
+      const pointsOnly = await render();
+      await canvas.press("p");
+      await expect(status).toHaveAttribute("data-surfaces", "true");
+      await expect
+        .poll(async () => (await render()).equals(pointsOnly))
+        .toBe(false);
       const pointsBeforeGeometry = await render();
+      if (mode === "textured")
+        await page.screenshot({
+          path: testInfo.outputPath("painting-and-opening.png"),
+        });
       async function geometry(anchors: unknown[]) {
         const header = Buffer.from(
           JSON.stringify({
@@ -200,6 +216,13 @@ for (const dense of [false, true]) {
       await expect
         .poll(async () => (await render()).equals(pointsBeforeGeometry))
         .toBe(false);
+      // Wait for the independent surface worker to consume the foreground frame.
+      await expect
+        .poll(async () => {
+          const text = await status.textContent();
+          return text?.includes("triangles");
+        })
+        .toBe(true);
       const wallAndObject = await render();
       await page.screenshot({
         path: testInfo.outputPath("points-and-foreground.png"),
@@ -211,6 +234,11 @@ for (const dense of [false, true]) {
         `${(count * 2).toLocaleString()} points`,
       );
       expect((await render()).equals(wallAndObject)).toBe(true);
+      expect((await fetch(`${http}/session`, { method: "POST" })).ok).toBe(
+        true,
+      );
+      await expect(status).toHaveAttribute("data-surfaces", "false");
+      await expect(status).toContainText("0 points");
     } finally {
       clearInterval(poses);
       phone?.close();

@@ -397,6 +397,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         return dict(version=1, **app.state.capture.status(), health=health(),
                     rich=app.state.rich_capture.status(),
                     mapping=dict(app.state.map_stats),
+                    tracking_lost_capture=app.state.tracking_lost_capture,
                     tracking=None if pose is None else pose.tracking,
                     position=None if pose is None else pose.transform[12:15])
 

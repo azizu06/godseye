@@ -1,6 +1,6 @@
 # God's Eye 3D viewport
 
-A full-window gray viewport for live colored RGB + LiDAR points, with a floor
+A full-window gray viewport for camera-textured RGB + LiDAR surfaces and points, with a floor
 grid and origin axes. There are no rover controls or dashboard panels.
 
 ## Run
@@ -29,6 +29,7 @@ Use `/?live=off` for an empty viewport without a backend connection.
 - **Left-drag:** pan the target and camera together. Shift + right-drag and middle-drag also pan.
 - **Scroll:** zoom in and out.
 - **F:** frame retained points without changing the viewing direction.
+- **P:** switch between camera-textured surfaces and the original points.
 - **Home:** restore the initial camera and target.
 - **Keyboard, with the viewport focused:** arrows pan, Shift + arrows orbit, and `+` / `-` zoom.
 - **Touch:** one finger orbits; two fingers pan and pinch to zoom.
@@ -44,9 +45,16 @@ uses camera intrinsics to back-project each sample, then uses that frame's
 camera-to-world pose to place it in ARKit world coordinates. See
 [`backend/mapping.py`](../backend/mapping.py) and the frozen
 [`docs/INTERFACES.md`](../docs/INTERFACES.md) contract. The viewport consumes the
-resulting v1 `points` chunks, preserving the transmitted positions in meters.
+resulting dense v2 or legacy v1 `points` chunks, preserving transmitted positions in meters.
 Y is up; the reference floor is XZ, with muted red X and green Z axes. The floor
 grid is a viewing aid, not measured geometry or a calibrated rover ground plane.
+
+When calibrated RGB-D capture is available, the default view shows observed
+triangles textured with their matching camera image. A background worker refines
+curves and depth edges while leaving missing readings open. Persistent geometry
+updates in spatial tiles, and recent high-resolution textures preserve image detail.
+Press **P** to compare with points. See [observed surfaces](../docs/OBSERVED_SURFACES.md)
+for its relationship to main's renderer, quality checks, and memory limits.
 
 Points render as small opaque round splats with perspective scaling and depth
 occlusion. JPEG sRGB colors are converted to linear vertex colors for correct
@@ -63,9 +71,8 @@ to 5 meters. This is a 20× increase in the delivery ceiling; phone capture spee
 and repeated observations determine how quickly new cells actually fill in.
 Older servers still work through their 2,500-point JSON chunks at 4 Hz.
 
-Walls, doors, and decorations all remain colored points. ARKit plane metadata
-continues to be captured, but does not replace surfaces with rectangles or remove
-nearby samples. Scan previously simplified areas again to refill their points.
+Walls, doors, and decorations remain measured geometry with camera colors. ARKit
+plane metadata does not replace them with rectangles or remove nearby samples.
 
 Point decoding and spatial indexing run in a background worker so incoming
 frames do not block navigation. It transfers changed ranges to the renderer;
@@ -82,8 +89,9 @@ identity are supported only within that connection.
 
 Depth and tracking are estimates. Camera calibration and RGB/depth alignment
 matter; not every RGB pixel has an independent LiDAR measurement. This is a
-sparse colored point cloud, not a fused mesh or trained Gaussian splat scene.
-Drift and moving objects can leave duplicate surfaces; surface fusion, dynamic
+sparse colored point cloud with an observed triangle surface preview, not a trained
+Gaussian splat scene or watertight reconstruction. Drift and moving objects can
+leave duplicate surfaces; robust surface fusion, dynamic
 object removal, and calibration between the phone and rover remain future work.
 
 ## Code and verification
@@ -93,6 +101,8 @@ object removal, and calibration between the phone and rover remain future work.
 `src/pointCloud.ts` validates and accumulates chunks in `src/pointCloud.worker.ts`.
 `src/cloudWorker.ts` bounds pending work and transfers updates to the renderer;
 `src/usePointCloud.ts` handles the live connection, reconnects, and status.
+`src/surfaceView.worker.ts` decodes RGB-D and updates `src/surfaceTiles.ts`;
+`src/SurfaceLayer.tsx` renders retained color tiles and recent textured views.
 
 ```sh
 npm run build
@@ -101,6 +111,7 @@ npx playwright install chromium
 python3 -m pip install -r ../backend/requirements-test.txt
 npm test
 node tools/benchmark-points.mjs
+node tools/benchmark-surfaces.mjs
 ```
 
 Tests cover world positions, color conversion, bounded accumulation, map
