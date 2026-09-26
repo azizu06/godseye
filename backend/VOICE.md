@@ -1,4 +1,4 @@
-# Voice Q&A (push-to-talk)
+# Voice Q&A (click-to-talk)
 
 Ask Scout a spoken question about what it has observed and hear a spoken answer.
 Off by default: without configured providers `GET /voice` reports
@@ -9,9 +9,10 @@ as clear, recognizes people, or invents routes or destinations.
 
 ## Data flow
 
-1. The dashboard's **Hold to ask Scout** button (bottom right; external backend with
-   REST commands enabled) opens the microphone only while it is held, for at most
-   15 seconds, then stops every track. Clips shorter than 0.4 s are discarded
+1. The dashboard's **Ask Scout** microphone button (bottom right; external backend
+   with REST commands enabled) opens the microphone on one click (or Enter/Space)
+   and stops it and sends on the next click, or automatically after 15 seconds,
+   then stops every track. Clips shorter than 0.4 s are discarded
    locally. Cancel/Stop aborts the request or stops playback.
 2. The browser posts the raw `MediaRecorder` clip (`audio/webm`, `ogg`, `mp4`,
    `mpeg`, `wav` or `aac`; 1 KB to 2 MB) as the body of `POST /voice/ask`. One

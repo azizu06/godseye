@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, Square } from "lucide-react";
+import { Mic, Send, Square } from "lucide-react";
 import type { ConnectionConfig } from "./transport";
 
 export type VoicePhase =
@@ -12,8 +12,8 @@ export interface VoiceReply {
   speechFailed: boolean;
 }
 
-const MAX_HOLD_MS = 15000;
-const MIN_HOLD_MS = 400;
+const MAX_RECORD_MS = 15000;
+const MIN_RECORD_MS = 400;
 const MIN_BYTES = 1024;
 
 function text(value: unknown, limit: number): string | null {
@@ -56,8 +56,9 @@ function failure(status: number): string {
 }
 
 /**
- * Push-to-talk questions about Scout's observations. The microphone opens only
- * while the button is held and is released immediately; nothing is stored.
+ * Click-to-talk questions about Scout's observations. One click opens the
+ * microphone, the next click (or the 15 s cap) stops it and sends the clip;
+ * every track is released immediately and nothing is stored.
  */
 export function VoiceAsk({ config }: { config: ConnectionConfig }) {
   const enabled = config.source === "external" && config.commands;
@@ -67,7 +68,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
   const [exchange, setExchange] = useState<{ q: string; a: string } | null>(
     null,
   );
-  const holding = useRef(false);
+  const recording = useRef(false);
   const started = useRef(0);
   const stream = useRef<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -90,7 +91,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
     playbackUrl.current = null;
   }, []);
   const reset = useCallback(() => {
-    holding.current = false;
+    recording.current = false;
     discard.current = true;
     if (recorder.current?.state === "recording") recorder.current.stop();
     recorder.current = null;
@@ -150,7 +151,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
       if (!reply) throw new Error("invalid reply");
       if (!reply.answer || !reply.question) {
         setPhase("idle");
-        setMessage("No question heard. Hold the button and speak.");
+        setMessage("No question heard. Click the microphone and speak.");
         return;
       }
       setExchange({ q: reply.question, a: reply.answer });
@@ -194,25 +195,24 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
   }
 
   async function begin() {
-    if (phase !== "idle" || holding.current) return;
-    holding.current = true;
+    if (phase !== "idle" || recording.current) return;
+    recording.current = true;
     discard.current = false;
-    setMessage("Listening…");
     setPhase("listening");
     let media: MediaStream;
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      holding.current = false;
+      recording.current = false;
       setPhase("idle");
       setMessage("Microphone permission is needed to ask by voice.");
       return;
     }
     stream.current = media;
-    if (!holding.current) {
+    if (!recording.current) {
       releaseMic();
       setPhase("idle");
-      setMessage("Hold the button while you speak.");
+      setMessage("Cancelled.");
       return;
     }
     const chunks: Blob[] = [];
@@ -227,23 +227,23 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
       if (discard.current) return;
       const clip = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
       if (
-        performance.now() - started.current < MIN_HOLD_MS ||
+        performance.now() - started.current < MIN_RECORD_MS ||
         clip.size < MIN_BYTES
       ) {
         setPhase("idle");
-        setMessage("Hold the button while you speak.");
+        setMessage("Too short. Click, speak, then click again to send.");
         return;
       }
       void send(clip);
     };
     started.current = performance.now();
     rec.start();
-    limit.current = setTimeout(end, MAX_HOLD_MS);
+    limit.current = setTimeout(end, MAX_RECORD_MS);
   }
 
   function end() {
-    if (!holding.current) return;
-    holding.current = false;
+    if (!recording.current) return;
+    recording.current = false;
     if (recorder.current?.state === "recording") recorder.current.stop();
   }
 
@@ -261,35 +261,20 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
       ? "Voice questions need an external backend with API actions enabled."
       : phase === "unavailable"
         ? "Voice Q&A unavailable on this backend."
-        : message || "Hold to ask Scout about what it has seen.";
+        : phase === "listening"
+          ? "Listening… click again to send."
+          : message || "Click to ask Scout about what it has seen.";
   return (
     <section className={`voice-ask ${phase}`} aria-label="Ask Scout by voice">
       <div className="voice-row">
         <button
           className="voice-talk"
-          aria-label={
-            phase === "listening" ? "Release to send" : "Hold to ask Scout"
-          }
+          aria-label={phase === "listening" ? "Stop and send" : "Ask Scout"}
           aria-pressed={phase === "listening"}
           disabled={phase !== "idle" && phase !== "listening"}
-          onPointerDown={(event) => {
-            event.currentTarget.setPointerCapture?.(event.pointerId);
-            void begin();
-          }}
-          onPointerUp={end}
-          onPointerCancel={end}
-          onKeyDown={(event) => {
-            if ((event.key === " " || event.key === "Enter") && !event.repeat) {
-              event.preventDefault();
-              void begin();
-            }
-          }}
-          onKeyUp={(event) => {
-            if (event.key === " " || event.key === "Enter") end();
-          }}
-          onContextMenu={(event) => event.preventDefault()}
+          onClick={() => (phase === "listening" ? end() : void begin())}
         >
-          <Mic size={17} />
+          {phase === "listening" ? <Send size={16} /> : <Mic size={17} />}
         </button>
         <p className="voice-status" aria-live="polite">
           {status}
