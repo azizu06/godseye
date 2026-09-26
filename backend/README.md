@@ -36,7 +36,10 @@ a second is rejected. Reconnect with a new hello when the AR session/epoch chang
 Mismatched session/epoch, malformed bundles, unknown versions, nonfinite values,
 and text frames close with code 1008. Binary headers are capped at 64 KiB and
 bundles at 8 MiB; dimension/payload lengths must agree. Pose must have 16
-column-major floats. Bundle transform belongs to the same captured frame.
+column-major floats forming a rigid camera-to-world matrix (zero, scaled, reflected or
+non-affine transforms close the socket, like the bundle decoder). Bundle transform belongs
+to the same captured frame; a pose and bundle with the same `t_capture` must agree on
+frame, transform and tracking or the socket closes.
 
 `/live` sends versioned JSON: health every 500 ms, pose at most 15 Hz,
 an objects snapshot and an empty path at connection and map reset.
@@ -50,6 +53,13 @@ and rover base heading remain future work.
 
 Phone freshness uses local monotonic receipt age and requires a wall timestamp
 within 250 ms of the Mac clock. Synchronize phone/Mac wall clocks for the demo.
+Receipt is not progress: only a pose or bundle with a strictly newer `t_capture` than any
+accepted so far renews freshness, so repeats with fresh wall times go stale. Pose and
+bundle streams are ordered independently, so a bundle delayed behind newer poses still
+maps with its own transform (`/capture/status` `mapping` counts `discarded_order`,
+`discarded_wall_time`, `discarded_tracking`) but never renews or rewinds the pose. Frames
+captured at or before a limited/unavailable capture are not mapped after recovery, and
+recovery never re-arms. Progress state is per phone connection.
 Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
