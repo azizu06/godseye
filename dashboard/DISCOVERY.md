@@ -28,3 +28,16 @@ Steering rotates by the shortest angle before applying forward velocity; the opp
 Releasing a key, losing focus, opening an input/dialog, resetting the map, or pressing Stop cancels steering and pending handoffs.
 Only an already explicitly armed, healthy Standard session may change between manual and navigation input without another arm gesture.
 Any fault or Stop requires explicit arming again.
+
+## Minimal canvas
+
+The default canvas shows only a compact 2D/3D switch, Standard/Explore modes, and a smaller Arm control that becomes an always-available Stop while armed or arming.
+Remove permanent source/actions bars, telemetry, statistics, legends, view toolbox, panel dock and bottom footer from the canvas.
+Keep rover geometry, observed surfaces, object labels, view scope, trail, navigation and native orbit/pan/zoom unchanged.
+Transient notices and the unavailable-renderer fallback remain visible when needed.
+
+Preserve Spatial Memory, Object Intelligence, Recent Activity, full Rover Controls, settings, export, new session, view layers and diagnostics inside an on-demand workspace drawer.
+Open it with Escape, the context-menu key or Shift+F10, a stationary right-click, or a stationary touch long-press; right-drag must still pan without opening it.
+A keyboard-focus-only Open workspace button provides a discoverable accessible entry without persistent visual clutter.
+Opening or closing the drawer cancels held steering; panel/dialog controls must not steer the rover.
+Retain the simulation/source distinction in Arm labels and workspace details, and keep existing safe command/API behavior.
