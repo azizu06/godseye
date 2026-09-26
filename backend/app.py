@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.audio import register_audio_routes
+from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
 from backend.drive import drive
 from backend.capture import CaptureBuffer
@@ -181,7 +182,7 @@ class LatestFrame:
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
-               audio_provider=None) -> FastAPI:
+               audio_provider=None, calibration=None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -190,6 +191,9 @@ def create_app(db_path: str | None = None, build_points=None,
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
     Without a detector, `weights` names existing local YOLO weights to load at
     startup; with neither, object detection is off and health reports it down.
+
+    `calibration` (backend.calibration.RoverCalibration) is the measured rover
+    geometry; without a complete, verified one the map is never motion-ready.
     """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
     point_settings = point_settings or PointSettings.from_env()
@@ -427,11 +431,23 @@ def create_app(db_path: str | None = None, build_points=None,
             publish(message)
             stats['published'] += 1
 
-    def occupancy_snapshot():
+    def active_grid():
         grid = app.state.occupancy
-        if grid is not None and grid.session == app.state.session:
-            return grid.last_message
-        return None
+        return grid if grid is not None and grid.session == app.state.session else None
+
+    def occupancy_snapshot():
+        grid = active_grid()
+        return None if grid is None else grid.last_message
+
+    def map_snapshot():
+        """The active map's OccupancySnapshot for navigation, or None without one.
+
+        Blocking (it classifies all evidence), so async callers use a worker thread.
+        """
+        grid = active_grid()
+        return None if grid is None else grid.map_snapshot()
+
+    app.state.map_snapshot = map_snapshot
 
     def accept_objects(result):
         session = (result.session_id, result.map_epoch)
@@ -462,7 +478,7 @@ def create_app(db_path: str | None = None, build_points=None,
         stop('session_reset')
         if app.state.session != session:
             app.state.chunk_id = 0
-            app.state.occupancy = OccupancyGrid(session)
+            app.state.occupancy = OccupancyGrid(session, calibration=calibration)
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
@@ -758,4 +774,4 @@ def create_app(db_path: str | None = None, build_points=None,
     return app
 
 
-app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'))
+app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env())
