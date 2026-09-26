@@ -26,12 +26,12 @@ The hackathon demo goal is a rover that navigates a small space while a laptop s
 
 ## Current status
 
-This repository is an early software prototype. Autonomous navigation and live 3D reconstruction are planned capabilities.
+This repository is an early software prototype with live colored point-cloud viewing. Autonomous navigation and fused 3D surface reconstruction remain planned capabilities.
 
 - The Python backend accepts phone pose and frame data and streams health, pose, a live 3D `points` cloud from phone depth, and session-scoped object snapshots when a detector is configured.
 - Synthetic phone and live-view data tools support development without hardware.
 - A native iPhone capture app streams camera, LiDAR depth, confidence, and pose, and can record richer ARKit data locally. Physical-device validation is still required.
-- The 3D dashboard, occupancy mapping, navigation, and Arduino integration still need to be built and connected. The live point handoff has only been checked with synthetic phone data.
+- A minimal gray 3D viewport accumulates live RGB + depth points in ARKit world coordinates, with orbit, pan, zoom, and `F` to frame the scan. It connects to the backend's `/live` feed automatically; see the [viewport guide](dashboard/README.md). Occupancy mapping, navigation, and Arduino integration remain to be implemented.
 
 **The current drive adapter only logs commands. This prototype cannot arm or drive hardware.** The Arduino control link remains to be implemented.
 
@@ -62,6 +62,7 @@ Run the hardware-free tests:
 
 ## Development
 
+- [3D viewport setup and navigation](dashboard/README.md)
 - [iPhone app setup, captured data, recording format, and validation](ios/README.md)
 - [Backend setup, running, and tests](backend/README.md)
 - [Synthetic data tools and offline validation](tools/README.md)

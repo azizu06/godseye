@@ -12,6 +12,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
+- Dashboard viewport controls, run/test commands, and future scene integration: `dashboard/README.md`.
 
 ## Maintaining this file
 
