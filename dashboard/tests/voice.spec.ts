@@ -2,8 +2,8 @@ import { test, expect, type Page } from "@playwright/test";
 import { workspaceAction, closeWorkspace } from "./helpers";
 
 // Fake microphone, recorder and playback: no real capture, provider or audio device is used.
-async function fakeMedia(page: Page) {
-  await page.addInitScript(() => {
+async function fakeMedia(page: Page, denied = false) {
+  await page.addInitScript((denied) => {
     const state = { gum: 0, stopped: 0, plays: 0, pauses: 0 };
     (window as unknown as { __voice: typeof state }).__voice = state;
     Object.defineProperty(navigator, "mediaDevices", {
@@ -11,6 +11,7 @@ async function fakeMedia(page: Page) {
       value: {
         getUserMedia: async () => {
           state.gum++;
+          if (denied) throw new DOMException("denied", "NotAllowedError");
           return { getTracks: () => [{ stop: () => state.stopped++ }] };
         },
       },
@@ -39,7 +40,7 @@ async function fakeMedia(page: Page) {
     HTMLMediaElement.prototype.pause = function () {
       state.pauses++;
     };
-  });
+  }, denied);
 }
 
 const counters = (page: Page) =>
@@ -87,8 +88,12 @@ const reply = {
   speech: { status: "ready", mime: "audio/wav", duration_s: 0.1, data: wav() },
 };
 
-async function connect(page: Page, voiceStatus: "ready" | "unavailable") {
-  await fakeMedia(page);
+async function connect(
+  page: Page,
+  voiceStatus: "ready" | "unavailable",
+  denied = false,
+) {
+  await fakeMedia(page, denied);
   await page.routeWebSocket("ws://localhost:8765/live", (ws) => ws.close());
   await page.route("http://localhost:8765/**", (route) =>
     route.fulfill({ status: 404 }),
@@ -110,15 +115,13 @@ async function connect(page: Page, voiceStatus: "ready" | "unavailable") {
   await closeWorkspace(page);
 }
 
-async function hold(page: Page, ms: number) {
-  const talk = page.getByRole("button", { name: "Hold to ask Scout" });
-  await talk.hover();
-  await page.mouse.down();
-  await expect(
-    page.getByRole("button", { name: "Release to send" }),
-  ).toHaveAttribute("aria-pressed", "true");
+// Click once to start recording, wait, then click again to stop and send.
+async function ask(page: Page, ms: number) {
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).click();
+  const stop = page.getByRole("button", { name: "Stop and send" });
+  await expect(stop).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(ms);
-  await page.mouse.up();
+  await stop.click();
 }
 
 const voice = (page: Page) =>
@@ -132,12 +135,12 @@ test("unavailable backend shows a clear disabled state", async ({ page }) => {
     "Voice Q&A unavailable on this backend.",
   );
   await expect(
-    page.getByRole("button", { name: "Hold to ask Scout" }),
+    page.getByRole("button", { name: "Ask Scout", exact: true }),
   ).toBeDisabled();
   expect((await counters(page)).gum).toBe(0);
 });
 
-test("push-to-talk question is answered, spoken and can be stopped", async ({
+test("click-to-talk question is answered, spoken and can be stopped", async ({
   page,
 }) => {
   let release: () => void = () => {};
@@ -153,11 +156,11 @@ test("push-to-talk question is answered, spoken and can be stopped", async ({
     await route.fulfill({ json: reply });
   });
   await expect(voice(page).locator(".voice-status")).toHaveText(
-    "Hold to ask Scout about what it has seen.",
+    "Click to ask Scout about what it has seen.",
   );
-  // The microphone is untouched until the button is held.
+  // The microphone is untouched until the button is clicked.
   expect((await counters(page)).gum).toBe(0);
-  await hold(page, 500);
+  await ask(page, 500);
   await expect(voice(page).locator(".voice-status")).toHaveText("Thinking…");
   // Released immediately after recording, before the answer returns.
   expect(await counters(page)).toMatchObject({ gum: 1, stopped: 1 });
@@ -172,7 +175,7 @@ test("push-to-talk question is answered, spoken and can be stopped", async ({
   await expect(voice(page).locator(".voice-status")).toHaveText("Stopped.");
   expect((await counters(page)).pauses).toBeGreaterThan(0);
   await expect(
-    page.getByRole("button", { name: "Hold to ask Scout" }),
+    page.getByRole("button", { name: "Ask Scout", exact: true }),
   ).toBeEnabled();
   // The last answer stays visible as a caption beside the live evidence.
   await expect(exchange.last()).toHaveText(reply.answer);
@@ -188,7 +191,7 @@ test("thinking can be cancelled and a late answer is ignored", async ({
     await gate;
     await route.fulfill({ json: reply }).catch(() => {});
   });
-  await hold(page, 500);
+  await ask(page, 500);
   await expect(voice(page).locator(".voice-status")).toHaveText("Thinking…");
   await voice(page).getByRole("button", { name: "Cancel question" }).click();
   await expect(voice(page).locator(".voice-status")).toHaveText("Cancelled.");
@@ -210,19 +213,113 @@ test("short taps, provider errors and text-only replies are explained", async ({
   await page.route("http://localhost:9878/voice/ask", (route) =>
     route.fulfill(responses[asked++]),
   );
-  await hold(page, 50);
+  await ask(page, 50);
   await expect(voice(page).locator(".voice-status")).toHaveText(
-    "Hold the button while you speak.",
+    "Too short. Click, speak, then click again to send.",
   );
   expect(asked).toBe(0);
-  await hold(page, 500);
+  await ask(page, 500);
   await expect(voice(page).locator(".voice-status")).toHaveText(
     "Scout could not answer right now.",
   );
-  await hold(page, 500);
+  await ask(page, 500);
   await expect(voice(page).locator(".voice-status")).toHaveText(
     "Spoken reply unavailable; the answer is shown.",
   );
   await expect(page.getByRole("definition").last()).toHaveText(reply.answer);
   expect((await counters(page)).plays).toBe(0);
+});
+
+test("cancelling while listening releases the microphone without sending", async ({
+  page,
+}) => {
+  let asked = 0;
+  await connect(page, "ready");
+  await page.route("http://localhost:9878/voice/ask", (route) => {
+    asked++;
+    return route.fulfill({ json: reply });
+  });
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).click();
+  await expect(voice(page).locator(".voice-status")).toHaveText(
+    "Listening… click again to send.",
+  );
+  await page.waitForTimeout(500);
+  await voice(page).getByRole("button", { name: "Cancel question" }).click();
+  await expect(voice(page).locator(".voice-status")).toHaveText("Cancelled.");
+  await page.waitForTimeout(300);
+  expect(asked).toBe(0);
+  expect(await counters(page)).toMatchObject({ gum: 1, stopped: 1 });
+  await expect(
+    page.getByRole("button", { name: "Ask Scout", exact: true }),
+  ).toBeEnabled();
+});
+
+test("recording stops and sends at the 15 s cap without a second click", async ({
+  page,
+}) => {
+  const uploads: number[] = [];
+  await page.clock.install();
+  await connect(page, "ready");
+  await page.route("http://localhost:9878/voice/ask", (route) => {
+    uploads.push(route.request().postDataBuffer()?.length ?? 0);
+    return route.fulfill({ json: { ...reply, speech: { status: "error" } } });
+  });
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Stop and send" }),
+  ).toBeVisible();
+  await page.clock.runFor(14000);
+  expect(uploads).toEqual([]);
+  await page.clock.runFor(1100);
+  await expect(voice(page).locator(".voice-status")).toHaveText(
+    "Spoken reply unavailable; the answer is shown.",
+  );
+  expect(uploads).toEqual([4096]);
+  expect(await counters(page)).toMatchObject({ gum: 1, stopped: 1 });
+});
+
+test("denied microphone permission is explained and nothing is sent", async ({
+  page,
+}) => {
+  let asked = 0;
+  await connect(page, "ready", true);
+  await page.route("http://localhost:9878/voice/ask", (route) => {
+    asked++;
+    return route.fulfill({ json: reply });
+  });
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).click();
+  await expect(voice(page).locator(".voice-status")).toHaveText(
+    "Microphone permission is needed to ask by voice.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Ask Scout", exact: true }),
+  ).toBeEnabled();
+  expect(asked).toBe(0);
+  expect((await counters(page)).gum).toBe(1);
+});
+
+test("keyboard Enter toggles once per press to start and send", async ({
+  page,
+}) => {
+  const uploads: number[] = [];
+  await connect(page, "ready");
+  await page.route("http://localhost:9878/voice/ask", (route) => {
+    uploads.push(route.request().postDataBuffer()?.length ?? 0);
+    return route.fulfill({ json: { ...reply, speech: { status: "error" } } });
+  });
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  const stop = page.getByRole("button", { name: "Stop and send" });
+  await expect(stop).toHaveAttribute("aria-pressed", "true");
+  // Releasing the key does not stop recording; only the next press does.
+  await page.waitForTimeout(500);
+  await expect(stop).toBeVisible();
+  // Closing the workspace can restore focus to its launcher; refocus the toggle.
+  await stop.focus();
+  await page.keyboard.press("Enter");
+  await expect(voice(page).locator(".voice-status")).toHaveText(
+    "Spoken reply unavailable; the answer is shown.",
+  );
+  expect(uploads).toEqual([4096]);
+  expect(await counters(page)).toMatchObject({ gum: 1, stopped: 1 });
 });
