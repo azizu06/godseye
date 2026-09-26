@@ -134,8 +134,8 @@ class ObjectMemory:
         query = 'UPDATE objects SET state=? WHERE session_id=? AND map_epoch=? AND state!=?'
         if object_ids is None:
             return self.db.execute(query, (state, *session, state)).rowcount > 0
-        return any(self.db.execute(query + ' AND id=?', (state, *session, state, object_id)).rowcount
-                   for object_id in object_ids)
+        return sum(self.db.execute(query + ' AND id=?', (state, *session, state, object_id)).rowcount
+                   for object_id in object_ids) > 0
 
     def merge(self, keep, drop, position, state):
         """Fold object `drop` into `keep`: one identity at `position` with both histories.

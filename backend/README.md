@@ -162,16 +162,18 @@ Fake-detector behavior tests (no GPU or weights):
 
 ## Rescan and change events
 
-`POST /rescan` (`backend/changes.py`) needs an active map with remembered
-objects. For each object (up to 256, most recently seen) it freezes the newest
-raw observations (up to 20) as a baseline cluster: the median of the ones
-agreeing within 0.3 m with the newest three, with their RMS spread. Only frames
-captured after the newest stored frame at the press are revisit evidence (late
-inference for earlier frames never counts); they form separate revisit clusters
-the same way. Neither side is the running mean in `objects`. Every object becomes `last_seen` until a sighting makes it `present`
-again. A new press starts a new baseline; the latest one resumes after a restart
-or phone reconnect of the same session/epoch. Press it before moving a prop (or
-keep the new spot out of view until then): anything seen earlier is baseline.
+`POST /rescan` (`backend/changes.py`) needs an active map with at least one
+stored frame; an empty baseline reports every confirmed object as `new`. For
+each object (up to 256, most recently seen) it freezes the newest raw
+observations (up to 20) as a baseline cluster: the median of the ones agreeing
+within 0.3 m with the newest three, with their RMS spread. Only frames captured
+after the newest stored frame at the press are revisit evidence (late inference
+for earlier frames never counts); they form separate revisit clusters the same
+way. Neither side is the running mean in `objects`. Every object becomes
+`last_seen` until a post-press sighting makes it `present` again. A new press
+starts a new baseline; the latest one resumes after a restart or phone reconnect
+of the same session/epoch. Press it before moving a prop (or keep the new spot
+out of view until then): anything seen earlier is baseline.
 
 ```json
 { "version": 1, "session_id": "uuid", "map_epoch": 1, "rescan_id": "uuid", "baseline_objects": 3 }
@@ -185,15 +187,18 @@ after 3 `clear` frames and no `surface` frame.
 
 A revisit cluster is confirmed by 3 agreeing observations (one per frame).
 Alignment is `ok` when at least 2 confirmed static objects are reobserved within
-0.2 m of their baseline, and `drifted` when their median shift exceeds that or
-two candidate moves share a displacement; drift suspends every movement claim.
+0.15 m of their baseline (no looser than the probe margin), and `drifted` when
+their median shift exceeds that or two candidate moves share a displacement;
+drift suspends every movement claim.
 
 - **`new`**: a confirmed cluster of a class with no unseen remembered object.
 - **`possible_move`**: a confirmed new-identity cluster at least
   `max(0.6 m, 3 × (both spreads))` from the nearest unseen same-class memory,
   while identity is unproven. The two stay separate objects.
 - **`moved`**: as above, with verified alignment, exactly one unseen memory and
-  one new cluster of that class, a confirmed baseline, and its old spot empty.
+  exactly one new identity of that class sighted since the press (even a single
+  unconfirmed glimpse of another competes), a confirmed baseline, and its old
+  spot empty.
   The new identity is folded into the remembered one (its observations are
   relinked, measurements untouched), which moves there with state `moved`.
 - **`not_found_on_rescan`** (state only): an unseen memory whose spot is empty
@@ -221,6 +226,7 @@ confirming frame's phone wall-clock seconds. `GET /events` returns
 `{ version, session_id, map_epoch, events }` for the shown map (up to 256, oldest
 first) without the per-message `version`, `type`, `session_id` and `map_epoch`.
 
+`events.confidence` stays empty: there is no calibrated identity confidence yet.
 Evidence counters for empty spots live in memory and restart from zero after a
 backend restart (clusters and events come back from SQLite). Identity rests on
 class uniqueness plus the empty old spot, which suits one distinctive prop but
@@ -242,7 +248,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
 | POST `/goal` | Validate x/z; 501 navigation unimplemented |
-| POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or remembered objects |
+| POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |

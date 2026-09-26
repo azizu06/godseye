@@ -105,48 +105,55 @@ class RescanTests(unittest.TestCase):
         self.assertEqual(scene.changes.events(SESSION), [])
 
     def test_one_new_object_is_reported_once_after_three_consistent_sightings(self):
-        scene = self.scene()
-        first = scene.remember(('cup', CUP), ('backpack', BACKPACK))
         bottle = (3., 0., 0.)
-        self.assertEqual(scene.see(('cup', CUP), ('bottle', bottle)), [])
-        self.assertEqual(scene.see(('cup', CUP), ('bottle', (3.1, 0, 0))), [])
-        [event] = scene.see(('cup', CUP), ('bottle', (2.9, 0, 0)))
-        [bottle_id] = [i for i, o in {o['id']: o for o in scene.objects.snapshot(SESSION)}.items()
-                       if o['class'] == 'bottle']
-        self.assertEqual({k: event[k] for k in ('rescan_id', 'kind', 'object_id', 'new_object_id')},
-                         dict(rescan_id=first.id, kind='new', object_id=bottle_id, new_object_id=bottle_id))
-        self.assertEqual((event['old_position'], event['new_position'], event['displacement_m'], event['t']),
-                         (None, [3., 0., 0.], None, float(scene.frame)))
-        for _ in range(3):  # still there: no duplicate
-            self.assertEqual(scene.see(('cup', CUP), ('bottle', bottle)), [])
-        scene.remember(('cup', CUP), ('bottle', bottle), frames=0)  # a second rescan remembers it
-        for _ in range(3):
-            self.assertEqual(scene.see(('cup', CUP), ('bottle', bottle)), [])
-        self.assertEqual(scene.changes.events(SESSION), [event])
+        for name, remembered in [('among remembered objects', (('cup', CUP), ('backpack', BACKPACK))),
+                                 ('in a room mapped empty', ())]:
+            with self.subTest(name):
+                scene = self.scene()
+                first = scene.remember(*remembered)
+                seen = remembered[:1]
+                self.assertEqual(scene.see(*seen, ('bottle', bottle)), [])
+                self.assertEqual(scene.see(*seen, ('bottle', (3.1, 0, 0))), [])
+                [event] = scene.see(*seen, ('bottle', (2.9, 0, 0)))
+                [bottle_id] = [o['id'] for o in scene.objects.snapshot(SESSION) if o['class'] == 'bottle']
+                self.assertEqual({k: event[k] for k in ('rescan_id', 'kind', 'object_id', 'new_object_id')},
+                                 dict(rescan_id=first.id, kind='new', object_id=bottle_id, new_object_id=bottle_id))
+                self.assertEqual((event['old_position'], event['new_position'], event['displacement_m'],
+                                  event['t']), (None, [3., 0., 0.], None, float(scene.frame)))
+                for _ in range(3):  # still there: no duplicate
+                    self.assertEqual(scene.see(*seen, ('bottle', bottle)), [])
+                scene.remember(*seen, ('bottle', bottle), frames=0)  # a second rescan remembers it
+                for _ in range(3):
+                    self.assertEqual(scene.see(*seen, ('bottle', bottle)), [])
+                self.assertEqual(scene.changes.events(SESSION), [event])
 
     def test_far_same_class_sighting_without_distinct_evidence_is_only_a_possible_move(self):
         clear = {'backpack': 'clear'}
-        cases = [  # name, extra remembered objects, revisit references, per-frame probes, new spot, kinds
-            ('old spot never seen again', (), REFS, [{}] * 4, FAR, ['possible_move']),
-            ('one reference cannot verify alignment', (), REFS[:1], [clear] * 4, FAR, ['possible_move']),
+        cases = [  # name, extra remembered, revisit references, per-frame probes, new spot, kinds, stray
+            ('old spot never seen again', (), REFS, [{}] * 4, FAR, ['possible_move'], ()),
+            ('one reference cannot verify alignment', (), REFS[:1], [clear] * 4, FAR, ['possible_move'], ()),
             ('old spot still showed a surface', (), REFS, [{'backpack': 'surface'}] + [clear] * 3, FAR,
-             ['possible_move']),
+             ['possible_move'], ()),
             ('two remembered backpacks compete', (('backpack', (4., 0., 1.)),), REFS, [clear] * 4, FAR,
-             ['possible_move']),
-            ('within the displacement threshold', (), REFS, [{}] * 4, (1., 0., 1.55), []),
+             ['possible_move'], ()),
+            # One unconfirmed sighting still makes "which backpack is ours?" ambiguous.
+            ('another new backpack was glimpsed', (), REFS, [clear] * 4, FAR, ['possible_move'],
+             (('backpack', (4., 0., 4.)),)),
+            ('within the displacement threshold', (), REFS, [{}] * 4, (1., 0., 1.55), [], ()),
         ]
-        for name, extra, seen, probes, spot, kinds in cases:
+        for name, extra, seen, probes, spot, kinds, stray in cases:
             with self.subTest(name):
                 scene = self.scene()
                 scene.remember(*REFS, ('backpack', BACKPACK), *extra)
                 [remembered] = [i for i, c in scene.ids.items() if c == 'backpack' and
                                 scene.changes.rescan.baseline[i].position == BACKPACK]
-                events = [e for views in probes for e in scene.see(*seen, ('backpack', spot), views=views)]
+                events = scene.see(*seen, *stray) if stray else []
+                events += [e for views in probes for e in scene.see(*seen, ('backpack', spot), views=views)]
                 self.assertEqual([e['kind'] for e in events], kinds)
                 backpacks = [o for o in scene.objects.snapshot(SESSION) if o['class'] == 'backpack']
-                self.assertEqual(len(backpacks), 2 + len(extra))  # identities stay separate
+                self.assertEqual(len(backpacks), 2 + len(extra) + len(stray))  # identities stay separate
                 if events:
-                    [new] = [o['id'] for o in backpacks if o['id'] not in scene.ids]
+                    [new] = [o['id'] for o in backpacks if o['position'] == list(FAR)]
                     self.assertEqual((events[0]['object_id'], events[0]['new_object_id']), (remembered, new))
                     self.assertEqual((events[0]['old_position'], events[0]['new_position'],
                                       events[0]['displacement_m']), (list(BACKPACK), list(FAR), 2.))
@@ -227,6 +234,7 @@ class RescanTests(unittest.TestCase):
         for _ in range(3):  # inference for frames captured before the Rescan press lands late
             self.assertEqual(scene.see(*REFS, ('backpack', (1., 0., 1.4)), t_capture=.5,
                                        views={'backpack': 'clear'}), [])
+        self.assertEqual(set(scene.state().values()), {'last_seen'})  # not seen since the press
         for _ in range(3):  # probes made for some other rescan
             self.assertEqual(scene.see(*REFS, views={'backpack': 'clear'}, rescan_id='other-rescan'), [])
         events = [e for _ in range(3) for e in scene.see(*REFS, ('backpack', FAR))]

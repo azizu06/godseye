@@ -18,7 +18,8 @@ CLUSTER_WINDOW = 20  # newest raw observations per object that form its cluster
 CONSISTENT_M = .3  # members this close to the newest sightings' median agree with them
 MIN_CONSISTENT = 3  # agreeing observations, one per frame, that confirm a cluster
 DISPLACEMENT_M = .6  # smallest reportable move, raised by the two clusters' spread
-ALIGN_TOL_M = .2  # reobserved static references must sit this close to their baseline
+ALIGN_TOL_M = .15  # reobserved static references must sit this close to their baseline;
+# no looser than view_status's margin, so a verified map keeps its depth probes meaningful
 MIN_REFERENCES = 2  # static references that must agree before a move is confirmed
 ABSENCE_VIEWS = 3  # frames that must see through a remembered spot before it counts as empty
 MAX_BASELINE = 256  # objects frozen per rescan, most recently seen first
@@ -99,7 +100,7 @@ class ChangeTracker:
         self._watch()
 
     def start(self, session, started_at_ms):
-        """Freeze a baseline from this session's stored objects; None when there are none.
+        """Freeze a baseline from this session's stored objects; None before any frame arrived.
 
         The cut is the newest stored capture time, so work still in flight for
         earlier frames never counts as revisit evidence.
@@ -124,7 +125,7 @@ class ChangeTracker:
             summary = cluster(rows)
             if summary is not None:
                 baseline[object_id] = Remembered(**asdict(summary), object_id=object_id, class_name=names[object_id])
-        if after is None or not baseline:
+        if after is None:
             return None
         rescan = Rescan(str(uuid4()), session, after, baseline)
         with self.db:
@@ -144,8 +145,12 @@ class ChangeTracker:
         rescan, are ignored.
         """
         rescan = self.rescan
-        if rescan is None or t_capture <= rescan.after_t_capture:
+        if rescan is None:
             return [], False
+        if t_capture <= rescan.after_t_capture:  # late inference for a frame from before the press
+            with self.db:  # its sightings were recorded but do not count as seen again
+                return [], self.objects.set_state(rescan.session, 'last_seen', [
+                    s.object_id for s in sightings if s.object_id not in rescan.revisit])
         for sighting in sightings:
             self._remember(rescan, sighting.object_id, sighting.class_name,
                            (sighting.observation_id, sighting.position), sighting.created)
@@ -201,6 +206,9 @@ class ChangeTracker:
         # A surface where something was remembered contradicts "not found" whatever the alignment.
         changed = self.objects.set_state(rescan.session, 'last_seen', [
             r.object_id for r in unseen if rescan.views.get(r.object_id, {}).get('surface')])
+        # Every non-remembered identity sighted since the press competes, confirmed or not.
+        newcomers = Counter(name for object_id, (name, _) in rescan.revisit.items()
+                            if object_id not in rescan.baseline)
         events, pairs = [], []
         for object_id, name, summary in fresh:
             rivals = [r for r in unseen if r.class_name == name]
@@ -212,7 +220,7 @@ class ChangeTracker:
             old = min(rivals, key=lambda r: math.dist(r.position, summary.position))
             if math.dist(old.position, summary.position) >= max(
                     DISPLACEMENT_M, 3 * (old.spread_m + summary.spread_m)):
-                unique = len(rivals) == 1 and sum(other == name for _, other, _ in fresh) == 1
+                unique = len(rivals) == 1 and newcomers[name] == 1
                 pairs.append((old, object_id, summary, unique))
         alignment = _alignment(shifts, [(old.position, summary.position) for old, _, summary, _ in pairs])
         if alignment == 'drifted':  # suspend every movement claim until the map agrees again

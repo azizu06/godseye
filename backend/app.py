@@ -383,7 +383,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             raise HTTPException(409, 'No active map; connect the phone or create a session first')
         started = app.state.changes.start(session, int(time.time()*1000))
         if started is None:
-            raise HTTPException(409, 'No remembered objects in this map to rescan')
+            raise HTTPException(409, 'Nothing observed in this map yet')
         publish(objects_message(session))
         return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
                     baseline_objects=len(started.baseline))
