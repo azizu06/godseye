@@ -300,11 +300,20 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         await h.nav.aclose()
 
     async def test_explore_visits_frontiers_and_stops_when_the_map_is_closed(self):
+        await self.explore_visits_frontiers_and_closes()
+
+    async def test_explore_advances_frontiers_when_every_tick_replans(self):
+        # Force a plan for the old frontier to be pending on its arrival tick.
+        # This used to resurrect that frontier forever instead of choosing the next.
+        await self.explore_visits_frontiers_and_closes(replan_s=0.)
+
+    async def explore_visits_frontiers_and_closes(self, **settings):
         corridor = cells(UNKNOWN)
         corridor[5:25, 5:55] = FREE  # explored strip; everything around it is unknown
         occupancy = FakeOccupancy(corridor)
         rover = Rover(1.5, .75, 0.)
-        h = Harness(rover, occupancy, mode='explore')
+        h = Harness(rover, occupancy, mode='explore', **settings)
+        self.addAsyncCleanup(h.nav.aclose)
         h.nav.start_explore()
         # Two distinct path ends: it reached one frontier and moved on to the next.
         await wait_until(lambda: len({tuple(p[-1]) for p in h.paths if p}) >= 2)

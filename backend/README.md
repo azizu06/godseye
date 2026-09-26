@@ -428,7 +428,9 @@ tests that set the armed flag directly.
 - **Replanning:** a full replan from the current pose about once per second; a
   new map revision also triggers a blocked-path check (at most 4 Hz) that halts
   and replans at once when the rest of the path now passes within the inflation
-  radius of an occupied cell. `path` is published only when its points change,
+  radius of an occupied cell. Reaching an explore frontier discards its pending
+  planning/check work before selecting the next frontier, so a late replan cannot
+  restore a completed target. `path` is published only when its points change,
   and new `/live` viewers get the current path.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the
