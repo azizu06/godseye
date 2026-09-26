@@ -13,10 +13,12 @@ from backend.tests.test_motion import Clock
 
 
 class Receiver:
-    """Proposed rules: every Stop ends its session for good, and so does losing the link.
+    """Proposed rules: every Stop ends its session for good, and so do losing the link and a newer session.
 
     A session never seen before is the explicit rearm (the backend mints one
-    only on arm); within a session only a strictly newer seq changes the motors.
+    only on arm), adopted only at seq 1 so a restarted car cannot join one
+    mid-stream; within a session only a strictly newer seq changes the motors.
+    This model remembers every ended session; bounded firmware memory cannot.
     """
 
     def __init__(self):
@@ -36,6 +38,9 @@ class Receiver:
         if envelope.session_id in self.ended:
             return False
         if envelope.session_id != self.session:
+            if envelope.seq != 1:
+                return False
+            self.ended.add(self.session)  # even when its Stop was lost in transit
             self.session, self.seq = envelope.session_id, 0
         if envelope.seq <= self.seq:
             return False
@@ -58,6 +63,8 @@ def faults(envelopes):
         if session is None or session in ended:
             found.append(f'command {envelope.seq} in closed session {session}')
         if session not in opened:
+            if envelope.seq != 1:
+                found.append(f'{session} opened at seq {envelope.seq}')
             if opened and opened[-1] not in ended:
                 found.append(f'{session} opened before {opened[-1]} was stopped')
             opened.append(session)
@@ -153,6 +160,30 @@ class EnvelopeTests(unittest.TestCase):
         self.assertFalse(receiver.receive(replace(a3, seq=99)))
         self.assertEqual(receiver.motors, (.05, 0.))
         self.assertEqual(faults(self.car.envelopes), [])
+
+    def test_a_late_command_cannot_revive_a_session_whose_stop_was_lost(self):
+        first = self.motion.begin()
+        self.hold(first, .1)
+        self.motion.halt()
+        second = self.motion.begin()
+        self.hold(second, .05)
+        startup, a1, stop, rearm_stop, b1 = self.car.envelopes
+        receiver = Receiver()  # both A Stops lost in transit, then a late copy of A1
+        self.assertEqual([receiver.receive(e) for e in (startup, a1, b1, a1)], [True, True, True, False])
+        self.assertEqual(receiver.motors, (.05, 0.))
+
+    def test_a_car_that_restarts_mid_session_waits_for_a_new_arm(self):
+        first = self.motion.begin()
+        self.hold(first, .1, .1, .1)
+        receiver = Receiver()  # restarted after A1, so it remembers no session
+        self.assertEqual([receiver.receive(e) for e in self.car.envelopes[2:]], [False, False])
+        mark = len(self.car.envelopes)
+        self.motion.halt()
+        second = self.motion.begin()
+        self.hold(second, .05)
+        for envelope in self.car.envelopes[mark:]:
+            receiver.receive(envelope)
+        self.assertEqual(receiver.motors, (.05, 0.))
 
     def test_a_stop_that_fails_is_redelivered_unchanged_before_any_new_session(self):
         first = self.motion.begin()

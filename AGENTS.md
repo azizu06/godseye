@@ -4,7 +4,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Frozen wire contract: `docs/INTERFACES.md`; use it over the preliminary spec.
 - Backend run/test commands and safety limitations: `backend/README.md`.
-- The default car adapter is logging-only and reports the car down; never imply this backend can arm or drive hardware. Adapter seam, command generation/lease rules, per-arm session/seq Command/Stop envelopes (firmware obligations and open questions included) and the navigation `submit` hook: `backend/README.md` (Drive commands).
+- The default car adapter is logging-only and reports the car down; never imply this backend can arm or drive hardware. Adapter seam, command generation/lease rules, per-arm session/seq Command/Stop envelopes and the navigation `submit` hook: `backend/README.md` (Drive commands).
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke` (see Car-ready smoke there).
 

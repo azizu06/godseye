@@ -4,9 +4,9 @@ Every stop starts a new generation, so a goal or held button from before a
 stop, reset, loss, mode switch or shutdown can never be sent again, not even
 after a later arm. Nothing here reaches hardware; the car adapter decides that.
 
-The adapter receives transport-neutral envelopes. Each successful arm opens a
-drive session that the next Stop ends, so a car that honors the session can
-refuse anything older without trusting any clock.
+The adapter receives transport-neutral envelopes (see backend/README.md,
+Command envelopes). Each successful arm opens a drive session that the next
+Stop ends, so a car can tell a rearm from a reconnected link.
 """
 from dataclasses import dataclass
 import logging
@@ -25,14 +25,11 @@ MAX_LEASE_S = .25  # the phase-2 command validity
 class DriveCommand:
     """A velocity for the car, possibly zero. No wire encoding is chosen here.
 
-    `session_id` is the drive session opened by the arm (not the phone map's
-    session_id). `seq` rises strictly within a session, across its commands and
-    Stops; a hand-off that failed may leave a gap. `issued_at_ms` is the
-    backend's monotonic clock in ms when it accepted this velocity, so resends
-    of a held command repeat it. Its origin is arbitrary: compare it only with
-    other envelopes from the same backend process, never with phone, bridge or
-    car clocks. `issued_at_ms + valid_for_ms` is the backend's own lease, to the
-    millisecond; the backend never hands off a command after it lapses.
+    `session_id` is the arm's drive session, not the phone map's. `seq` rises
+    strictly within a session, across its commands and Stops. `issued_at_ms` is
+    the backend's monotonic clock when it accepted this velocity (or made this
+    zero), comparable only with other envelopes from the same backend process;
+    with `valid_for_ms` it is the backend's lease, rounded to the millisecond.
     """
     session_id: str
     seq: int
@@ -88,6 +85,10 @@ def clamp(value, limit):
     return max(-limit, min(limit, value))
 
 
+def ms(seconds):
+    return round(seconds * 1000)
+
+
 class Motion:
     """`check(command)` names why the command must not be sent now, else None.
 
@@ -103,7 +104,7 @@ class Motion:
         self.desired = None
         self.session_id = None  # the drive session of the latest arm; a Stop ends it
         self.seq = 0
-        self.unsent = None  # the zero whose hand-off failed; retried every tick, and nothing else is sent
+        self.unsent = None  # the zero whose hand-off failed; nothing else is sent until it is resolved
 
     def begin(self):
         """Open a fresh generation and drive session after a successful arm; None if the car refused the zero.
@@ -127,15 +128,17 @@ class Motion:
         self.zero()
 
     def zero(self):
-        """True once the car accepted an explicit zero; a failure is retried by every later tick.
+        """True once the car accepted an explicit zero.
 
         While armed (lease expiry, refused input) it is a zero command that keeps
-        the session; otherwise it is a Stop.
+        the session, and a failure becomes a car_error stop. Otherwise it is a
+        Stop, retried unchanged by every later tick until the car accepts it or a
+        later halt replaces it.
         """
         self.seq += 1
-        now = self.ms(self.clock())
+        now = ms(self.clock())
         if self.active:
-            return self.hand_off(DriveCommand(self.session_id, self.seq, 0., 0., now, self.ms(self.limits.lease_s)))
+            return self.hand_off(DriveCommand(self.session_id, self.seq, 0., 0., now, ms(self.limits.lease_s)))
         return self.hand_off(DriveStop(self.session_id, self.seq, now))
 
     def hand_off(self, envelope):
@@ -148,10 +151,6 @@ class Motion:
             return False
         self.unsent = None
         return True
-
-    @staticmethod
-    def ms(seconds):
-        return round(seconds * 1000)
 
     def submit(self, generation, mode, v_mps, yaw_rate_rps):
         """Replace the desired command; False when `generation` is no longer the armed one.
@@ -190,7 +189,7 @@ class Motion:
         self.seq += 1
         try:
             self.car.send(DriveCommand(self.session_id, self.seq, command.v_mps, command.yaw_rate_rps,
-                                       self.ms(command.issued_at), self.ms(self.limits.lease_s)))
+                                       ms(command.issued_at), ms(self.limits.lease_s)))
         except Exception:
             logger.exception('car send failed')
             self.stop('car_error')
