@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { simulator, closeWorkspace, panel, workspace } from "./helpers";
+import { observedFeed, closeWorkspace, panel, workspace } from "./helpers";
 
 test("default viewport is minimal and workspace tools remain keyboard accessible", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   await expect(page.locator("canvas")).toBeVisible();
   const mainButtons = page.locator(
     ".scene-toolbar button:visible, .flight-controls button:visible",
@@ -77,7 +77,7 @@ test("default viewport is minimal and workspace tools remain keyboard accessible
 test("stationary right click opens workspace, right drag stays a view gesture, and drawer arrows cannot drive", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   await page
     .locator("canvas")
     .click({ button: "right", position: { x: 600, y: 350 } });
@@ -91,9 +91,7 @@ test("stationary right click opens workspace, right drag stays a view gesture, a
   await page.mouse.up({ button: "right" });
   await expect(page.locator(".workspace-drawer")).toHaveCount(0);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   const rover = page.locator("svg.map2d g[transform*=rotate]");
   const before = await rover.getAttribute("transform");
   await page.keyboard.down("ArrowUp");
@@ -115,11 +113,9 @@ test("touch long press opens workspace and a second touch cancels the gesture", 
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   const rover = page.locator("svg.map2d g[transform*=rotate]");
   const before = await rover.getAttribute("transform");
   const cdp = await page.context().newCDPSession(page);
@@ -160,7 +156,7 @@ test("touch long press opens workspace and a second touch cancels the gesture", 
 test("left drag translates the view and right drag rotates around its target", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   // Read the actual renderer camera to distinguish panning from rotation.
   // This does not add a production debug endpoint or change camera behavior.
   const camera = () =>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseMessage } from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
-import { Simulator } from "./simulator";
+import { Simulator } from "../tests/fixtures/simulator";
 
 describe("wire data boundary", () => {
   it("rejects nonfinite or incomplete poses and unknown versions", () => {

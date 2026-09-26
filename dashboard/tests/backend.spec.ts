@@ -1,4 +1,9 @@
-import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
+import {
+  observedFeed,
+  panel,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect } from "@playwright/test";
 test("scoped history, live overlap, map reset and rescan acknowledgement", async ({
   page,
@@ -67,9 +72,8 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
       json: { version: 1, ...scope, rescan_id: "scan-3", baseline_objects: 1 },
     });
   });
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");

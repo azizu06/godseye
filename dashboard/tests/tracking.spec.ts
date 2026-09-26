@@ -1,5 +1,5 @@
 import {
-  simulator,
+  observedFeed,
   workspace,
   workspaceAction,
   closeWorkspace,
@@ -41,9 +41,8 @@ test("tracking follows phone health while backend telemetry remains connected", 
     const id = setInterval(health, 100);
     ws.onClose(() => clearInterval(id));
   });
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Enable REST commands").uncheck();

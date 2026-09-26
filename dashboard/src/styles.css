@@ -221,15 +221,6 @@ p {
   padding: 8px 11px;
   border-radius: 6px;
 }
-.source-button.simulated {
-  background: #26241c;
-  border-color: #4a402b;
-  color: #ddc698;
-}
-.source-button.simulated .live-dot {
-  background: #dfbb78;
-  box-shadow: 0 0 8px #e4bf6940;
-}
 .stop-button {
   color: #f2a0a4;
   background: #392024;
@@ -844,7 +835,7 @@ kbd {
   font-size: 10px;
   color: var(--amber);
 }
-.demo-banner {
+.rescan-banner {
   display: flex;
   gap: 14px;
   align-items: center;
@@ -855,7 +846,7 @@ kbd {
   position: relative;
   overflow: hidden;
 }
-.demo-banner:after {
+.rescan-banner:after {
   content: "";
   position: absolute;
   right: 140px;
@@ -866,7 +857,7 @@ kbd {
   border: 1px solid #4d7b6420;
   pointer-events: none;
 }
-.demo-icon {
+.rescan-icon {
   display: grid;
   place-items: center;
   width: 42px;
@@ -883,23 +874,23 @@ kbd {
   letter-spacing: 1.6px;
   color: #7f97a6;
 }
-.demo-banner .eyebrow {
+.rescan-banner .eyebrow {
   color: #92b7a5;
   font-size: 7px;
   letter-spacing: 1.5px;
 }
-.demo-banner h3 {
+.rescan-banner h3 {
   font-size: 15px;
   font-weight: 500;
   color: #deeee5;
   margin-top: 4px;
   margin-bottom: 5px;
 }
-.demo-banner p {
+.rescan-banner p {
   font-size: 10px;
   color: #94aa9f;
 }
-.demo-banner .button {
+.rescan-banner .button {
   margin-left: auto;
   color: #b4e6ce;
   background: #2b453c;
@@ -908,11 +899,11 @@ kbd {
   z-index: 1;
   font-size: 10px;
 }
-.demo-banner.changed {
+.rescan-banner.changed {
   border-color: #514434;
   background: linear-gradient(115deg, #29281f, #1b2021);
 }
-.demo-banner.changed .demo-icon {
+.rescan-banner.changed .rescan-icon {
   background: #393326;
   color: var(--amber);
   border-color: #5d503a;
@@ -1824,12 +1815,12 @@ input[type="checkbox"] {
   .scene-canvas {
     height: 450px;
   }
-  .demo-banner {
+  .rescan-banner {
     padding: 14px;
     gap: 10px;
     flex-wrap: wrap;
   }
-  .demo-banner > .button {
+  .rescan-banner > .button {
     margin-left: 56px;
   }
   .operator-content {
@@ -1939,7 +1930,7 @@ input[type="checkbox"] {
   .inspector {
     padding: 14px;
   }
-  .demo-banner p {
+  .rescan-banner p {
     max-width: 190px;
   }
   .workspace-footer {
@@ -2117,22 +2108,22 @@ input[type="checkbox"] {
   .micro-badge {
     display: none;
   }
-  .demo-banner {
+  .rescan-banner {
     flex-wrap: nowrap;
   }
-  .demo-banner > .button {
+  .rescan-banner > .button {
     margin-left: auto;
     font-size: 9px;
     white-space: normal;
     max-width: 135px;
   }
-  .demo-banner p {
+  .rescan-banner p {
     font-size: 9px;
   }
-  .demo-banner h3 {
+  .rescan-banner h3 {
     font-size: 13px;
   }
-  .demo-icon {
+  .rescan-icon {
     width: 35px;
     height: 35px;
   }
@@ -2268,10 +2259,10 @@ input[type="checkbox"] {
     font-size: 7px;
     gap: 4px;
   }
-  .demo-banner {
+  .rescan-banner {
     flex-wrap: wrap;
   }
-  .demo-banner > .button {
+  .rescan-banner > .button {
     margin-left: 45px;
     max-width: none;
   }
@@ -2635,17 +2626,17 @@ input[type="checkbox"] {
 .workspace-drawer .inspector {
   border: 0;
 }
-.workspace-drawer .demo-banner {
+.workspace-drawer .rescan-banner {
   display: flex;
   margin: 12px;
   padding: 16px;
   gap: 12px;
   border-radius: 8px;
 }
-.workspace-drawer .demo-banner .button {
+.workspace-drawer .rescan-banner .button {
   margin-top: 13px;
 }
-.workspace-drawer .demo-banner p {
+.workspace-drawer .rescan-banner p {
   max-width: none;
   line-height: 1.6;
 }

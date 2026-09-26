@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
-import { Simulator, FURNITURE } from "./simulator";
-import { makeRoomSurfaces, SurfaceDiscovery } from "./simulatorSurfaces";
+import { Simulator, FURNITURE } from "../tests/fixtures/simulator";
+import {
+  makeRoomSurfaces,
+  SurfaceDiscovery,
+} from "../tests/fixtures/simulatorSurfaces";
 import type { SurfacePatch } from "./surfaceTypes";
 
 const vertices = (surface: SurfacePatch) =>

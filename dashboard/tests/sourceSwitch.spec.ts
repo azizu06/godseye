@@ -1,5 +1,5 @@
 import {
-  simulator,
+  observedFeed,
   panel,
   workspace,
   workspaceAction,
@@ -37,7 +37,7 @@ test("source switch stops an armed backend and retains it when Stop fails", asyn
       json: fail ? { detail: "Stop failed" } : { version: 1, armed: false },
     });
   });
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await panel(page, "Scene settings");
   await expect(
@@ -47,7 +47,6 @@ test("source switch stops an armed backend and retains it when Stop fails", asyn
     page.getByRole("button", { name: "Reset view", exact: true }),
   ).toBeDisabled();
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");
@@ -58,11 +57,11 @@ test("source switch stops an armed backend and retains it when Stop fails", asyn
   await workspace(page);
   await expect(page.getByText(/Receiving telemetry/)).toBeVisible();
   await workspaceAction(page, "Connection settings");
+  await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9877/live");
+  await page.getByLabel("Backend API base").fill("http://localhost:9877");
+  await page.getByLabel("Enable REST commands").check();
   await page
-    .getByRole("button", { name: /Local simulator A complete/ })
-    .click();
-  await page
-    .getByRole("button", { name: "Start simulator", exact: true })
+    .getByRole("button", { name: "Connect source", exact: true })
     .click();
   await expect(
     page.getByText(/Connection unchanged; retry Stop/),
@@ -71,13 +70,11 @@ test("source switch stops an armed backend and retains it when Stop fails", asyn
   await expect(page.locator("dialog")).toBeVisible();
   fail = false;
   await page
-    .getByRole("button", { name: "Start simulator", exact: true })
+    .getByRole("button", { name: "Connect source", exact: true })
     .click();
   await closeWorkspace(page);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(calls).toBe(2);
   await workspace(page);
-  await expect(
-    page.getByText("Virtual scene · no hardware connected"),
-  ).toBeVisible();
+  await expect(page.getByText(/Receiving telemetry/)).toBeVisible();
 });

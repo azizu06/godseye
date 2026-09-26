@@ -1,4 +1,3 @@
-import { SIMULATED_SURFACE_CELL_M } from "./simulatorSurfaces";
 import { useColorSurfaces } from "./useColorSurfaces";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -12,7 +11,6 @@ import {
   Plus,
   ScanLine,
   Settings2,
-  ShieldAlert,
   X,
 } from "lucide-react";
 import Scene from "./Scene";
@@ -51,7 +49,6 @@ export default function App() {
     notice,
     notify,
     now,
-    trackingFault,
     historyStatus,
     rescanBaseline,
   } = controller;
@@ -152,38 +149,23 @@ export default function App() {
       document.removeEventListener("visibilitychange", cancelGesture);
     };
   }, [clearPress]);
-  const simulated = config.source === "simulator";
   const capture = useColorSurfaces(
     config,
     mission.mapKey,
     connection === "connected" && controller.mapConfirmed,
   );
-  const surfaces = simulated
-    ? controller.simSurface
-      ? [controller.simSurface]
-      : []
-    : capture.patches;
-  const persistent = simulated ? controller.simSurface : capture.persistent;
-  const mapCellM = simulated ? SIMULATED_SURFACE_CELL_M : capture.cellM;
+  const surfaces = capture.patches;
+  const persistent = capture.persistent;
+  const mapCellM = capture.cellM;
   const object = mission.objects.find((o) => o.id === selected);
-  const sourceLabel = simulated
-    ? "Simulation"
-    : mission.health?.stop_reason?.toLowerCase().includes("synthetic")
-      ? "Synthetic feed"
-      : "External feed";
   const select = (id: string) => {
     setSelected(id);
     setPanel("intelligence");
   };
   const rescan = async () => {
     setRescanBusy(true);
-    const ok = await command("/rescan");
-    if (ok && simulated) {
-      setSelected("sim-backpack");
-      setPanel("intelligence");
-      notify("Revisiting the baseline. Watch the backpack…");
-      setTimeout(() => setRescanBusy(false), 3000);
-    } else setRescanBusy(false);
+    await command("/rescan");
+    setRescanBusy(false);
   };
   return (
     <main
@@ -275,12 +257,11 @@ export default function App() {
         toolsHost={sceneToolsHost}
         mission={mission}
         surfaces={surfaces}
-        persistentSurface={simulated ? null : persistent}
+        persistentSurface={persistent}
         mapCellM={mapCellM}
-        surfaceStatus={simulated ? "receiving" : capture.status}
+        surfaceStatus={capture.status}
         selected={selected}
         onSelect={select}
-        simulated={simulated}
         canGoal={
           controller.canDrive &&
           mission.health?.mode !== "explore" &&
@@ -337,12 +318,10 @@ export default function App() {
           {panel === "workspace" && (
             <div className="workspace-menu">
               <div className="workspace-summary">
-                <span className="eyebrow">{sourceLabel}</span>
+                <span className="eyebrow">Backend feed</span>
                 <p>
-                  {simulated
-                    ? "Virtual scene · no hardware connected"
-                    : (mission.health?.stop_reason ??
-                      "Live backend · ARKit world meters")}
+                  {mission.health?.stop_reason ??
+                    "Backend observations · ARKit world meters"}
                 </p>
                 <p>
                   {connection === "reconnecting"
@@ -452,18 +431,14 @@ export default function App() {
           {panel === "controls" && (
             <>
               <OperatorControls controller={controller} />
-              <section className="demo-banner">
+              <section className="rescan-banner">
                 <ScanLine size={24} />
                 <div>
-                  <span className="eyebrow">
-                    {simulated ? "SIMULATED REVISIT" : "RESCAN BASELINE"}
-                  </span>
+                  <span className="eyebrow">RESCAN BASELINE</span>
                   <h3>Observe what changed.</h3>
                   <p>
-                    {simulated
-                      ? "Revisit the backpack and compare its position."
-                      : (rescanBaseline ??
-                        "Save a baseline and watch new observations.")}
+                    {rescanBaseline ??
+                      "Save a baseline and watch new observations."}
                   </p>
                   <button
                     className="button"
@@ -472,17 +447,11 @@ export default function App() {
                       !!pending ||
                       mission.health?.armed ||
                       stale ||
-                      (!simulated && !config.commands) ||
-                      (simulated &&
-                        !mission.objects.some((o) => o.id === "sim-backpack"))
+                      !config.commands
                     }
                     onClick={() => void rescan()}
                   >
-                    {rescanBusy
-                      ? "Rescanning…"
-                      : simulated
-                        ? "Run relocation demo"
-                        : "Start rescan"}
+                    {rescanBusy ? "Rescanning…" : "Start rescan"}
                     <ArrowRight size={14} />
                   </button>
                 </div>
@@ -494,14 +463,6 @@ export default function App() {
                 >
                   <Settings2 size={14} /> Connection settings
                 </button>
-                {simulated && (
-                  <button className="button subtle" onClick={trackingFault}>
-                    <ShieldAlert size={14} />
-                    {mission.pose?.tracking === "normal"
-                      ? "Test tracking loss"
-                      : "Restore tracking"}
-                  </button>
-                )}
               </div>
             </>
           )}

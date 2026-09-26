@@ -1,5 +1,5 @@
 import {
-  simulator,
+  observedFeed,
   panel,
   workspace,
   workspaceAction,
@@ -8,7 +8,6 @@ import {
 import { test, expect, type Page } from "@playwright/test";
 async function external(page: Page, wsUrl: string, commands = false) {
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill(wsUrl);
   if (commands) {
@@ -20,11 +19,9 @@ async function external(page: Page, wsUrl: string, commands = false) {
   await closeWorkspace(page);
 }
 test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "Explore", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await workspaceAction(page, "Workspace help");
   await page
     .getByRole("dialog")
@@ -33,11 +30,9 @@ test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await closeWorkspace(page);
   await expect(
-    page.getByRole("button", { name: "Arm simulator", exact: true }),
+    page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect(
     page.getByRole("button", { name: "STOP ROVER", exact: true }),
@@ -46,11 +41,9 @@ test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
 test("forward moves immediately without turning, leaves a trail, and stops on release and blur", async ({
   page,
 }) => {
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Arm simulator", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   const before = await page
     .locator("svg.map2d g[transform*=rotate]")
     .getAttribute("transform");
@@ -151,7 +144,7 @@ test("older arm completion cannot override a newer stop", async ({ page }) => {
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;
@@ -164,7 +157,7 @@ test("older arm completion cannot override a newer stop", async ({ page }) => {
   ).toBeVisible();
   expect(armed).toBe(false);
 });
-test("old source arm completion reasserts stop after switching to simulator", async ({
+test("old source arm completion reasserts stop after switching external feeds", async ({
   page,
 }) => {
   let armed = false,
@@ -214,7 +207,7 @@ test("old source arm completion reasserts stop after switching to simulator", as
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
@@ -222,11 +215,11 @@ test("old source arm completion reasserts stop after switching to simulator", as
   await page.getByRole("button", { name: "STOP ROVER", exact: true }).click();
   await expect.poll(() => stopCalls).toBe(1);
   await workspaceAction(page, "Connection settings");
+  await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9877/live");
+  await page.getByLabel("Backend API base").fill("http://localhost:9877");
+  await page.getByLabel("Enable REST commands").check();
   await page
-    .getByRole("button", { name: /Local simulator A complete/ })
-    .click();
-  await page
-    .getByRole("button", { name: "Start simulator", exact: true })
+    .getByRole("button", { name: "Connect source", exact: true })
     .click();
   await closeWorkspace(page);
   releaseArm();
@@ -236,7 +229,7 @@ test("old source arm completion reasserts stop after switching to simulator", as
   ).toBeVisible();
   await expect.poll(() => stopCalls).toBe(2);
   await expect(
-    page.getByRole("button", { name: "Arm simulator", exact: true }),
+    page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeVisible();
   expect(armed).toBe(false);
 });
@@ -247,10 +240,10 @@ test("Python fake-live source renders relocation without simulator geometry", as
     !process.env.GODSEYE_INTEGRATION,
     "Set GODSEYE_INTEGRATION=1 and start tools/fake_live.py on port 8766.",
   );
-  await simulator(page);
+  await observedFeed(page);
   await external(page, "ws://127.0.0.1:8766/live");
   await workspace(page);
-  await expect(page.getByText("Synthetic feed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Backend feed", { exact: true })).toBeVisible();
   await panel(page, "Spatial memory");
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(1);
   await page.locator(".objects-panel .object-row").click();
@@ -280,13 +273,13 @@ test("real backend remains disarmed and rejects a baseline before observations",
 }) => {
   test.skip(
     !process.env.GODSEYE_INTEGRATION,
-    "Start the real backend on port 8765 for integration checks.",
+    "Start an isolated backend and set GODSEYE_TEST_BACKEND_URL for integration checks.",
   );
-  await simulator(page);
+  await observedFeed(page);
   // Point this check at an isolated empty backend, never a phone's active map:
   // GODSEYE_INTEGRATION=1 GODSEYE_TEST_BACKEND_URL=http://127.0.0.1:8767 npm run test:e2e
   const backend =
-    process.env.GODSEYE_TEST_BACKEND_URL ?? "http://127.0.0.1:8765";
+    process.env.GODSEYE_TEST_BACKEND_URL ?? "http://127.0.0.1:8767";
   const socket = new URL("/live", backend);
   socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
   await external(page, socket.toString());
@@ -318,7 +311,7 @@ test("real backend remains disarmed and rejects a baseline before observations",
   await expect(page.getByRole("status")).toContainText("Stop acknowledged");
 });
 
-test("late session response cannot clear a newly selected simulator", async ({
+test("late session response cannot clear a newly selected external feed", async ({
   page,
 }) => {
   let release: () => void = () => {},
@@ -349,7 +342,7 @@ test("late session response cannot clear a newly selected simulator", async ({
     await gate;
     await route.fulfill({ json: { version: 1 } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await external(page, "ws://localhost:9876/live", true);
   await workspaceAction(page, "New session");
   await page
@@ -358,11 +351,11 @@ test("late session response cannot clear a newly selected simulator", async ({
   await requestStarted;
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await workspaceAction(page, "Connection settings");
+  await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9877/live");
+  await page.getByLabel("Backend API base").fill("http://localhost:9877");
+  await page.getByLabel("Enable REST commands").check();
   await page
-    .getByRole("button", { name: /Local simulator A complete/ })
-    .click();
-  await page
-    .getByRole("button", { name: "Start simulator", exact: true })
+    .getByRole("button", { name: "Connect source", exact: true })
     .click();
   await closeWorkspace(page);
   await panel(page, "Spatial memory");
@@ -454,7 +447,7 @@ test("older arm completion cannot override a live map reset", async ({
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await simulator(page);
+  await observedFeed(page);
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;

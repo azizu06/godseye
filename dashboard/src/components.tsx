@@ -8,7 +8,6 @@ import {
   ArrowUp,
   Backpack,
   Box,
-  Check,
   ChevronRight,
   Circle,
   CircleHelp,
@@ -21,11 +20,9 @@ import {
   Leaf,
   Navigation,
   Power,
-  Radio,
   ScanLine,
   Search,
   Settings2,
-  ShieldCheck,
   Square,
   X,
 } from "lucide-react";
@@ -136,7 +133,7 @@ export function Settings({
   return (
     <Dialog title="Connect your world" onClose={onClose} onStop={onStop}>
       <p className="dialog-intro">
-        Choose a source for your spatial workspace.
+        Connect the backend receiving your phone’s observations.
       </p>
       <form
         onSubmit={async (e) => {
@@ -155,112 +152,52 @@ export function Settings({
           }
         }}
       >
-        <div className="source-options">
-          <button
-            type="button"
-            className={draft.source === "simulator" ? "selected" : ""}
-            onClick={() => setDraft({ ...draft, source: "simulator" })}
-          >
-            <Box size={22} />
-            <strong>Local simulator</strong>
-            <span>
-              A complete, interactive demo.
-              <br />
-              No hardware connected.
-            </span>
-            {draft.source === "simulator" && (
-              <Check className="source-check" size={16} />
-            )}
-          </button>
-          <button
-            type="button"
-            className={draft.source === "external" ? "selected" : ""}
-            onClick={() => setDraft({ ...draft, source: "external" })}
-          >
-            <Radio size={22} />
-            <strong>External feed</strong>
-            <span>
-              Connect to your Mac backend
-              <br />
-              or a synthetic WebSocket.
-            </span>
-            {draft.source === "external" && (
-              <Check className="source-check" size={16} />
-            )}
-          </button>
+        <div className="connection-fields">
+          <label>
+            Telemetry WebSocket
+            <input
+              value={draft.wsUrl}
+              onChange={(e) => setDraft({ ...draft, wsUrl: e.target.value })}
+              placeholder="ws://localhost:8765/live"
+              required
+            />
+          </label>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={draft.commands}
+              onChange={(e) =>
+                setDraft({ ...draft, commands: e.target.checked })
+              }
+            />{" "}
+            Enable REST commands
+          </label>
+          <label>
+            Backend API base
+            <input
+              value={draft.apiUrl}
+              onChange={(e) => setDraft({ ...draft, apiUrl: e.target.value })}
+              placeholder="http://localhost:8765"
+              required
+            />
+          </label>
+          <small>
+            Color surfaces use this API even when drive commands are off.
+          </small>
+          <div className="preset-row">
+            <span>Quick setup</span>
+            <button
+              type="button"
+              onClick={() => setDraft({ ...defaultConfig })}
+            >
+              Mac backend
+            </button>
+          </div>
+          <p className="muted small">
+            The workspace waits for backend observations. No scene data is
+            generated locally.
+          </p>
         </div>
-        {draft.source === "external" && (
-          <div className="connection-fields">
-            <label>
-              Telemetry WebSocket
-              <input
-                value={draft.wsUrl}
-                onChange={(e) => setDraft({ ...draft, wsUrl: e.target.value })}
-                placeholder="ws://localhost:8765/live"
-                required
-              />
-            </label>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={draft.commands}
-                onChange={(e) =>
-                  setDraft({ ...draft, commands: e.target.checked })
-                }
-              />{" "}
-              Enable REST commands
-            </label>
-            <label>
-              Backend API base
-              <input
-                value={draft.apiUrl}
-                onChange={(e) => setDraft({ ...draft, apiUrl: e.target.value })}
-                placeholder="http://localhost:8765"
-                required
-              />
-            </label>
-            <small>
-              Color surfaces use this API even when drive commands are off.
-            </small>
-            <div className="preset-row">
-              <span>Quick setup</span>
-              <button
-                type="button"
-                onClick={() =>
-                  setDraft({ ...defaultConfig, source: "external" })
-                }
-              >
-                Mac backend
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    source: "external",
-                    wsUrl: "ws://localhost:8766/live",
-                    commands: false,
-                  })
-                }
-              >
-                Python fake feed
-              </button>
-            </div>
-            <p className="muted small">
-              The Python fake feed supplies telemetry only. Hardware controls
-              require a verified backend.
-            </p>
-          </div>
-        )}
-        {draft.source === "simulator" && (
-          <div className="info-note">
-            <ShieldCheck size={18} />
-            <p>
-              All geometry, observations, and motion are simulated locally.
-              Nothing is sent to a real rover.
-            </p>
-          </div>
-        )}
         {error && (
           <p role="alert" className="form-error">
             {error}
@@ -271,9 +208,7 @@ export function Settings({
             Cancel
           </button>
           <button className="button primary" type="submit" disabled={saving}>
-            {draft.source === "simulator"
-              ? "Start simulator"
-              : "Connect source"}
+            Connect source
             <ArrowRight size={15} />
           </button>
         </div>
@@ -573,8 +508,7 @@ export function OperatorControls({
     config,
   } = controller;
   const health = mission.health,
-    simulation = config.source === "simulator",
-    available = simulation || config.commands;
+    available = config.commands;
   const armed = !!health?.armed;
   const canStop = controller.requiresStop;
   const allHealthy =
@@ -625,7 +559,7 @@ export function OperatorControls({
         </div>
         <span className={`state-pill ${armed ? "" : "neutral"}`}>
           <i />
-          {armed ? "Armed" : "Disarmed"}
+          {!health ? "Waiting for status" : armed ? "Armed" : "Disarmed"}
         </span>
       </div>
       <div className="operator-content">
@@ -638,14 +572,14 @@ export function OperatorControls({
                 aria-pressed={
                   mode === "explore"
                     ? health?.mode === "explore"
-                    : health?.mode !== "explore"
+                    : !!health && health.mode !== "explore"
                 }
                 disabled={!available || !!pending || stale}
                 className={
                   (
                     mode === "explore"
                       ? health?.mode === "explore"
-                      : health?.mode !== "explore"
+                      : !!health && health.mode !== "explore"
                   )
                     ? "active"
                     : ""
@@ -663,9 +597,7 @@ export function OperatorControls({
           </div>
           <p>
             {health?.mode === "explore"
-              ? simulation
-                ? "Simulated exploration · autonomous movement"
-                : "Exploration requires backend support"
+              ? "Exploration requires backend support"
               : "Arrow keys to steer · click the map to navigate"}
           </p>
         </div>
@@ -683,22 +615,8 @@ export function OperatorControls({
         <div className="arm-control">
           <button
             className={`button ${canStop ? "stop-button" : "primary"}`}
-            aria-label={
-              canStop
-                ? "STOP ROVER"
-                : simulation
-                  ? "Arm simulator"
-                  : "Arm rover"
-            }
-            title={
-              canStop
-                ? simulation
-                  ? "Stop simulator"
-                  : "Stop rover"
-                : simulation
-                  ? "Arm simulator · virtual motion only"
-                  : "Arm rover"
-            }
+            aria-label={canStop ? "STOP ROVER" : "Arm rover"}
+            title={canStop ? "Stop rover" : "Arm rover"}
             disabled={!canStop && (!available || !!pending || !allHealthy)}
             onClick={() => void command(canStop ? "/stop" : "/arm")}
           >
@@ -707,22 +625,14 @@ export function OperatorControls({
             ) : (
               <Power size={13} />
             )}
-            {canStop
-              ? "Stop"
-              : compact
-                ? "Arm"
-                : simulation
-                  ? "Arm simulator"
-                  : "Arm rover"}
+            {canStop ? "Stop" : compact ? "Arm" : "Arm rover"}
           </button>
           <span>
-            {simulation
-              ? "Virtual motion only"
-              : !available
-                ? "Telemetry-only source"
-                : !allHealthy
-                  ? "Waiting for healthy components"
-                  : "Explicit arming required"}
+            {!available
+              ? "Telemetry-only source"
+              : !allHealthy
+                ? "Waiting for healthy components"
+                : "Explicit arming required"}
           </span>
         </div>
       </div>

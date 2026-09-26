@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ManualController, sendCommand, validateConfig } from "./transport";
+import {
+  defaultConfig,
+  ManualController,
+  sendCommand,
+  validateConfig,
+} from "./transport";
 afterEach(() => vi.useRealTimers());
 describe("held controls", () => {
   it("sends every 100ms while held and zero on release, then sends no more motion", async () => {
@@ -76,5 +81,16 @@ describe("REST boundary", () => {
         commands: true,
       }),
     ).toContain("http://");
+  });
+});
+
+describe("production feed", () => {
+  it("starts on the real backend with commands disabled", () => {
+    expect(defaultConfig).toEqual({
+      source: "external",
+      wsUrl: "ws://localhost:8765/live",
+      apiUrl: "http://localhost:8765",
+      commands: false,
+    });
   });
 });

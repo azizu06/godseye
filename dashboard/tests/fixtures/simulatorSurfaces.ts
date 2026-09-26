@@ -1,5 +1,5 @@
-import type { Vec3 } from "./protocol";
-import type { SurfacePatch } from "./surfaceTypes";
+import type { Vec3 } from "../../src/protocol";
+import type { SurfacePatch } from "../../src/surfaceTypes";
 
 type FurnitureBox = { position: Vec3; size: Vec3 };
 // Coarse display cells trade detail for fast, connected observed coverage.

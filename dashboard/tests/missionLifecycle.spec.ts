@@ -1,4 +1,9 @@
-import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
+import {
+  observedFeed,
+  panel,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect, type WebSocketRoute } from "@playwright/test";
 
 const identity = { session_id: "retained-room", map_epoch: 1 };
@@ -41,9 +46,8 @@ test("reconnect retains the known map until scoped identity confirms or replaces
   await page.route("http://localhost:8765/capture/**", (route) =>
     route.fulfill({ status: 404 }),
   );
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9878/live");
   await page.getByLabel("Enable REST commands").uncheck();
@@ -107,9 +111,8 @@ test("changing REST permission leaves the map and WebSocket intact", async ({
   await page.route("http://localhost:8765/**", (route) =>
     route.fulfill({ status: 404 }),
   );
-  await simulator(page);
+  await observedFeed(page);
   await workspaceAction(page, "Connection settings");
-  await page.getByRole("button", { name: /External feed Connect/ }).click();
   await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9878/live");
   await page.getByLabel("Enable REST commands").uncheck();
