@@ -52,31 +52,41 @@ returns a small JSON dict (for example `{"detections": [...], "approach_route":
 {...}}`). It is added to the grounding as `extras` only when it serializes to at
 most 4 KB; missing, failing or oversized extras are omitted.
 
-## Live configuration (owner approval required)
+## Live configuration
 
-Not exercised. Before a live test, get approval for spend, sending spoken questions
-to ElevenLabs, sending observation text to Google, and credentials. Then start the
-backend with local environment variables (never commit or print them):
+Put the settings in the gitignored repository-root `.env` (mode 600; never commit,
+print or pass keys on the command line) and let uvicorn load it:
 
 ```sh
-GODSEYE_VOICE_ENABLED=1 ELEVENLABS_API_KEY=... GODSEYE_ELEVENLABS_VOICE_ID=... \
-GEMINI_API_KEY=... GODSEYE_GEMINI_MODEL=... \
-$HOME/.venvs/godseye/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8765 --ws-max-size 8388608
+# .env
+GODSEYE_VOICE_ENABLED=1
+ELEVENLABS_API_KEY=...          # key restricted to Text to Speech, Speech to Text, Voices read
+GODSEYE_ELEVENLABS_VOICE_ID=... # e.g. premade "Sarah" EXAVITQu4vr4xnSDxMaL
+GEMINI_API_KEY=...
+GODSEYE_GEMINI_MODEL=gemini-2.5-flash-lite
 ```
 
+```sh
+$HOME/.venvs/godseye/bin/python -m uvicorn backend.app:app --env-file .env --host 127.0.0.1 --port 8765 --ws-max-size 8388608
+```
+
+Enabling it sends spoken question audio to ElevenLabs and observation text to Google,
+and spends provider allowance per question.
 Optional: `GODSEYE_ELEVENLABS_STT_MODEL` (default `scribe_v2`) and
 `GODSEYE_ELEVENLABS_TTS_MODEL` (default `eleven_flash_v2_5`). Keys alone never
 enable calls; `GODSEYE_VOICE_ENABLED=1` with a missing key, voice or model fails
 startup. This does not enable Gemini crop labels or spoken change events. The
 browser needs microphone permission, which requires `localhost` or HTTPS.
-A first live run must verify transcription accuracy, answer grounding, voice,
-latency and account format support; the offline tests below cannot.
+Live smoke (2026-09-26, one synthetic `say`-generated question against a
+synthetic moved-backpack map, `scribe_v2` / `gemini-2.5-flash-lite` / Sarah on
+`eleven_flash_v2_5`): HTTP 200 in 1.4 s, transcript correct, answer "The backpack
+was last seen 20 seconds ago. It has moved 2 meters.", 3.9 s 16 kHz WAV that played.
+Real rooms, microphones and noisy speech are still untested.
 
 ```sh
 $HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_voice -v
 cd dashboard && npx vitest run src/VoiceAsk.test.ts && npx playwright test tests/voice.spec.ts
 ```
 
-The tests use synthetic audio bytes, fake providers and `httpx.MockTransport`, and a
-fake microphone/recorder/player in the browser. No paid call, real microphone,
-recording upload or car hardware is used.
+These tests use synthetic audio bytes, fake providers and `httpx.MockTransport`, and a
+fake microphone/recorder/player in the browser; they make no provider calls.
