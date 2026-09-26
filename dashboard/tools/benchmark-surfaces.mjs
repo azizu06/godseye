@@ -3,10 +3,22 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { transform } from "esbuild";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 async function load(source, exported = "SurfaceTiles") {
-  const { code } = await transform(source, { loader: "ts", format: "esm" });
+  const result = await build({
+    stdin: {
+      contents: source,
+      loader: "ts",
+      resolveDir: fileURLToPath(new URL("../src", import.meta.url)),
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "node",
+  });
+  const code = result.outputFiles[0].text;
   return (
     await import(
       "data:text/javascript;base64," + Buffer.from(code).toString("base64")

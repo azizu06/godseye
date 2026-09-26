@@ -66,7 +66,7 @@ See [docs/CAPTURE.md](../docs/CAPTURE.md) for the v2 envelope, full sensor inven
 ## Live map points
 
 The dashboard now opts into a dense binary v2 stream: **20,000 points at up to
-10 Hz**, with background processing in the viewer. The phone wire format and
+30 Hz**, with background processing in the viewer. The phone wire format and
 the default v1 stream below are unchanged. See [LIVE_POINTS.md](../docs/LIVE_POINTS.md)
 for negotiation, layout, backpressure, and performance validation.
 

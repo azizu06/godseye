@@ -6,11 +6,38 @@ import SurfaceLayer from "./SurfaceLayer";
 import { useState } from "react";
 
 export default function App() {
-  const { cloud, live, label, rejected, source, map, canCapture } =
-    usePointCloud();
-  const surfaces = useSurfaceView(source, map, canCapture);
+  const {
+    cloud,
+    live,
+    label,
+    rejected,
+    source,
+    map,
+    canCapture,
+    now,
+    ingestCaptured,
+  } = usePointCloud();
+  const surfaces = useSurfaceView(source, map, canCapture, ingestCaptured);
   const [pointsOnly, setPointsOnly] = useState(false);
   const showSurfaces = !pointsOnly && surfaces.triangles > 0;
+  const surfaceUpdating =
+    canCapture && surfaces.updatedAt > 0 && now - surfaces.updatedAt < 2500;
+  const surfaceLive =
+    surfaceUpdating &&
+    surfaces.frameAgeMs + Math.max(0, now - surfaces.updatedAt) < 2500;
+  const viewLive = surfaceLive || live;
+  const viewLabel =
+    (showSurfaces || surfaceUpdating) && canCapture
+      ? surfaceUpdating
+        ? surfaceLive
+          ? "Live RGB + depth"
+          : "Rendering delayed RGB + depth"
+        : live
+          ? label
+          : surfaces.issue || "Waiting for capture updates"
+      : canCapture && !live && surfaces.issue
+        ? surfaces.issue
+        : label;
   return (
     <main
       className="viewport"
@@ -27,12 +54,8 @@ export default function App() {
         }
       }}
     >
-      <Scene
-        frameCloud={() =>
-          showSurfaces ? (surfaces.bounds ?? cloud.bounds()) : cloud.bounds()
-        }
-      >
-        <PointCloudLayer cloud={cloud} visible={!showSurfaces} />
+      <Scene frameCloud={() => cloud.bounds() ?? surfaces.bounds}>
+        <PointCloudLayer cloud={cloud} surfaceOcclusion={showSurfaces} />
         {showSurfaces && (
           <SurfaceLayer tiles={surfaces.tiles} recent={surfaces.recent} />
         )}
@@ -45,13 +68,15 @@ export default function App() {
         role="status"
         aria-label="Point cloud status"
         aria-live="off"
-        data-live={live}
+        data-live={viewLive}
         data-surfaces={showSurfaces}
+        data-capture-frame={surfaces.frameId}
+        data-drawn-points={showSurfaces ? cloud.visibleCount : cloud.count}
         data-source={source ?? undefined}
       >
-        {label} · {cloud.count.toLocaleString()} points
+        {viewLabel} · {cloud.count.toLocaleString()} points
         {showSurfaces
-          ? ` · ${surfaces.triangles.toLocaleString()} surface triangles`
+          ? ` · ${surfaces.triangles.toLocaleString()} surface triangles · ${cloud.visibleCount.toLocaleString()} dots drawn`
           : ""}
         {surfaces.capacity ? " · surface memory full" : ""}
         {cloud.evicted > 0 ? " · buffer full; older points replaced" : ""}
@@ -72,7 +97,7 @@ export default function App() {
           <b>F</b> Frame scan
         </span>
         <span>
-          <b>P</b> Points / surfaces
+          <b>P</b> Points / hybrid
         </span>
         <span>
           <b>Home</b> Reset view
@@ -81,9 +106,9 @@ export default function App() {
       <p className="sr-only" id="keyboard-help">
         Focus the viewport to navigate with the keyboard. Arrow keys pan, Shift
         plus arrow keys rotate, plus and minus zoom, F frames the scan, and Home
-        resets the view. P switches between points and textured surfaces. On a
-        touchscreen, drag with one finger to orbit, or use two fingers to pan
-        and pinch to zoom.
+        resets the view. P switches between points only and points with
+        confirmed textured surfaces. On a touchscreen, drag with one finger to
+        orbit, or use two fingers to pan and pinch to zoom.
       </p>
     </main>
   );

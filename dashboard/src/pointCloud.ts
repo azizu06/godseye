@@ -10,10 +10,19 @@ export type PointChunk = {
   type: "points";
   chunk_id: number;
   positions: number[] | Float32Array;
-  colors: number[] | Uint8Array;
+  colors: number[] | Uint8Array | Float32Array;
   session_id?: string;
   map_epoch?: number;
   t_capture?: number;
+};
+export type CapturedPoints = {
+  sessionId: string;
+  mapEpoch: number;
+  frameId: number;
+  capturedAt: number;
+  positions: Float32Array;
+  colors: Float32Array; // Already linear, sampled from the calibrated camera image.
+  covered?: Uint8Array; // Same-frame measured samples replaced by retained triangles.
 };
 export type CloudBounds = { center: [number, number, number]; radius: number };
 
@@ -150,6 +159,9 @@ export type CloudUpdate = {
   spans: Uint32Array; // pairs of starting component and component count
   positions: Float32Array;
   colors: Float32Array;
+  visibleCount: number;
+  visibleSpans: Uint32Array;
+  visibleIndices: Uint32Array;
 };
 
 function mergeRanges(ranges: { start: number; count: number }[]) {
@@ -168,6 +180,11 @@ function mergeRanges(ranges: { start: number; count: number }[]) {
 export class PointCloudStore {
   readonly positions: Float32Array;
   readonly colors: Float32Array;
+  readonly visibleIndices: Uint32Array;
+  visibleCount = 0;
+  private visibleSlots?: Uint32Array; // worker only: packed-list offset + 1, or hidden
+  private visibleDirty = new Set<number>();
+  private visibleUploads: { start: number; count: number }[] = [];
   count = 0;
   evicted = 0;
   private dirty = new Set<number>();
@@ -178,6 +195,8 @@ export class PointCloudStore {
   private retired = new Set<string>();
   private lastChunk = -1;
   private lastCapture = -1;
+  private lastMeasured = -1;
+  private observedAt?: Float64Array;
   private slots = new Map<VoxelKey, number>();
   private keys: (VoxelKey | undefined)[] = [];
   private listeners = new Set<() => void>();
@@ -196,6 +215,7 @@ export class PointCloudStore {
       throw Error("Invalid point cache limits");
     this.positions = new Float32Array(capacity * 3);
     this.colors = new Float32Array(capacity * 3);
+    this.visibleIndices = new Uint32Array(capacity);
   }
 
   subscribe = (listener: () => void) => {
@@ -211,10 +231,15 @@ export class PointCloudStore {
   }
   private empty() {
     this.count = 0;
+    this.visibleCount = 0;
+    this.visibleSlots?.fill(0);
+    this.visibleDirty.clear();
+    this.visibleUploads = [];
     this.cursor = 0;
     this.evicted = 0;
     this.lastChunk = -1;
     this.lastCapture = -1;
+    this.lastMeasured = -1;
     this.dirty.clear();
     this.uploadRanges = [];
     this.slots.clear();
@@ -255,12 +280,29 @@ export class PointCloudStore {
       colors.set(this.colors.subarray(start, start + count), offset);
       offset += count;
     });
+    const visibleRanges = this.takeVisibleRanges();
+    const visibleSpans = new Uint32Array(visibleRanges.length * 2);
+    const visibleIndices = new Uint32Array(
+      visibleRanges.reduce((sum, r) => sum + r.count, 0),
+    );
+    offset = 0;
+    visibleRanges.forEach(({ start, count }, i) => {
+      visibleSpans.set([start, count], i * 2);
+      visibleIndices.set(
+        this.visibleIndices.subarray(start, start + count),
+        offset,
+      );
+      offset += count;
+    });
     return {
       count: this.count,
       evicted: this.evicted,
       spans,
       positions,
       colors,
+      visibleCount: this.visibleCount,
+      visibleSpans,
+      visibleIndices,
     };
   }
   applyUpdate(update: CloudUpdate) {
@@ -277,12 +319,63 @@ export class PointCloudStore {
       offset += count;
     }
     this.count = update.count;
+    offset = 0;
+    for (let i = 0; i < update.visibleSpans.length; i += 2) {
+      const start = update.visibleSpans[i],
+        count = update.visibleSpans[i + 1];
+      this.visibleIndices.set(
+        update.visibleIndices.subarray(offset, offset + count),
+        start,
+      );
+      this.visibleUploads.push({ start, count });
+      offset += count;
+    }
+    this.visibleCount = update.visibleCount;
+    if (this.visibleUploads.length > 256)
+      this.visibleUploads = mergeRanges(this.visibleUploads);
     this.evicted = update.evicted;
     // Hidden tabs may receive points while animation frames are paused. Keep
     // their upload backlog bounded by buffer coverage, not elapsed time.
     if (this.uploadRanges.length > 256)
       this.uploadRanges = mergeRanges(this.uploadRanges);
     this.changed();
+  }
+  /** Constant-time removal by swapping the last visible slot into its hole. */
+  private setVisible(slot: number, visible: boolean) {
+    const at = this.visibleSlots![slot];
+    if (visible === Boolean(at)) return;
+    if (visible) {
+      this.visibleIndices[this.visibleCount] = slot;
+      this.visibleSlots![slot] = this.visibleCount + 1;
+      this.visibleDirty.add(this.visibleCount >>> 5);
+      this.visibleCount++;
+    } else {
+      const index = at - 1;
+      const last = this.visibleIndices[--this.visibleCount];
+      this.visibleSlots![slot] = 0;
+      if (index < this.visibleCount) {
+        this.visibleIndices[index] = last;
+        this.visibleSlots![last] = index + 1;
+        this.visibleDirty.add(index >>> 5);
+      }
+    }
+  }
+  takeVisibleRanges() {
+    const ranges: { start: number; count: number }[] = [];
+    // Dirty pages avoid sorting tens of thousands of individual index edits.
+    for (const page of [...this.visibleDirty].sort((a, b) => a - b)) {
+      const start = page * 32;
+      const end = Math.min(start + 32, this.visibleCount);
+      if (end <= start) continue;
+      const last = ranges.at(-1);
+      if (last && start <= last.start + last.count + 32)
+        last.count = end - last.start;
+      else ranges.push({ start, count: end - start });
+    }
+    this.visibleDirty.clear();
+    const uploads = this.visibleUploads;
+    this.visibleUploads = [];
+    return uploads.length ? mergeRanges([...uploads, ...ranges]) : ranges;
   }
   private selectMap(next: string) {
     if (this.mapKey === next) return;
@@ -306,6 +399,49 @@ export class PointCloudStore {
   ingest(value: unknown): "accepted" | "ignored" | "invalid" {
     const chunk = parsePointChunk(value);
     if (!chunk) return "invalid";
+    return this.ingestChunk(chunk);
+  }
+  /** Internal calibrated captures; the public v1/v2 wire contract is unchanged. */
+  ingestCaptured(value: CapturedPoints): "accepted" | "ignored" | "invalid" {
+    if (
+      !identity({ session_id: value.sessionId, map_epoch: value.mapEpoch }) ||
+      !integer(value.frameId) ||
+      !Number.isFinite(value.capturedAt) ||
+      value.capturedAt < 0 ||
+      !(value.positions instanceof Float32Array) ||
+      !(value.colors instanceof Float32Array) ||
+      !value.positions.length ||
+      value.positions.length % 3 ||
+      value.positions.length > 65_536 * 3 ||
+      value.colors.length !== value.positions.length ||
+      (value.covered !== undefined &&
+        (!(value.covered instanceof Uint8Array) ||
+          value.covered.length !== value.positions.length / 3 ||
+          !value.covered.every((v) => v <= 1))) ||
+      !value.positions.every((v) => Number.isFinite(v) && Math.abs(v) <= 1e6) ||
+      !value.colors.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)
+    )
+      return "invalid";
+    return this.ingestChunk(
+      {
+        version: 1,
+        type: "points",
+        chunk_id: value.frameId,
+        session_id: value.sessionId,
+        map_epoch: value.mapEpoch,
+        t_capture: value.capturedAt,
+        positions: value.positions,
+        colors: value.colors,
+      },
+      true,
+      value.covered,
+    );
+  }
+  private ingestChunk(
+    chunk: PointChunk,
+    measured = false,
+    covered?: Uint8Array,
+  ): "accepted" | "ignored" {
     const next = keyFor(
       chunk.session_id
         ? { session_id: chunk.session_id, map_epoch: chunk.map_epoch! }
@@ -319,11 +455,13 @@ export class PointCloudStore {
     if (
       sameMap &&
       (chunk.t_capture !== undefined
-        ? chunk.t_capture <= this.lastCapture
+        ? chunk.t_capture <= (measured ? this.lastMeasured : this.lastCapture)
         : chunk.chunk_id <= this.lastChunk)
     )
       return "ignored";
     this.selectMap(next);
+    this.observedAt ??= new Float64Array(this.capacity);
+    this.visibleSlots ??= new Uint32Array(this.capacity);
     for (let i = 0; i < chunk.positions.length; i += 3) {
       const x = chunk.positions[i];
       const y = chunk.positions[i + 1];
@@ -331,6 +469,25 @@ export class PointCloudStore {
       const voxel = voxelKey(x, y, z, this.voxelSize);
       let slot = this.slots.get(voxel);
       const isNew = slot === undefined;
+      const displacement =
+        slot === undefined
+          ? Infinity
+          : (this.positions[slot * 3] - x) ** 2 +
+            (this.positions[slot * 3 + 1] - y) ** 2 +
+            (this.positions[slot * 3 + 2] - z) ** 2;
+      // A delayed full capture can add unseen detail without replacing newer
+      // observations from the live point stream in an already observed cell.
+      if (
+        slot !== undefined &&
+        chunk.t_capture !== undefined &&
+        chunk.t_capture < this.observedAt[slot]
+      ) {
+        // Late confirmed geometry can still retire a matching cached sample,
+        // but cannot move it or hide a newer foreground measurement.
+        if (covered?.[i / 3] && displacement <= 0.003 ** 2)
+          this.setVisible(slot, false);
+        continue;
+      }
       if (slot === undefined) {
         slot = this.cursor;
         const previous = this.keys[slot];
@@ -344,11 +501,16 @@ export class PointCloudStore {
         this.count = Math.min(this.capacity, this.count + 1);
       }
       const index = slot * 3;
+      const hidden = covered
+        ? covered[i / 3] === 1
+        : !isNew && !this.visibleSlots[slot] && displacement <= 0.003 ** 2;
+      this.setVisible(slot, !hidden);
       let updated = isNew;
       for (let channel = 0; channel < 3; channel++) {
         const p = Math.fround(chunk.positions[i + channel]);
-        const c =
-          chunk.version === 2
+        const c = measured
+          ? chunk.colors[i + channel]
+          : chunk.version === 2
             ? rgb8Linear[chunk.colors[i + channel]]
             : Math.fround(linearColor(chunk.colors[i + channel]));
         if (
@@ -360,9 +522,13 @@ export class PointCloudStore {
         this.colors[index + channel] = c;
       }
       if (updated) this.dirty.add(slot);
+      this.observedAt[slot] = chunk.t_capture ?? 0;
     }
-    this.lastChunk = chunk.chunk_id;
-    if (chunk.t_capture !== undefined) this.lastCapture = chunk.t_capture;
+    if (measured) this.lastMeasured = chunk.t_capture!;
+    else {
+      this.lastChunk = chunk.chunk_id;
+      if (chunk.t_capture !== undefined) this.lastCapture = chunk.t_capture;
+    }
     this.changed();
     return "accepted";
   }

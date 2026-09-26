@@ -29,6 +29,8 @@ export interface CapturedSurface extends SurfacePatch {
   mapEpoch: number;
   frameId: number;
   capturedAt: number;
+  depthWidth?: number;
+  depthHeight?: number;
   cameraPosition: [number, number, number];
   cameraForward: [number, number, number];
 }

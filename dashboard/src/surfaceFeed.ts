@@ -1,6 +1,9 @@
 const record = (v: unknown): Record<string, any> =>
   v && typeof v === "object" && !Array.isArray(v) ? v : {};
 
+// Visualization can use delayed, calibrated observations. Drive freshness is separate.
+export const SURFACE_MAX_AGE_MS = 15_000;
+
 async function boundedBody(response: Response, signal: AbortSignal) {
   const maximum = 32 * 1024 * 1024;
   if (
@@ -59,7 +62,7 @@ export class SurfaceFeed {
       } else {
         if (response.status === 204 || response.status === 304) return null;
         const age = Number(response.headers.get("X-Capture-Age-Ms") ?? NaN);
-        const expiresAt = started + 1000 - age;
+        const expiresAt = started + SURFACE_MAX_AGE_MS - age;
         if (
           response.ok &&
           (!Number.isFinite(age) || age < 0 || performance.now() > expiresAt)
@@ -79,8 +82,7 @@ export class SurfaceFeed {
     });
     if (!response.ok) return null;
     const status = record(await response.json());
-    if (status.tracking !== "normal" || record(status.health).phone !== "ok")
-      return null;
+    if (record(status.health).phone === "down") return null;
     const rich = record(record(record(status.rich).packets).frame),
       legacy = record(status.frame);
     const richTime = Number(rich.t_capture),
@@ -93,8 +95,9 @@ export class SurfaceFeed {
         sections.includes(n),
       ) &&
       typeof rich.age_ms === "number" &&
-      rich.age_ms <= 1000 &&
-      (!Number.isFinite(legacyTime) || richTime >= legacyTime - 0.2);
+      rich.age_ms <= SURFACE_MAX_AGE_MS &&
+      record(rich.metadata).tracking === "normal" &&
+      (!Number.isFinite(legacyTime) || richTime >= legacyTime - 0.035);
     const frame = useRich ? rich : legacy;
     const token = String(
       useRich ? (frame.token ?? "") : (frame.capture_id ?? ""),
@@ -106,7 +109,7 @@ export class SurfaceFeed {
       typeof age !== "number" ||
       !Number.isFinite(age) ||
       age < 0 ||
-      age > 1000
+      age > SURFACE_MAX_AGE_MS
     )
       return null;
     const packet = await this.request(
@@ -114,7 +117,7 @@ export class SurfaceFeed {
       { signal, cache: "no-store" },
     );
     const buffer = await boundedBody(packet, signal);
-    const expiresAt = started + 1000 - age;
+    const expiresAt = started + SURFACE_MAX_AGE_MS - age;
     if (performance.now() > expiresAt) return null;
     this.token = token;
     return {

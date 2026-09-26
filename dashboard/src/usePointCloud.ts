@@ -1,5 +1,15 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { PointCloudStore, POINTS_PROTOCOL } from "./pointCloud";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  PointCloudStore,
+  POINTS_PROTOCOL,
+  type CapturedPoints,
+} from "./pointCloud";
 import { CloudWorker } from "./cloudWorker";
 
 export function liveEndpoint(
@@ -30,6 +40,12 @@ export function liveEndpoint(
 }
 
 export function usePointCloud() {
+  const processorRef = useRef<CloudWorker | null>(null);
+  const mapRef = useRef<string | null>(null);
+  const ingestCaptured = useCallback((points: CapturedPoints) => {
+    if (JSON.stringify([points.sessionId, points.mapEpoch]) === mapRef.current)
+      processorRef.current?.ingestCaptured(points);
+  }, []);
   const [cloud] = useState(() => new PointCloudStore());
   useSyncExternalStore(cloud.subscribe, cloud.snapshot);
   const [feed, setFeed] = useState({
@@ -83,6 +99,7 @@ export function usePointCloud() {
           setFeed((s) => ({ ...s, connection: "processing-error" }));
       },
     );
+    processorRef.current = processor;
     const connect = (dense = preferDense) => {
       if (disposed) return;
       let opened = false;
@@ -103,6 +120,7 @@ export function usePointCloud() {
         preferDense = dense;
         attempt = 0;
         setMap(null);
+        mapRef.current = null;
         processor.reset();
         setFeed({
           connection: "connected",
@@ -139,8 +157,13 @@ export function usePointCloud() {
             message.session_id.length > 0 &&
             Number.isSafeInteger(message.map_epoch) &&
             message.map_epoch > 0
-          )
-            setMap(JSON.stringify([message.session_id, message.map_epoch]));
+          ) {
+            mapRef.current = JSON.stringify([
+              message.session_id,
+              message.map_epoch,
+            ]);
+            setMap(mapRef.current);
+          }
           processor.announce(message);
         } else if (
           message.type === "health" &&
@@ -183,6 +206,7 @@ export function usePointCloud() {
       disposed = true;
       clearTimeout(retry);
       processor.dispose();
+      processorRef.current = null;
       if (socket) {
         socket.onclose = null;
         socket.onmessage = null;
@@ -208,7 +232,9 @@ export function usePointCloud() {
   if (feed.connection === "processing-error")
     label = "Point processing failed; reload the view";
   if (feed.connection === "connected" && cloud.count && !live)
-    label = "No fresh depth";
+    label = "Point stream delayed";
+  if (feed.connection === "connected" && feed.phone === "stale")
+    label = "Pose stream delayed";
   if (feed.connection === "connected" && feed.tracking === "limited")
     label = "Tracking limited";
   if (feed.connection === "connected" && feed.tracking === "not_available")
@@ -222,9 +248,10 @@ export function usePointCloud() {
     rejected: feed.rejected,
     source,
     map,
-    canCapture:
-      feed.connection === "connected" &&
-      feed.phone === "ok" &&
-      feed.tracking === "normal",
+    now,
+    ingestCaptured,
+    // The pose channel can freeze on "limited" while a fresh full capture has
+    // normal tracking. Validate each RGB-D packet's own tracking and timestamp.
+    canCapture: feed.connection === "connected" && feed.phone !== "down",
   };
 }

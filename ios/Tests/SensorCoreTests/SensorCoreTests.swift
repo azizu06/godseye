@@ -3,6 +3,29 @@ import XCTest
 @testable import SensorCore
 
 final class SensorCoreTests: XCTestCase {
+    func testWarmDeviceKeepsTemporalCoverageAndReducesBackgroundWorkFirst() {
+        let normal = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: false)
+        let warm = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: true)
+        XCTAssertEqual(normal.liveHz, 30)
+        XCTAssertEqual(warm.liveHz, 15)
+        XCTAssertLessThan(warm.fullHz, normal.fullHz / 2)
+        XCTAssertLessThan(warm.archiveHz, normal.archiveHz / 2)
+        XCTAssertLessThan(warm.geometryHz, normal.geometryHz)
+        XCTAssertEqual(CaptureCadence(liveHz: 5, archiveHz: 2, seriousThermal: true).liveHz, 5)
+    }
+    func testBusyUploadQueuePrioritizesFramesWithoutStarvingOtherSensors() {
+        var schedule = UploadSchedule()
+        let all: Set<String> = ["frame", "geometry", "telemetry", "still"]
+        let cycle = (0..<12).compactMap { _ in schedule.next(available: all) }
+        XCTAssertEqual(cycle.filter { $0 == "frame" }.count, 6)
+        for kind in ["geometry", "telemetry", "still"] {
+            XCTAssertEqual(cycle.filter { $0 == kind }.count, 2)
+        }
+        XCTAssertEqual(cycle.first, "frame")
+        XCTAssertNil(schedule.next(available: []))
+        XCTAssertEqual(schedule.next(available: ["geometry"]), "geometry")
+        XCTAssertEqual(schedule.next(available: ["frame"]), "frame")
+    }
     private let identity = CaptureIdentity(sessionID: "swift-contract-fixture", epoch: 3)
     private let transform: [Float] = [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 2, 1, -3, 1]
 

@@ -18,6 +18,7 @@ const status = (rich = false) => ({
             token: "v2",
             age_ms: 20,
             t_capture: 4,
+            metadata: { tracking: "normal" },
             sections: ["rgb", "raw_depth", "raw_confidence"].map((name) => ({
               name,
             })),
@@ -68,12 +69,77 @@ for (const rich of [false, true]) {
 test("empty, stale, and invalid-age previews cannot enter the map", async () => {
   for (const response of [
     new Response(null, { status: 204 }),
-    binary("1001"),
+    binary("15001"),
     binary("NaN"),
     binary("-1"),
   ]) {
     const feed = new SurfaceFeed("http://preview.test", async () => response);
     expect(await feed.read(signal())).toBeNull();
+  }
+});
+
+test("fast motion uses the newer live frame instead of an older high-resolution capture", async () => {
+  const current = status(true);
+  current.rich.packets.frame!.t_capture = 3.9;
+  const paths: string[] = [];
+  const feed = new SurfaceFeed("http://preview.test", async (input) => {
+    const path = new URL(String(input)).pathname;
+    paths.push(path);
+    if (path === "/capture/surface.bin")
+      return new Response(null, { status: 404 });
+    if (path === "/capture/status") return Response.json(current);
+    return binary();
+  });
+  expect(await feed.read(signal())).not.toBeNull();
+  expect(paths.at(-1)).toBe("/capture/frame.bin");
+});
+
+test("valid full capture continues while the independent pose heartbeat is stale", async () => {
+  const current = {
+    ...status(true),
+    tracking: null,
+    health: { phone: "stale" },
+    frame: null,
+  };
+  const calls: string[] = [];
+  const feed = new SurfaceFeed("http://preview.test", async (input) => {
+    const path = new URL(String(input)).pathname;
+    calls.push(path);
+    if (path === "/capture/surface.bin")
+      return new Response(null, { status: 404 });
+    if (path === "/capture/status") return Response.json(current);
+    return binary();
+  });
+  expect(await feed.read(signal())).not.toBeNull();
+  expect(calls.at(-1)).toBe("/capture/rich/frame.bin");
+});
+
+test("visualization accepts delayed calibrated frames without a one-second download deadline", async () => {
+  const feed = new SurfaceFeed("http://preview.test", async () =>
+    binary("1500"),
+  );
+  const result = await feed.read(signal());
+  expect(result).not.toBeNull();
+  expect(result!.expiresAt - performance.now()).toBeGreaterThan(3000);
+});
+
+test("offline phones and captures without normal tracking are not selected as rich surfaces", async () => {
+  for (const offline of [false, true]) {
+    const current = status(true);
+    current.health.phone = offline ? "down" : "stale";
+    current.rich.packets.frame!.metadata.tracking = "limited";
+    const calls: string[] = [];
+    const feed = new SurfaceFeed("http://preview.test", async (input) => {
+      const path = new URL(String(input)).pathname;
+      calls.push(path);
+      if (path === "/capture/surface.bin")
+        return new Response(null, { status: 404 });
+      if (path === "/capture/status")
+        return Response.json({ ...current, frame: null });
+      return binary();
+    });
+    expect(await feed.read(signal())).toBeNull();
+    expect(calls).not.toContain("/capture/rich/frame.bin");
   }
 });
 

@@ -1,4 +1,4 @@
-import { PointCloudStore } from "./pointCloud";
+import { PointCloudStore, type CapturedPoints } from "./pointCloud";
 import type { CloudRequest, CloudResponse } from "./cloudWorker";
 
 const cloud = new PointCloudStore();
@@ -13,6 +13,8 @@ worker.onmessage = ({ data }) => {
     result = "accepted";
   } else if (data.kind === "announce") {
     result = cloud.announce(data.value) ? "accepted" : "ignored";
+  } else if (data.kind === "capture") {
+    result = cloud.ingestCaptured(data.value as CapturedPoints);
   } else {
     result = cloud.ingest(data.value);
   }
@@ -26,7 +28,13 @@ worker.onmessage = ({ data }) => {
       update,
     },
     update
-      ? [update.positions.buffer, update.colors.buffer, update.spans.buffer]
+      ? [
+          update.positions.buffer,
+          update.colors.buffer,
+          update.spans.buffer,
+          update.visibleSpans.buffer,
+          update.visibleIndices.buffer,
+        ]
       : [],
   );
 };

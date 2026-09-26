@@ -4,6 +4,7 @@ import {
   linearColor,
   parsePointChunk,
   PointCloudStore,
+  type CapturedPoints,
 } from "../src/pointCloud";
 import { liveEndpoint } from "../src/usePointCloud";
 import { binaryPoints } from "./support/binaryPoints";
@@ -17,6 +18,110 @@ const chunk = (id = 1, positions = [1, 2, -3], colors = [1, 0.5, 0]) => ({
   t_capture: id,
   positions,
   colors,
+});
+
+test("covered points leave the GPU draw list while original measurements and incremental updates survive", () => {
+  const worker = new PointCloudStore(64),
+    renderer = new PointCloudStore(64);
+  const positions = Float32Array.from({ length: 64 * 3 }, (_, i) =>
+    i % 3 === 0 ? Math.floor(i / 3) * 0.02 : 0,
+  );
+  const colors = new Float32Array(positions.length).fill(0.5);
+  for (let frameId = 1; frameId <= 30; frameId++) {
+    const covered = Uint8Array.from({ length: 64 }, (_, i) =>
+      Number((i + frameId) % 7 !== 0),
+    );
+    worker.ingestCaptured({
+      sessionId: "draw",
+      mapEpoch: 1,
+      frameId,
+      capturedAt: frameId,
+      positions,
+      colors,
+      covered,
+    });
+    renderer.applyUpdate(worker.takeUpdate());
+    const expected = [...covered.keys()].filter((i) => covered[i] === 0);
+    expect(
+      [...renderer.visibleIndices.subarray(0, renderer.visibleCount)].sort(
+        (a, b) => a - b,
+      ),
+    ).toEqual(expected);
+    expect(renderer.count).toBe(64);
+    expect(renderer.positions).toEqual(positions);
+  }
+  worker.clear();
+  renderer.applyUpdate(worker.takeUpdate());
+  expect(renderer.visibleCount).toBe(0);
+  worker.ingest(chunk(1));
+  renderer.applyUpdate(worker.takeUpdate());
+  expect([
+    ...renderer.visibleIndices.subarray(0, renderer.visibleCount),
+  ]).toEqual([0]);
+});
+
+test("late coverage does not hide newer foreground points and recycled slots regain visibility", () => {
+  const cloud = new PointCloudStore(2);
+  cloud.ingest(chunk(10, [0.008, 0, 0]));
+  cloud.ingestCaptured({
+    sessionId: "phone-a",
+    mapEpoch: 1,
+    frameId: 9,
+    capturedAt: 9,
+    positions: new Float32Array([0.001, 0, 0, 1, 0, 0]),
+    colors: new Float32Array(6),
+    covered: new Uint8Array([1, 1]),
+  });
+  expect(cloud.visibleCount).toBe(1);
+  expect(cloud.visibleIndices[0]).toBe(0);
+  cloud.ingest(chunk(11, [2, 0, 0]));
+  cloud.ingest(chunk(12, [3, 0, 0]));
+  expect(cloud.count).toBe(2);
+  expect(cloud.visibleCount).toBe(2);
+  expect(new Set(cloud.visibleIndices.subarray(0, 2)).size).toBe(2);
+});
+
+test("native captures fill missing cells without rewinding newer wire measurements or double-converting color", () => {
+  const cloud = new PointCloudStore(8);
+  cloud.ingest(chunk(10, [0.003, 0, 0], [1, 0, 0]));
+  const capture: CapturedPoints = {
+    sessionId: "phone-a",
+    mapEpoch: 1,
+    frameId: 1,
+    capturedAt: 9,
+    positions: new Float32Array([0.004, 0, 0, 1.003, 0, 0]),
+    colors: new Float32Array([0, 0, 1, 0.214041, 0, 0]),
+  };
+  expect(cloud.ingestCaptured(capture)).toBe("accepted");
+  expect(cloud.count).toBe(2);
+  expect(cloud.positions[0]).toBeCloseTo(0.003);
+  expect(cloud.colors[0]).toBe(1);
+  expect(cloud.positions[3]).toBeCloseTo(1.003);
+  expect(cloud.colors[3]).toBeCloseTo(0.214041);
+  expect(cloud.ingestCaptured(capture)).toBe("ignored");
+  expect(cloud.ingestCaptured({ ...capture, frameId: 2, capturedAt: 10 })).toBe(
+    "accepted",
+  );
+  expect(cloud.positions[0]).toBeCloseTo(0.004);
+  expect(cloud.colors[2]).toBe(1);
+  const positions = cloud.positions.slice();
+  expect(
+    cloud.ingestCaptured({
+      ...capture,
+      sessionId: "bad",
+      positions: new Float32Array([NaN, 0, 0]),
+    }),
+  ).toBe("invalid");
+  expect(cloud.positions).toEqual(positions);
+  cloud.announce({
+    version: 1,
+    type: "objects",
+    session_id: "phone-a",
+    map_epoch: 2,
+  });
+  expect(cloud.ingestCaptured(capture)).toBe("ignored");
+  expect(cloud.ingestCaptured({ ...capture, mapEpoch: 2 })).toBe("accepted");
+  expect(cloud.positions[0]).toBeCloseTo(0.004);
 });
 
 test("world coordinates are preserved and JPEG colors are converted to linear RGB", () => {

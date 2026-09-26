@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import {
   BufferAttribute,
@@ -22,22 +22,60 @@ const roundSplats: PointsMaterial["onBeforeCompile"] = (shader) => {
 export default memo(function PointCloud({
   cloud,
   visible = true,
+  surfaceOcclusion = false,
 }: {
   cloud: PointCloudStore;
   visible?: boolean;
+  surfaceOcclusion?: boolean;
 }) {
   const uploaded = useRef(-1);
   const geometry = useRef<BufferGeometry>(null);
+  const mode = useRef<boolean | undefined>(undefined);
+  const drawIndices = useMemo(
+    () =>
+      new BufferAttribute(cloud.visibleIndices, 1).setUsage(DynamicDrawUsage),
+    [cloud],
+  );
   const invalidate = useThree((state) => state.invalidate);
+  const depthBias = useMemo(() => ({ value: 0 }), []);
+  const compile = useMemo<PointsMaterial["onBeforeCompile"]>(
+    () => (shader, renderer) => {
+      roundSplats(shader, renderer);
+      shader.uniforms.surfaceDepthBias = depthBias;
+      shader.vertexShader =
+        `uniform float surfaceDepthBias;\n${shader.vertexShader}`.replace(
+          "#include <project_vertex>",
+          `#include <project_vertex>
+      // Bias only raster depth, preserving measured positions and screen XY.
+      // Confirmed faces cover coplanar splats; openings and foreground stay visible.
+      vec4 biasedDepth = projectionMatrix * vec4(mvPosition.xyz - vec3(0.0, 0.0, surfaceDepthBias), 1.0);
+      gl_Position.z = biasedDepth.z / biasedDepth.w * gl_Position.w;`,
+        );
+    },
+    [depthBias],
+  );
+  useEffect(() => {
+    depthBias.value = surfaceOcclusion ? 0.005 : 0;
+    invalidate();
+  }, [surfaceOcclusion, depthBias, invalidate]);
   useEffect(() => cloud.subscribe(invalidate), [cloud, invalidate]);
   useFrame(() => {
     if (!visible) return;
     const version = cloud.snapshot();
-    if (version === uploaded.current) return;
+    if (version === uploaded.current && mode.current === surfaceOcclusion)
+      return;
     const buffer = geometry.current;
     if (!buffer) return;
     uploaded.current = version;
-    buffer.setDrawRange(0, cloud.count);
+    mode.current = surfaceOcclusion;
+    buffer.setIndex(surfaceOcclusion ? drawIndices : null);
+    buffer.setDrawRange(0, surfaceOcclusion ? cloud.visibleCount : cloud.count);
+    if (surfaceOcclusion) {
+      const ranges = cloud.takeVisibleRanges();
+      for (const range of ranges)
+        drawIndices.addUpdateRange(range.start, range.count);
+      if (ranges.length) drawIndices.needsUpdate = true;
+    }
     const ranges = cloud.takeUpdateRanges();
     for (const attribute of [
       buffer.attributes.position,
@@ -70,7 +108,10 @@ export default memo(function PointCloud({
         depthTest
         depthWrite
         toneMapped={false}
-        onBeforeCompile={roundSplats}
+        onBeforeCompile={compile}
+        customProgramCacheKey={() =>
+          "round-measured-points-with-surface-depth-v1"
+        }
       />
     </points>
   );

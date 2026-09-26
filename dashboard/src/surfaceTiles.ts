@@ -1,5 +1,6 @@
 import type { SurfacePatch, SurfaceTileUpdate } from "./surfaceTypes";
 import type { CloudBounds } from "./pointCloud";
+import { MAX_SURFACE_TRIANGLES, MAX_SURFACE_VERTICES } from "./surfaceLimits";
 
 type Tile = {
   positions: number[];
@@ -33,8 +34,8 @@ export class SurfaceTiles {
   triangles = 0;
   capacity = false;
   constructor(
-    private maxTriangles = 500_000,
-    private maxVertices = 500_000,
+    private maxTriangles = MAX_SURFACE_TRIANGLES,
+    private maxVertices = MAX_SURFACE_VERTICES,
   ) {}
 
   bounds(): CloudBounds | null {
@@ -52,7 +53,10 @@ export class SurfaceTiles {
     };
   }
 
-  add(patch: SurfacePatch): SurfaceTileUpdate[] {
+  add(
+    patch: SurfacePatch,
+    retained?: (a: number, b: number, c: number) => void,
+  ): SurfaceTileUpdate[] {
     const { positions: p, colors, indices } = patch;
     if (
       !colors ||
@@ -166,6 +170,7 @@ export class SurfaceTiles {
         tile.faces.add(faceKey(face[0], face[1], face[2]));
         this.triangles++;
       }
+      retained?.(a, b, c);
     }
     return [...dirty].map(([id, changes]) => {
       const tile = this.tiles.get(id)!;

@@ -1,9 +1,11 @@
 import { decodeCaptureSurface } from "./captureSurface";
 import { bakeSurfaceColors } from "./surfaceColor";
 import { SurfaceTiles } from "./surfaceTiles";
-import { SurfaceFeed } from "./surfaceFeed";
+import { SurfaceEvidence } from "./surfaceEvidence";
+import { surfaceCoverage, surfaceSupport } from "./surfaceCoverage";
+import { SurfaceFeed, SURFACE_MAX_AGE_MS } from "./surfaceFeed";
 import type { CapturedSurface, SurfaceTileUpdate } from "./surfaceTypes";
-import type { CloudBounds } from "./pointCloud";
+import type { CloudBounds, CapturedPoints } from "./pointCloud";
 
 export type SurfaceUpdate = {
   tiles: SurfaceTileUpdate[];
@@ -11,31 +13,40 @@ export type SurfaceUpdate = {
   triangles: number;
   capacity: boolean;
   bounds: CloudBounds | null;
+  frameAgeMs: number;
+  points: CapturedPoints;
 };
+export type SurfaceMessage = SurfaceUpdate | { issue: string };
 const worker = self as unknown as {
   onmessage: (
     event: MessageEvent<{ base?: string; map?: string; active: boolean }>,
   ) => void;
-  postMessage: (message: SurfaceUpdate, transfer: Transferable[]) => void;
+  postMessage: (message: SurfaceMessage, transfer?: Transferable[]) => void;
 };
 const map = new SurfaceTiles();
+const evidence = new SurfaceEvidence();
 let feed: SurfaceFeed;
 let identity = "",
   active = false,
   busy = false,
   latest = -1;
 let request: AbortController | undefined;
+let lastIssue = "";
+function reportIssue(issue: string) {
+  if (issue !== lastIssue) worker.postMessage({ issue });
+  lastIssue = issue;
+}
 async function poll() {
   if (!active || busy) return;
   busy = true;
   request = new AbortController();
   const { signal } = request;
-  const timeout = setTimeout(() => request?.abort(), 3000);
+  const timeout = setTimeout(() => request?.abort(), SURFACE_MAX_AGE_MS);
   let bitmap: ImageBitmap | undefined;
   try {
     const capture = await feed.read(signal);
     if (!capture) return;
-    const surface = decodeCaptureSurface(capture.buffer);
+    const surface = decodeCaptureSurface(capture.buffer, true);
     if (
       !active ||
       signal.aborted ||
@@ -45,7 +56,10 @@ async function poll() {
       performance.now() > capture.expiresAt
     )
       return;
-    if (!surface.indices.length || !surface.jpeg) return;
+    if (!surface.positions.length || !surface.jpeg) {
+      reportIssue("Latest frame has no usable high-confidence depth");
+      return;
+    }
     bitmap = await createImageBitmap(
       new Blob([surface.jpeg as BlobPart], { type: "image/jpeg" }),
     );
@@ -63,21 +77,53 @@ async function poll() {
     );
     if (!active || signal.aborted || performance.now() > capture.expiresAt)
       return;
-    const tiles = map.add(colored);
+    const confirmed = evidence.confirm(surface, surfaceSupport(surface));
+    const retained = new Uint32Array(confirmed.length);
+    let retainedCount = 0;
+    const tiles = confirmed.length
+      ? map.add({ ...colored, indices: confirmed }, (a, b, c) => {
+          retained[retainedCount++] = a;
+          retained[retainedCount++] = b;
+          retained[retainedCount++] = c;
+        })
+      : [];
     // ImageBitmap ignores WebGL's flipY flag: flip pixels explicitly before transfer.
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.translate(0, canvas.height);
-    context.scale(1, -1);
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const image = canvas.transferToImageBitmap();
-    const recent = { ...surface, jpeg: undefined, image };
+    let recent: CapturedSurface | undefined;
+    if (confirmed.length) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.translate(0, canvas.height);
+      context.scale(1, -1);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      recent = {
+        ...surface,
+        indices: confirmed,
+        jpeg: undefined,
+        image: canvas.transferToImageBitmap(),
+      };
+    }
+    const points: CapturedPoints = {
+      sessionId: surface.sessionId,
+      mapEpoch: surface.mapEpoch,
+      frameId: surface.frameId,
+      capturedAt: surface.capturedAt,
+      positions: surface.positions.slice(),
+      colors: colored.colors!,
+      covered: surfaceCoverage(surface, retained.subarray(0, retainedCount)),
+    };
     latest = surface.capturedAt;
+    lastIssue = "";
     const transfer: Transferable[] = [
-      image,
-      recent.positions.buffer,
-      recent.indices.buffer,
-      recent.uvs!.buffer,
+      points.positions.buffer,
+      points.colors.buffer,
+      points.covered!.buffer,
     ];
+    if (recent)
+      transfer.push(
+        recent.image!,
+        recent.positions.buffer,
+        recent.indices.buffer,
+        recent.uvs!.buffer,
+      );
     for (const tile of tiles)
       transfer.push(
         tile.spans.buffer,
@@ -89,14 +135,27 @@ async function poll() {
       {
         tiles,
         recent,
+        points,
         triangles: map.triangles,
         capacity: map.capacity,
         bounds: map.bounds(),
+        frameAgeMs: Math.max(
+          0,
+          SURFACE_MAX_AGE_MS - (capture.expiresAt - performance.now()),
+        ),
       },
       transfer,
     );
-  } catch {
-    // Retained geometry stays visible. A missing capture endpoint keeps the point fallback.
+  } catch (error) {
+    // Preserve the scan, but expose why new frames cannot be rendered.
+    if (active)
+      reportIssue(
+        signal.aborted
+          ? "Capture download timed out"
+          : error instanceof Error
+            ? error.message.slice(0, 160)
+            : "Surface processing failed",
+      );
   } finally {
     bitmap?.close();
     clearTimeout(timeout);
@@ -110,4 +169,4 @@ worker.onmessage = ({ data }) => {
   if (!active) request?.abort();
   else void poll();
 };
-setInterval(() => void poll(), 200);
+setInterval(() => void poll(), 50);

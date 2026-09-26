@@ -55,7 +55,9 @@ for (let offset = 0; offset < 2_000_000; offset += 20_000) {
   totalBytes +=
     update.positions.byteLength +
     update.colors.byteLength +
-    update.spans.byteLength;
+    update.spans.byteLength +
+    update.visibleIndices.byteLength +
+    update.visibleSpans.byteLength;
   start = performance.now();
   renderer.applyUpdate(update);
   renderer.takeUpdateRanges();
@@ -76,6 +78,46 @@ console.log(
       scatteredRevisitBytes:
         revisit.positions.byteLength + revisit.colors.byteLength,
       oldScatteredRevisitBytes: 48_000_000,
+    },
+    null,
+    2,
+  ),
+);
+
+// Retire 90% of a full cache without deleting its original measured coordinates.
+const retirementTimes = [];
+let retirementBytes = 0;
+for (let offset = 0; offset < 2_000_000; offset += 50_000) {
+  const count = Math.min(50_000, 2_000_000 - offset);
+  const captured = {
+    sessionId: "benchmark",
+    mapEpoch: 1,
+    frameId: offset + 1,
+    capturedAt: 4_000_000 + offset,
+    positions: worker.positions.slice(offset * 3, (offset + count) * 3),
+    colors: worker.colors.slice(offset * 3, (offset + count) * 3),
+    covered: Uint8Array.from({ length: count }, (_, i) =>
+      Number((offset + i) % 10 !== 0),
+    ),
+  };
+  const start = performance.now();
+  worker.ingestCaptured(captured);
+  const update = worker.takeUpdate();
+  renderer.applyUpdate(update);
+  retirementTimes.push(performance.now() - start);
+  retirementBytes +=
+    update.visibleIndices.byteLength + update.visibleSpans.byteLength;
+}
+if (renderer.count !== 2_000_000 || renderer.visibleCount !== 200_000)
+  throw Error("Point retirement lost measurements or left covered dots active");
+console.log(
+  JSON.stringify(
+    {
+      retainedPoints: renderer.count,
+      drawnPoints: renderer.visibleCount,
+      pointVertexReductionPercent: 90,
+      retirementBatchP95Ms: p95(retirementTimes),
+      retirementIndexBytes: retirementBytes,
     },
     null,
     2,

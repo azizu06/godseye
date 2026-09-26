@@ -11,6 +11,7 @@ from backend.surface_preview import has_surface, surface_payload
 IMAGE_SENSORS = {'rgb', 'raw_depth', 'raw_confidence', 'smoothed_depth',
                  'smoothed_confidence', 'person_mask', 'person_depth'}
 HEADERS = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
+SURFACE_MAX_AGE_S = 15
 
 
 def legacy_packet(frame):
@@ -35,13 +36,13 @@ def register_capture_routes(app):
 
         def eligible(header, metadata, received_at):
             now = time.monotonic()
-            return (state.phone is not None and state.pose is not None and
-                    state.pose_at is not None and now - state.pose_at <= .25 and
-                    state.pose.tracking == 'normal' and metadata.get('tracking') == 'normal' and
+            # The frame carries its own calibrated pose. A stale drive heartbeat
+            # must not starve visualization of valid independently uploaded RGB-D.
+            return (state.phone is not None and metadata.get('tracking') == 'normal' and
                     (header['session_id'], header['map_epoch']) == state.session and
                     header['t_capture'] > state.tracking_lost_capture and
-                    header['t_capture'] >= state.pose.t_capture - 1 and
-                    now - received_at <= 1)
+                    (state.pose is None or header['t_capture'] >= state.pose.t_capture - SURFACE_MAX_AGE_S) and
+                    now - received_at <= SURFACE_MAX_AGE_S)
 
         rich, legacy = state.rich_capture.latest.get('frame'), state.capture.latest
         if rich is not None and (not has_surface(rich) or not eligible(
@@ -50,7 +51,7 @@ def register_capture_routes(app):
         if legacy is not None and not eligible(legacy.metadata, legacy.metadata, legacy.received_at):
             legacy = None
         use_rich = rich is not None and (legacy is None or
-                                        rich.header['t_capture'] >= legacy.metadata['t_capture'] - .2)
+                                        rich.header['t_capture'] >= legacy.metadata['t_capture'] - .035)
         selected = rich if use_rich else legacy
         if selected is None:
             return Response(status_code=204, headers=HEADERS)

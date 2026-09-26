@@ -30,7 +30,7 @@ from backend.objects import ObjectMemory, detect_objects
 
 logger = logging.getLogger(__name__)
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
-DENSE_MAP_INTERVAL_S = .1  # opt-in binary viewers: up to 10 Hz
+DENSE_MAP_INTERVAL_S = 1 / 30  # opt-in binary viewers: up to 30 Hz
 MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
 MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference

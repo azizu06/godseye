@@ -96,7 +96,10 @@ function jpegDimensions(jpeg: Uint8Array): [number, number] {
 }
 
 /** Decode same-frame calibrated RGB-D; UVs assume a conventional flipY=true JPEG texture. */
-export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
+export function decodeCaptureSurface(
+  buffer: ArrayBuffer,
+  includeAllDepth = false,
+): CapturedSurface {
   if (buffer.byteLength < 5 || buffer.byteLength > MAX_PACKET)
     fail("packet size exceeds bounds");
   const view = new DataView(buffer);
@@ -451,12 +454,19 @@ export function decodeCaptureSurface(buffer: ArrayBuffer): CapturedSurface {
       triangle(lookup[a], lookup[b], lookup[a + 1]);
       triangle(lookup[a + 1], lookup[b], lookup[b + 1]);
     }
+  // Keep every usable native measurement for the laptop's dense point cache,
+  // including thin features that do not support a connected surface triangle.
+  if (includeAllDepth)
+    for (let row = 0; row < dh; row++)
+      for (let col = 0; col < dw; col++) vertexAt(row, col);
   return {
     id: JSON.stringify([sessionId, mapEpoch, frameId, capturedAt]),
     sessionId,
     mapEpoch,
     frameId,
     capturedAt,
+    depthWidth: dw,
+    depthHeight: dh,
     cameraPosition: [transform[12], transform[13], transform[14]],
     cameraForward: [
       -transform[8] || 0,

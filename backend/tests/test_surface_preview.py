@@ -104,11 +104,33 @@ class SurfacePreviewTests(unittest.TestCase):
             self.assertEqual(client.get('/capture/surface.bin').status_code, 204)
             with client.websocket_connect('/phone') as phone:
                 self.connect(client, phone)
-                with patch('backend.capture_routes.time.monotonic', return_value=time.monotonic() + 2):
+                with patch('backend.capture_routes.time.monotonic', return_value=time.monotonic() + 16):
                     self.assertEqual(client.get('/capture/surface.bin').status_code, 204)
                 client.post('/session')
                 self.assertEqual(client.get('/capture/surface.bin').status_code, 204)
             self.assertEqual(client.get('/capture/surface.bin').status_code, 204)
+
+    def test_calibrated_preview_survives_stale_pose_without_refreshing_drive_health(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client, client.websocket_connect('/phone') as phone:
+            self.connect(client, phone)
+            client.app.state.pose_at = time.monotonic() - 2
+            self.assertEqual(client.get('/health').json()['phone'], 'stale')
+            full = rich_frame(frame(t_capture=2., frame_id=2))
+            self.assertEqual(client.post('/capture/ingest', content=full).status_code, 200)
+            self.assertEqual(client.get('/capture/surface.bin').content, surface_payload(decode_rich(full)))
+            health = client.get('/health').json()
+            self.assertEqual(health['phone'], 'stale')
+            self.assertFalse(health['armed'])
+
+    def test_full_capture_uses_its_own_pose_when_no_v1_pose_has_been_accepted(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client, client.websocket_connect('/phone') as phone:
+            phone.send_json(hello())
+            wait_for(lambda: client.app.state.phone is not None)
+            full = rich_frame(frame())
+            self.assertEqual(client.post('/capture/ingest', content=full).status_code, 200)
+            self.assertIsNone(client.app.state.pose)
+            self.assertEqual(client.get('/capture/surface.bin').status_code, 200)
+            self.assertEqual(client.get('/health').json()['phone'], 'stale')
 
     def test_tracking_loss_during_off_thread_pack_discards_the_response(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/phone') as phone:

@@ -86,9 +86,10 @@ The iPhone uploader keeps one request in flight and one latest packet per kind.
 Replaced/failed/over-5-second-old queued packets count as dropped. Failed packets
 are not replayed. Slow links therefore miss samples; the independent phone archive
 can retain data that did not reach the laptop. No claim of complete 100 Hz delivery
-is made. One image encoder is active at a time; busy frame opportunities count as
-skipped. Serious thermal state reduces full frame upload to 2 Hz, v1 bundles to
-5 Hz, and local frames to 1 Hz; critical thermal state stops capture.
+is made. Live and full-sensor encoders run independently with at most one job each;
+busy frame opportunities count as skipped. Serious thermal state reduces full
+frames and local recordings to 1 Hz, geometry to 0.5 Hz, and live v1 bundles to
+at most 15 Hz; critical thermal state stops capture.
 
 The laptop stores exact received packets by default in
 `backend/captures/<session-hash>/` with a `recording.json` index. Set
@@ -131,3 +132,8 @@ authentication. Capture files include imagery and location; they are gitignored.
 
 Validation: `python3 -m unittest discover -s backend/tests` and the Swift/Python
 contract check in [ios/README.md](../ios/README.md).
+
+The live v1 RGB-D path targets 30 Hz in the fast profile and uses a separate
+high-priority encoder; full native v2 captures keep the rates and data above.
+Mesh exports have their own serial queue. Telemetry includes `live_encoded_hz`,
+`live_sent_hz`, `live_encode_ms`, and `live_network_drops` for measured throughput.

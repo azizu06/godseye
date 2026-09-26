@@ -1,9 +1,13 @@
-import { PointCloudStore, type CloudUpdate } from "./pointCloud";
+import {
+  PointCloudStore,
+  type CloudUpdate,
+  type CapturedPoints,
+} from "./pointCloud";
 
 export type CloudRequest = {
   generation: number;
   id: number;
-  kind: "clear" | "announce" | "ingest";
+  kind: "clear" | "announce" | "ingest" | "capture";
   value?: unknown;
 };
 export type CloudResponse = {
@@ -14,7 +18,7 @@ export type CloudResponse = {
   update?: CloudUpdate;
 };
 
-/** One in-flight job plus the newest waiting frame; no accumulating latency. */
+/** One in-flight job, newest wire chunk and newest RGB-D frame; bounded latency. */
 export class CloudWorker {
   private worker = new Worker(
     new URL("./pointCloud.worker.ts", import.meta.url),
@@ -24,6 +28,7 @@ export class CloudWorker {
   private sequence = 0;
   private active = 0;
   private pending: unknown;
+  private pendingCapture: CapturedPoints | undefined;
   private announcement: unknown;
 
   constructor(
@@ -44,16 +49,22 @@ export class CloudWorker {
   reset() {
     this.generation++;
     this.pending = this.announcement = undefined;
+    this.pendingCapture = undefined;
     this.cloud.clear();
     this.send("clear");
   }
   announce(value: unknown) {
     this.announcement = value;
     this.pending = undefined;
+    this.pendingCapture = undefined;
     this.flush();
   }
   ingest(value: unknown) {
     this.pending = value;
+    this.flush();
+  }
+  ingestCaptured(value: CapturedPoints) {
+    this.pendingCapture = value;
     this.flush();
   }
   private flush() {
@@ -62,6 +73,10 @@ export class CloudWorker {
       const value = this.announcement;
       this.announcement = undefined;
       this.send("announce", value);
+    } else if (this.pendingCapture !== undefined) {
+      const value = this.pendingCapture;
+      this.pendingCapture = undefined;
+      this.send("capture", value);
     } else if (this.pending !== undefined) {
       const value = this.pending;
       this.pending = undefined;
@@ -78,7 +93,17 @@ export class CloudWorker {
     };
     this.worker.postMessage(
       message,
-      value instanceof ArrayBuffer ? [value] : [],
+      kind === "capture"
+        ? [
+            (value as CapturedPoints).positions.buffer,
+            (value as CapturedPoints).colors.buffer,
+            ...((value as CapturedPoints).covered
+              ? [(value as CapturedPoints).covered!.buffer]
+              : []),
+          ]
+        : value instanceof ArrayBuffer
+          ? [value]
+          : [],
     );
   }
   dispose() {

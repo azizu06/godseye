@@ -144,6 +144,48 @@ describe("calibrated capture surfaces", () => {
     for (const i of patch.indices) expect(patch.positions[i * 3]).toBe(-1);
     expect([...patch.positions].every(Number.isFinite)).toBe(true);
   });
+  it("native capture keeps every reliable sample, including isolated points without triangles", () => {
+    const confidence = Array(256 * 256).fill(0);
+    confidence[128 * 256 + 128] = 2;
+    const binary = fixture(
+      1,
+      (h) => {
+        h.depth = { ...h.depth, width: 256, height: 256, len: 256 * 256 * 4 };
+        h.confidence = {
+          ...h.confidence,
+          width: 256,
+          height: 256,
+          len: 256 * 256,
+        };
+      },
+      Array(256 * 256).fill(2),
+      confidence,
+    );
+    const captured = decodeCaptureSurface(binary, true);
+    expect(captured.positions).toHaveLength(3);
+    expect(captured.indices).toHaveLength(0);
+    expect([...captured.positions]).toEqual([-1, 1.998046875, 2.998046875]);
+    confidence.fill(2);
+    const dense = decodeCaptureSurface(
+      fixture(
+        1,
+        (h) => {
+          h.depth = { ...h.depth, width: 256, height: 256, len: 256 * 256 * 4 };
+          h.confidence = {
+            ...h.confidence,
+            width: 256,
+            height: 256,
+            len: 256 * 256,
+          };
+        },
+        Array(256 * 256).fill(2),
+        confidence,
+      ),
+      true,
+    );
+    expect(dense.positions.length / 3).toBe(65_536);
+    expect(dense.indices.length / 3).toBeLessThan(10_000);
+  });
   it("does not invent geometry when confidence is unavailable", () => {
     const patch = decodeCaptureSurface(
       fixture(2, () => {}, Array(16).fill(2), Array(16).fill(0)),

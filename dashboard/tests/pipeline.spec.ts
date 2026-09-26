@@ -168,8 +168,27 @@ for (const mode of [
         prefix.writeUInt32LE(header.length);
         phone!.send(Buffer.concat([prefix, header, payload]));
       }
+      const pointCount = async () =>
+        Number(
+          (await status.textContent())!
+            .match(/([\d,]+) points/)![1]
+            .replaceAll(",", ""),
+        );
+      const triangleCount = async () =>
+        Number(
+          (await status.textContent())!
+            .match(/([\d,]+) surface triangles/)?.[1]
+            .replaceAll(",", "") ?? 0,
+        );
+      const consumed = (id: number) =>
+        expect(status).toHaveAttribute("data-capture-frame", String(id));
       frame(1);
-      await expect(status).toContainText(`${count.toLocaleString()} points`);
+      await expect.poll(pointCount).toBeGreaterThanOrEqual(count);
+      await consumed(1);
+      await expect(status).toHaveAttribute(
+        "data-surfaces",
+        String(fixtureMode === "dense" || fixtureMode === "textured"),
+      );
       await expect.poll(async () => (await render()).equals(empty)).toBe(false);
       await canvas.press("f");
       const framed = await render();
@@ -187,7 +206,20 @@ for (const mode of [
               .published,
         )
         .toBe(2);
+      await consumed(2);
+      await expect(status).toHaveAttribute(
+        "data-surfaces",
+        String(fixtureMode === "dense" || fixtureMode === "textured"),
+      );
+      frame(3);
+      await consumed(3);
       await expect(status).toHaveAttribute("data-surfaces", "true");
+      const initialPoints = await pointCount();
+      await expect
+        .poll(async () =>
+          Number(await status.getAttribute("data-drawn-points")),
+        )
+        .toBeLessThan(initialPoints);
       expect(captureRequests).toContain("/capture/surface.bin");
       if (fixtureMode === "legacy") {
         expect(captureRequests).toContain("/capture/status");
@@ -246,15 +278,16 @@ for (const mode of [
       ]);
       // Plane capture remains available, but must neither draw rectangles nor
       // prune existing points or suppress subsequent samples on that plane.
-      frame(3);
+      frame(4);
+      await consumed(4);
       await expect
         .poll(
           async () =>
             (await (await fetch(`${http}/capture/status`)).json()).mapping
               .published,
         )
-        .toBe(3);
-      await expect(status).toContainText(`${count.toLocaleString()} points`);
+        .toBe(4);
+      expect(await pointCount()).toBe(initialPoints);
       await expect(status).not.toContainText("walls");
       expect((await render()).equals(pointsBeforeGeometry)).toBe(true);
       const stored = await fetch(`${http}/capture/rich/geometry.bin`);
@@ -266,10 +299,11 @@ for (const mode of [
       expect(storedHeader.metadata.anchors[0].id).toBe("classified-wall");
       const foreground = [...originalHeader.transform];
       foreground[12] += 0.3;
-      frame(4, foreground);
-      await expect(status).toContainText(
-        `${(count * 2).toLocaleString()} points`,
-      ); // Both wall and foreground samples remain.
+      frame(5, foreground);
+      await consumed(5);
+      await expect.poll(pointCount).toBeGreaterThan(initialPoints);
+      // One observation in the new region must be visible as points even though
+      // the already confirmed region continues to render triangles.
       await expect
         .poll(async () => (await render()).equals(pointsBeforeGeometry))
         .toBe(false);
@@ -280,6 +314,103 @@ for (const mode of [
           return text?.includes("triangles");
         })
         .toBe(true);
+      // Full RGB-D uploads are independent of the 250 ms pose watchdog. Reproduce
+      // Wi-Fi jitter: poses freeze at "limited", then independent RGB-D recovers.
+      clearInterval(poses);
+      phone.send(
+        JSON.stringify({
+          ...originalHeader,
+          type: "pose",
+          tracking: "limited",
+          frame_id: 400,
+          t_capture: captureTime(),
+          t_wall_ms: Date.now(),
+        }),
+      );
+      await expect
+        .poll(
+          async () =>
+            (await (await fetch(`${http}/capture/status`)).json()).tracking,
+        )
+        .toBe("limited");
+      await expect
+        .poll(async () => (await (await fetch(`${http}/health`)).json()).phone)
+        .toBe("stale");
+      const trianglesBefore = await triangleCount();
+      const pointsBeforeDelayed = await pointCount();
+      const delayedTransform = [...foreground];
+      delayedTransform[12] += 2;
+      const jpegLength = originalHeader.image.jpeg_len;
+      const depthLength = originalHeader.depth.len;
+      const shape = [originalHeader.depth.height, originalHeader.depth.width];
+      for (const id of [500, 501, 502]) {
+        const richHeader = Buffer.from(
+          JSON.stringify({
+            version: 2,
+            type: "capture",
+            kind: "frame",
+            session_id: originalHeader.session_id,
+            map_epoch: originalHeader.map_epoch,
+            frame_id: id,
+            t_capture: captureTime(),
+            t_wall_ms: Date.now(),
+            metadata: {
+              tracking: "normal",
+              transform: delayedTransform,
+              native_image: originalHeader.image,
+            },
+            sections: [
+              {
+                name: "rgb",
+                format: "jpeg",
+                offset: 0,
+                length: jpegLength,
+                shape: [
+                  originalHeader.image.height,
+                  originalHeader.image.width,
+                ],
+              },
+              {
+                name: "raw_depth",
+                format: "f32le",
+                offset: jpegLength,
+                length: depthLength,
+                shape,
+              },
+              {
+                name: "raw_confidence",
+                format: "u8",
+                offset: jpegLength + depthLength,
+                length: originalHeader.confidence.len,
+                shape,
+              },
+            ],
+          }),
+        );
+        const richPrefix = Buffer.alloc(4);
+        richPrefix.writeUInt32LE(richHeader.length);
+        expect(
+          (
+            await fetch(`${http}/capture/ingest`, {
+              method: "POST",
+              headers: { "Content-Type": "application/octet-stream" },
+              body: Buffer.concat([richPrefix, richHeader, payload]),
+            })
+          ).ok,
+        ).toBe(true);
+        await consumed(id);
+        if (id === 500) {
+          await expect.poll(pointCount).toBeGreaterThan(pointsBeforeDelayed);
+          if (fixtureMode !== "dense" && fixtureMode !== "textured")
+            expect(await triangleCount()).toBe(trianglesBefore);
+        }
+      }
+      await expect.poll(triangleCount).toBeGreaterThan(trianglesBefore);
+      await expect(status).toContainText("Live RGB + depth");
+      expect((await (await fetch(`${http}/health`)).json()).phone).toBe(
+        "stale",
+      );
+      const finalPoints = await pointCount();
       const wallAndObject = await render();
       await page.screenshot({
         path: testInfo.outputPath("points-and-foreground.png"),
@@ -287,9 +418,7 @@ for (const mode of [
       clearInterval(poses);
       phone.close();
       await expect(status).toContainText("Phone offline");
-      await expect(status).toContainText(
-        `${(count * 2).toLocaleString()} points`,
-      );
+      expect(await pointCount()).toBe(finalPoints);
       expect((await render()).equals(wallAndObject)).toBe(true);
       expect((await fetch(`${http}/session`, { method: "POST" })).ok).toBe(
         true,

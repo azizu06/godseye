@@ -19,6 +19,9 @@ automatically subscribes to `ws://<viewing-page-host>:8765/live` (`wss` on HTTPS
 The phone's development capture page remains at http://localhost:8765/capture.
 The status line shows whether points are live, the retained count, and feed or
 tracking interruptions. An empty view means no valid points have arrived yet.
+Surface capture runs independently of a stale pose heartbeat: each RGB-D frame
+uses its own tracking and calibration. The status reflects the representation
+being displayed and distinguishes capture delays from missing usable depth.
 
 For a different backend, use `/?live=ws%3A%2F%2Flaptop-host%3A8765%2Flive`.
 Set the phone's laptop URL to `ws://laptop-host:8765/phone` on that same host.
@@ -58,7 +61,7 @@ equivalent reverse-proxy routes; the Vite relay runs only in dev/preview.
 - **Left-drag:** pan the target and camera together. Shift + right-drag and middle-drag also pan.
 - **Scroll:** zoom in and out.
 - **F:** frame retained points without changing the viewing direction.
-- **P:** switch between camera-textured surfaces and the original points.
+- **P:** switch between the hybrid view and the original points.
 - **Home:** restore the initial camera and target.
 - **Keyboard, with the viewport focused:** arrows pan, Shift + arrows orbit, and `+` / `-` zoom.
 - **Touch:** one finger orbits; two fingers pan and pinch to zoom.
@@ -78,8 +81,11 @@ resulting dense v2 or legacy v1 `points` chunks, preserving transmitted position
 Y is up; the reference floor is XZ, with muted red X and green Z axes. The floor
 grid is a viewing aid, not measured geometry or a calibrated rover ground plane.
 
-When calibrated RGB-D capture is available, the default view shows observed
-triangles textured with their matching camera image. A background worker refines
+When calibrated RGB-D capture is available, the laptop immediately adds its native
+high-confidence samples to the original point coordinate system. Dense patches with at least eight supporting native depth samples can become
+triangles immediately; sparse patches need three consistent observations.
+Confirmed triangles use their matching camera image and remove covered samples
+from the GPU point draw list while preserving the original measurements for **P**. Unfinished regions retain visible points. A background worker refines
 curves and depth edges while leaving missing readings open. Persistent geometry
 updates through changed vertex ranges and appended triangles within spatial tiles.
 Stable GPU buffers avoid rebuilding a whole tile for a small refinement, and
@@ -100,7 +106,7 @@ per **1 cm spatial cell**. Positions stay at their measured coordinates rather
 than snapping to cell centers. When full, new cells replace older slots in a
 ring. The status line reports replacement. This buffer limits display memory,
 not the phone's recording. The viewport negotiates a compact binary feed with up
-to **20,000 samples per chunk at 10 Hz**, using confidence 2 and depths from 0.05
+to **20,000 samples per chunk at 30 Hz**, using confidence 2 and depths from 0.05
 to 5 meters. This is a 20× increase in the delivery ceiling; phone capture speed
 and repeated observations determine how quickly new cells actually fill in.
 Older servers still work through their 2,500-point JSON chunks at 4 Hz.

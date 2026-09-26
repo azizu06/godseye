@@ -47,7 +47,11 @@ A new or reset AR session gets a new `session_id` and increments `map_epoch`. Th
 
 `tracking` is one of `normal`, `limited`, `not_available`. The backend stops the car on anything other than `normal`.
 
-### 1c. `frame` bundle (binary, 5–10 Hz)
+### 1c. `frame` bundle (binary, 5–10 Hz baseline)
+
+The iOS fast capture profile optionally targets 30 Hz using this identical packet
+layout. It changes cadence only; same-frame calibration, validation, and health
+limits below still apply. See [iPhone capture](../ios/README.md).
 
 One binary WebSocket message, laid out as:
 

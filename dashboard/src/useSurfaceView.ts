@@ -4,8 +4,8 @@ import {
   SurfaceTileBuffer,
   type RetainedSurfaceTile,
 } from "./surfaceTileBuffer";
-import type { SurfaceUpdate } from "./surfaceView.worker";
-import type { CloudBounds } from "./pointCloud";
+import type { SurfaceMessage } from "./surfaceView.worker";
+import type { CloudBounds, CapturedPoints } from "./pointCloud";
 
 type View = {
   key: string;
@@ -14,6 +14,10 @@ type View = {
   triangles: number;
   capacity: boolean;
   bounds: CloudBounds | null;
+  updatedAt: number;
+  frameAgeMs: number;
+  frameId: number;
+  issue: string;
 };
 const blank = (key: string): View => ({
   key,
@@ -22,12 +26,17 @@ const blank = (key: string): View => ({
   triangles: 0,
   capacity: false,
   bounds: null,
+  updatedAt: 0,
+  frameAgeMs: 0,
+  frameId: -1,
+  issue: "",
 });
 
 export function useSurfaceView(
   source: string | null,
   map: string | null,
   active: boolean,
+  onPoints: (points: CapturedPoints) => void,
 ) {
   const key = JSON.stringify([source, map]);
   const [state, setState] = useState<View>(() => blank(key));
@@ -44,11 +53,17 @@ export function useSurfaceView(
     const tiles = new Map<string, RetainedSurfaceTile>();
     let recent: CapturedSurface[] = [];
     let disposed = false;
-    worker.onmessage = ({ data }: MessageEvent<SurfaceUpdate>) => {
+    worker.onmessage = ({ data }: MessageEvent<SurfaceMessage>) => {
+      if ("issue" in data) {
+        if (!disposed)
+          setState((previous) => ({ ...previous, issue: data.issue }));
+        return;
+      }
       if (disposed) {
         data.recent?.image?.close();
         return;
       }
+      onPoints(data.points);
       for (const tile of data.tiles) {
         const buffer =
           tiles.get(tile.id)?.buffer ?? new SurfaceTileBuffer(tile.id);
@@ -91,7 +106,18 @@ export function useSurfaceView(
         triangles: data.triangles,
         capacity: data.capacity,
         bounds: data.bounds,
+        updatedAt: Date.now(),
+        frameAgeMs: data.frameAgeMs,
+        frameId: data.points.frameId,
+        issue: "",
       });
+    };
+    worker.onerror = () => {
+      if (!disposed)
+        setState((previous) => ({
+          ...previous,
+          issue: "Surface worker failed; reload the view",
+        }));
     };
     worker.postMessage({ base: base.origin, map, active: false });
     setWorker(worker);
@@ -101,7 +127,7 @@ export function useSurfaceView(
       for (const patch of recent) patch.image?.close();
       setWorker(null);
     };
-  }, [source, map, key]);
+  }, [source, map, key, onPoints]);
   useEffect(() => {
     worker?.postMessage({ active });
   }, [worker, active]);

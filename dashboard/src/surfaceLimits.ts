@@ -1,0 +1,2 @@
+export const MAX_SURFACE_TRIANGLES = 2_000_000;
+export const MAX_SURFACE_VERTICES = 2_000_000;

@@ -12,8 +12,8 @@ until reload; failed connections retain exponential backoff.
 The phone app and its v1 frame bundles need no update.
 
 With a dense viewer connected, the backend projects up to **20,000** reliable
-samples per frame at up to **10 Hz**. This raises the delivery ceiling from
-10,000 to 200,000 points per second. These are observations, not necessarily
+samples per frame at up to **30 Hz**. This raises the delivery ceiling from
+10,000 to 600,000 points per second. These are observations, not necessarily
 new spatial cells. Actual rates depend on phone frame delivery, high-confidence
 depth, processing speed, and connection bandwidth. Confidence 2, depth 0.05–5 m,
 same-frame calibration, tracking/reset gates, and the 2 million retained-point
@@ -49,7 +49,7 @@ Legacy listeners receive a 2,500-point subset at their original rate.
 
 In the browser, a dedicated worker validates, indexes 1 cm cells, converts colors,
 and accumulates points. The main thread sends one job at a time and keeps only
-the newest waiting frame and map announcement. A reconnect resets the worker
+the newest waiting wire chunk, RGB-D capture, and map announcement. A reconnect resets the worker
 and rejects responses from the previous connection. Map announcements clear old
 geometry; discarded/retired map chunks cannot repopulate it.
 
@@ -57,8 +57,11 @@ The worker transfers changed ranges to the renderer using transferable buffers.
 Unchanged observations produce no GPU upload. Scattered changes no longer force
 a complete buffer upload. Pending GPU ranges are merged, including while the tab
 is hidden. GPU updates run once per rendered frame, outside React reconciliation.
-The worker and renderer each hold 48 MB of position/color arrays; indexing,
-transfer buffers, and the GPU require additional memory.
+The worker and renderer each hold 48 MB of position/color arrays and an 8 MB
+visible-point index. Covered samples leave that index in constant time; only
+changed index ranges transfer to the renderer. Original measurements remain for
+points-only mode. The worker also uses an 8 MB reverse lookup and 16 MB observation
+timestamps; spatial indexes, transfer buffers, and the GPU require additional memory.
 
 ## Validation and performance
 
@@ -76,3 +79,8 @@ scattered colors. That update transfers 60 KB of point attributes instead of the
 previous 48 MB fallback. It measures CPU/copy costs, not physical-device scan
 speed or GPU frame rate. Browser tests cover the actual worker and real backend
 transport, map resets, reconnection, unchanged rendering, and camera controls.
+
+The retirement benchmark also covers 90% of a synthetic two-million-point cache.
+It keeps all two million original measurements while submitting only 200,000
+point vertices in hybrid mode (90% fewer). This measures point draw-list work;
+triangle rendering, fragment cost, and physical GPU FPS are separate.

@@ -1,5 +1,6 @@
 import type { SurfaceTileUpdate } from "./surfaceTypes";
 import type { CloudBounds } from "./pointCloud";
+import { MAX_SURFACE_TRIANGLES, MAX_SURFACE_VERTICES } from "./surfaceLimits";
 
 export type UploadRange = { start: number; count: number };
 export function mergeUploadRanges(ranges: UploadRange[]) {
@@ -39,10 +40,10 @@ export class SurfaceTileBuffer {
       update.revision !== this.revision + 1 ||
       !Number.isSafeInteger(vertexCount) ||
       vertexCount < this.vertexCount ||
-      vertexCount > 500_000 ||
+      vertexCount > MAX_SURFACE_VERTICES ||
       !Number.isSafeInteger(indexCount) ||
       indexCount < this.indexCount ||
-      indexCount > 1_500_000 ||
+      indexCount > MAX_SURFACE_TRIANGLES * 3 ||
       indexCount % 3 ||
       indexStart !== this.indexCount ||
       indexCount !== indexStart + update.indices.length ||
@@ -79,7 +80,8 @@ export class SurfaceTileBuffer {
     // Validate before changing the displayed scan, including on buffer growth.
     if (vertexCount * 3 > this.positions.length) {
       const size =
-        capacity(this.positions.length / 3, vertexCount, 500_000) * 3;
+        capacity(this.positions.length / 3, vertexCount, MAX_SURFACE_VERTICES) *
+        3;
       const positions = new Float32Array(size),
         colors = new Float32Array(size);
       positions.set(this.positions);
@@ -89,7 +91,7 @@ export class SurfaceTileBuffer {
     }
     if (indexCount > this.indices.length) {
       const indices = new Uint32Array(
-        capacity(this.indices.length, indexCount, 1_500_000),
+        capacity(this.indices.length, indexCount, MAX_SURFACE_TRIANGLES * 3),
       );
       indices.set(this.indices);
       this.indices = indices;
