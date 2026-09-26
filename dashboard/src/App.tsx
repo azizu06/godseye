@@ -1,13 +1,11 @@
 import { SIMULATED_SURFACE_CELL_M } from "./simulatorSurfaces";
 import { useColorSurfaces } from "./useColorSurfaces";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowRight,
   Box,
-  ChevronDown,
   CircleHelp,
-  Crosshair,
   Download,
   Focus,
   Navigation,
@@ -15,7 +13,6 @@ import {
   ScanLine,
   Settings2,
   ShieldAlert,
-  Square,
   X,
 } from "lucide-react";
 import Scene from "./Scene";
@@ -30,12 +27,14 @@ import {
   Settings,
 } from "./components";
 
-type Panel = "memory" | "intelligence" | "activity" | "controls";
+type Panel =
+  "workspace" | "scene" | "memory" | "intelligence" | "activity" | "controls";
 const panels = [
   { id: "memory", label: "Spatial memory", icon: Box },
   { id: "intelligence", label: "Object intelligence", icon: Focus },
   { id: "activity", label: "Recent activity", icon: Activity },
   { id: "controls", label: "Rover controls", icon: Navigation },
+  { id: "scene", label: "Scene settings", icon: Settings2 },
 ] as const;
 export default function App() {
   const controller = useMission();
@@ -56,11 +55,102 @@ export default function App() {
     rescanBaseline,
   } = controller;
   const [panel, setPanel] = useState<Panel | null>(null);
+  const [sceneToolsHost, setSceneToolsHost] = useState<HTMLDivElement | null>(
+    null,
+  );
   const [selected, setSelected] = useState<string | null>(null);
   const [settings, setSettings] = useState(false),
     [newSession, setNewSession] = useState(false),
     [help, setHelp] = useState(false),
     [rescanBusy, setRescanBusy] = useState(false);
+  const drawerRef = useRef<HTMLElement>(null);
+  const restoreFocus = useRef<HTMLElement | null>(null);
+  const touchPointers = useRef(new Set<number>());
+  const releaseRef = useRef(controller.release);
+  releaseRef.current = controller.release;
+  const gesture = useRef<{
+    x: number;
+    y: number;
+    moved: boolean;
+    pointer: number;
+    button: number;
+    contextRequested: boolean;
+    ended: number;
+  } | null>(null);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressCanvasClick = useRef(false);
+  const clearPress = useCallback(() => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  }, []);
+  const openWorkspace = useCallback(() => {
+    if (!drawerRef.current)
+      restoreFocus.current = document.activeElement as HTMLElement;
+    releaseRef.current();
+    setPanel("workspace");
+  }, []);
+  const closePanel = useCallback(() => {
+    releaseRef.current();
+    setPanel(null);
+    requestAnimationFrame(() => {
+      const previous = restoreFocus.current;
+      if (previous?.isConnected && previous !== document.body)
+        previous.focus({ preventScroll: true });
+      else
+        document
+          .querySelector<HTMLButtonElement>(
+            ".scene-toolbar button[aria-pressed=true]",
+          )
+          ?.focus({ preventScroll: true });
+    });
+  }, []);
+  useEffect(() => {
+    if (!panel) return;
+    releaseRef.current();
+    drawerRef.current
+      ?.querySelector<HTMLButtonElement>("button")
+      ?.focus({ preventScroll: true });
+  }, [panel]);
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (document.querySelector("dialog[open]")) return;
+      if (
+        event.key !== "Escape" &&
+        target.closest(
+          "input, textarea, select, [contenteditable]:not([contenteditable=false])",
+        )
+      )
+        return;
+      if (
+        event.key === "ContextMenu" ||
+        (event.shiftKey && event.key === "F10")
+      ) {
+        event.preventDefault();
+        openWorkspace();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        if (panel) closePanel();
+        else openWorkspace();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [panel, openWorkspace, closePanel]);
+  useEffect(() => {
+    const cancelGesture = () => {
+      clearPress();
+      touchPointers.current.clear();
+      gesture.current = null;
+    };
+    window.addEventListener("blur", cancelGesture);
+    document.addEventListener("visibilitychange", cancelGesture);
+    return () => {
+      cancelGesture();
+      window.removeEventListener("blur", cancelGesture);
+      document.removeEventListener("visibilitychange", cancelGesture);
+    };
+  }, [clearPress]);
   const simulated = config.source === "simulator";
   const capture = useColorSurfaces(
     config,
@@ -95,9 +185,93 @@ export default function App() {
     } else setRescanBusy(false);
   };
   return (
-    <main className="immersive-shell">
+    <main
+      className="immersive-shell minimal-workspace"
+      onPointerDownCapture={(event) => {
+        suppressCanvasClick.current = false;
+        if (event.pointerType === "touch")
+          touchPointers.current.add(event.pointerId);
+        clearPress();
+        if (touchPointers.current.size > 1) return;
+        if (
+          (event.target as HTMLElement).closest(
+            "button, input, label, aside, dialog, [role=button]",
+          )
+        )
+          return;
+        clearPress();
+        gesture.current = {
+          x: event.clientX,
+          y: event.clientY,
+          moved: false,
+          pointer: event.pointerId,
+          button: event.button,
+          contextRequested: false,
+          ended: 0,
+        };
+        if (event.pointerType === "touch")
+          pressTimer.current = setTimeout(() => {
+            suppressCanvasClick.current = true;
+            openWorkspace();
+          }, 550);
+      }}
+      onPointerMoveCapture={(event) => {
+        const start = gesture.current;
+        if (
+          start?.pointer === event.pointerId &&
+          Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6
+        ) {
+          start.moved = true;
+          clearPress();
+        }
+      }}
+      onPointerUpCapture={(event) => {
+        touchPointers.current.delete(event.pointerId);
+        clearPress();
+        const start = gesture.current;
+        if (start?.pointer === event.pointerId) {
+          start.ended = Date.now();
+          if (start.button === 2 && start.contextRequested && !start.moved)
+            openWorkspace();
+        }
+      }}
+      onPointerCancelCapture={(event) => {
+        touchPointers.current.delete(event.pointerId);
+        clearPress();
+      }}
+      onContextMenu={(event) => {
+        if (
+          (event.target as HTMLElement).closest(
+            "button, input, label, aside, dialog, [role=button]",
+          )
+        )
+          return;
+        event.preventDefault();
+        if (touchPointers.current.size > 1) return;
+        const start = gesture.current;
+        // Chromium emits contextmenu on right-button down, before a pan.
+        if (start?.button === 2 && !start.ended) {
+          start.contextRequested = true;
+          return;
+        }
+        if (start?.moved && (!start.ended || Date.now() - start.ended < 600))
+          return;
+        openWorkspace();
+      }}
+      onClickCapture={(event) => {
+        if (
+          suppressCanvasClick.current &&
+          (event.target as HTMLElement).closest(".scene-canvas")
+        ) {
+          suppressCanvasClick.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+    >
       <h1 className="sr-only">Godseye spatial workspace</h1>
       <Scene
+        toolsHost={sceneToolsHost}
         mission={mission}
         surfaces={surfaces}
         persistentSurface={simulated ? null : persistent}
@@ -106,94 +280,130 @@ export default function App() {
         selected={selected}
         onSelect={select}
         simulated={simulated}
-        canGoal={controller.canDrive && mission.health?.mode !== "explore"}
+        canGoal={
+          controller.canDrive &&
+          mission.health?.mode !== "explore" &&
+          !panel &&
+          !settings &&
+          !newSession &&
+          !help
+        }
         onGoal={(x, z) => void controller.navigate(x, z)}
       />
-      <div
-        className="workspace-actions heading-actions"
-        aria-label="Workspace actions"
+      <button
+        className="workspace-launcher"
+        onClick={openWorkspace}
+        aria-label="Open workspace"
+        aria-keyshortcuts="Escape Shift+F10"
+        title="Workspace · Escape, right-click or long-press"
       >
-        <button
-          className={`source-button ${simulated ? "simulated" : ""}`}
-          onClick={() => setSettings(true)}
-          aria-label="Connection settings"
-        >
-          <span className="live-dot" />
-          {sourceLabel}
-          <ChevronDown size={13} />
-        </button>
-        <button className="stop-button" onClick={() => void command("/stop")}>
-          <Square size={13} fill="currentColor" /> STOP ROVER
-        </button>
-        <button
-          className="button subtle"
-          aria-label="Export snapshot"
-          title="Export snapshot"
-          onClick={() => exportMission(controller, persistent, mapCellM)}
-        >
-          <Download size={15} />
-          <span>Export snapshot</span>
-        </button>
-        <button
-          className="button secondary"
-          aria-label="New session"
-          title="New session"
-          onClick={() => setNewSession(true)}
-        >
-          <Plus size={16} />
-          <span>New session</span>
-        </button>
-      </div>
-      <div className="workspace-state">
-        <span className={`state-pill ${stale ? "amber" : ""}`}>
-          <i />
-          {connection === "reconnecting"
-            ? "Reconnecting…"
-            : connection === "connecting"
-              ? "Connecting…"
-              : stale
-                ? "Telemetry stale"
-                : "Receiving telemetry"}
-        </span>
-        <span>
-          {trackingNormal ? "Tracking normal" : "Tracking unavailable"}
-        </span>
-      </div>
-      <nav className="workspace-panels" aria-label="Workspace panels">
-        {panels.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            className={panel === id ? "active" : ""}
-            aria-label={label}
-            aria-expanded={panel === id}
-            onClick={() => setPanel(panel === id ? null : id)}
-          >
-            <Icon size={17} />
-            <span>{label}</span>
-            {id === "memory" && <small>{mission.objects.length}</small>}
-          </button>
-        ))}
-        <button aria-label="Workspace help" onClick={() => setHelp(true)}>
-          <CircleHelp size={17} />
-        </button>
-      </nav>
+        Open workspace
+      </button>
       {panel && (
         <aside
           className="workspace-drawer"
-          aria-label={`${panels.find((p) => p.id === panel)?.label} panel`}
+          ref={drawerRef}
+          role="dialog"
+          aria-label={
+            panel === "workspace"
+              ? "Workspace"
+              : `${panels.find((p) => p.id === panel)?.label} panel`
+          }
         >
           <div className="drawer-heading">
+            {panel !== "workspace" && (
+              <button
+                className="icon-button"
+                aria-label="Workspace menu"
+                onClick={openWorkspace}
+              >
+                <ArrowRight size={16} style={{ transform: "rotate(180deg)" }} />
+              </button>
+            )}
             <span className="eyebrow">
-              {panels.find((p) => p.id === panel)?.label}
+              {panel === "workspace"
+                ? "Workspace"
+                : panels.find((p) => p.id === panel)?.label}
             </span>
             <button
               className="icon-button"
               aria-label="Close panel"
-              onClick={() => setPanel(null)}
+              onClick={closePanel}
             >
               <X size={17} />
             </button>
           </div>
+          {panel === "workspace" && (
+            <div className="workspace-menu">
+              <div className="workspace-summary">
+                <span className="eyebrow">{sourceLabel}</span>
+                <p>
+                  {simulated
+                    ? "Virtual scene · no hardware connected"
+                    : (mission.health?.stop_reason ??
+                      "Live backend · ARKit world meters")}
+                </p>
+                <p>
+                  {connection === "reconnecting"
+                    ? "Reconnecting…"
+                    : connection === "connecting"
+                      ? "Connecting…"
+                      : stale
+                        ? "Telemetry stale"
+                        : "Receiving telemetry"}{" "}
+                  ·{" "}
+                  {trackingNormal ? "Tracking normal" : "Tracking unavailable"}
+                </p>
+              </div>
+              <nav
+                className="workspace-menu-panels"
+                aria-label="Workspace panels"
+              >
+                {panels.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => setPanel(id)}
+                    aria-label={label}
+                  >
+                    <Icon size={17} />
+                    <span>{label}</span>
+                    <ArrowRight size={14} />
+                  </button>
+                ))}
+              </nav>
+              <div className="workspace-menu-actions">
+                <button
+                  onClick={() => setSettings(true)}
+                  aria-label="Connection settings"
+                >
+                  <Settings2 size={16} /> Connection settings
+                </button>
+                <button
+                  onClick={() =>
+                    exportMission(controller, persistent, mapCellM)
+                  }
+                  aria-label="Export snapshot"
+                >
+                  <Download size={16} /> Export snapshot
+                </button>
+                <button
+                  onClick={() => setNewSession(true)}
+                  aria-label="New session"
+                >
+                  <Plus size={16} /> New session
+                </button>
+                <button
+                  onClick={() => setHelp(true)}
+                  aria-label="Workspace help"
+                >
+                  <CircleHelp size={16} /> Workspace help
+                </button>
+              </div>
+            </div>
+          )}
+          {panel === "scene" && (
+            <div ref={setSceneToolsHost} className="scene-tools-host" />
+          )}
           {panel === "memory" && (
             <section className="objects-panel">
               <div className="section-heading">
@@ -216,7 +426,7 @@ export default function App() {
               object={object}
               events={mission.events}
               now={now}
-              onFocus={() => setPanel(null)}
+              onFocus={closePanel}
             />
           )}
           {panel === "activity" && (
@@ -291,27 +501,9 @@ export default function App() {
           )}
         </aside>
       )}
-      {panel !== "controls" && (
-        <div className="flight-controls">
-          <OperatorControls controller={controller} compact />
-        </div>
-      )}
-      <footer className="telemetry-bar">
-        <span className="telemetry-brand">
-          <Crosshair size={13} /> GOD’S EYE
-        </span>
-        <span className="footer-note">
-          {simulated
-            ? "SIMULATED DATA · NO HARDWARE CONNECTED"
-            : (mission.health?.stop_reason ??
-              "Live backend · ARKit world meters")}
-        </span>
-        <span>
-          {mission.objects.length} objects ·{" "}
-          {mission.events.filter((e) => e.kind === "moved").length} confirmed
-          moves
-        </span>
-      </footer>
+      <div className="flight-controls">
+        <OperatorControls controller={controller} compact />
+      </div>
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>
@@ -381,9 +573,10 @@ export default function App() {
           <div className="help-content">
             <h3>Find your perspective</h3>
             <p>
-              Middle-drag to orbit, Shift + middle-drag to pan, and scroll to
-              zoom. The visible Orbit and Pan tools work with the primary mouse
-              button. Home resets the view.
+              Left-drag to pan, right-drag to rotate, and scroll to zoom.
+              Middle-drag also orbits; Shift + middle-drag pans. Home resets the
+              view. Click without dragging to navigate; right-click without
+              dragging opens the workspace.
             </p>
             <h3>Move through the world</h3>
             <p>
@@ -399,9 +592,11 @@ export default function App() {
             </p>
             <h3>Look a little closer</h3>
             <p>
-              Open Spatial Memory, Object Intelligence, or Recent Activity to
-              inspect observations. New maps start unknown and keep the surfaces
-              they discover.
+              Press Escape or Shift+F10, right-click without dragging, or
+              long-press the canvas to open the workspace. Spatial Memory,
+              Object Intelligence and Recent Activity keep your observations;
+              Scene settings holds layers and scan details. New maps start
+              unknown and keep the surfaces they discover.
             </p>
           </div>
         </Dialog>

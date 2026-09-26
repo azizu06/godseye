@@ -1,3 +1,4 @@
+import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { capture } from "./captureFixture";
@@ -78,7 +79,8 @@ function verifyCompressedCapture(map: ExportedMap) {
 test("default solid surfaces discover progressively and point cloud remains optional", async ({
   page,
 }) => {
-  await page.goto("/");
+  await simulator(page);
+  await panel(page, "Scene settings");
   await expect(page.getByTestId("surface-status")).toContainText(
     /color triangles/,
   );
@@ -183,11 +185,10 @@ for (const version of [1, 2])
       }
       return route.fulfill({ json: { version: 1, ok: true } });
     });
-    await page.goto("/");
-    await page
-      .getByRole("button", { name: "Connection settings", exact: true })
-      .click();
+    await simulator(page);
+    await workspaceAction(page, "Connection settings");
     await page.getByRole("button", { name: /External feed Connect/ }).click();
+    await page.getByLabel("Enable REST commands").check();
     await page
       .getByLabel("Telemetry WebSocket")
       .fill("ws://localhost:9876/live");
@@ -197,6 +198,8 @@ for (const version of [1, 2])
     await page
       .getByRole("button", { name: "Connect source", exact: true })
       .click();
+    await closeWorkspace(page);
+    await panel(page, "Scene settings");
     await expect(page.getByTestId("surface-status")).toContainText(
       "color triangles",
     );
@@ -205,12 +208,11 @@ for (const version of [1, 2])
     );
     await expect(page.locator(".scene-stat > span")).toHaveText("MAP VERTICES");
     const download = page.waitForEvent("download");
-    await page
-      .getByRole("button", { name: "Export snapshot", exact: true })
-      .click();
+    await workspaceAction(page, "Export snapshot");
     const snapshot = JSON.parse(
       await readFile((await (await download).path())!, "utf8"),
     );
+    await panel(page, "Scene settings");
     expect(snapshot.colored_reconstruction).not.toBeNull();
     verifyCompressedCapture(snapshot.colored_reconstruction);
     await expect(page.locator(".scene-stat > strong")).toHaveText(
