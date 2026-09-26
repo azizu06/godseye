@@ -212,7 +212,9 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
 
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"],
+                       allow_headers=["Content-Type", "If-None-Match"],
+                       expose_headers=["ETag", "X-Capture-Age-Ms"])
 
     def stop(reason):
         app.state.armed = False

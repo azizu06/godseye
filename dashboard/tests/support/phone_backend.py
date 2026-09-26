@@ -44,6 +44,11 @@ backend = create_app(':memory:', capture_directory='')
 
 
 async def app(scope, receive, send):
+    if '--legacy' in sys.argv and scope['type'] == 'http' and scope['path'] == '/capture/surface.bin':
+        await send({'type': 'http.response.start', 'status': 404,
+                    'headers': [(b'access-control-allow-origin', b'*')]})
+        await send({'type': 'http.response.body', 'body': b''})
+        return
     if '--legacy' in sys.argv and scope['type'] == 'websocket' and scope['path'] == '/live':
         # Match older servers: accept the socket without selecting a subprotocol
         # and publish the original JSON points. Chromium rejects the first dense

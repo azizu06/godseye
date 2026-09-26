@@ -1,7 +1,7 @@
-# Synthetic development sources
+# Development and capture tools
 
-These tools implement [the frozen v1 contract](../docs/INTERFACES.md). All data
-is made up; neither tool drives hardware. Python 3.10+ is required.
+The synthetic sources implement [the frozen v1 contract](../docs/INTERFACES.md).
+Their data is made up; neither source drives hardware. Python 3.10+ is required.
 
 ```sh
 $HOME/.venvs/godseye/bin/python -m pip install -r tools/requirements.txt
@@ -35,3 +35,15 @@ Offline validation (no sockets, camera, car, or weights):
 ```sh
 $HOME/.venvs/godseye/bin/python -m unittest discover -s tools/tests -v
 ```
+
+For a recorded full-sensor frame, measure the compact dashboard preview locally:
+
+```sh
+python3 tools/benchmark_capture_preview.py path/to/frame.capture
+```
+
+This reads one v2 frame, verifies identical RGB/depth/confidence bytes, and reports
+transfer savings and packing time. It does not upload or replay the recording.
+Use the backend's Python dependencies. Surface integration and point benchmarks
+are documented in [observed surfaces](../docs/OBSERVED_SURFACES.md) and
+[dense live points](../docs/LIVE_POINTS.md).

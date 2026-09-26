@@ -112,6 +112,16 @@ Open `/capture` for sensor previews and metadata. Downloads:
   counts, latest telemetry and recording state. Batch samples and anchor arrays are
   omitted here; download the full packet to inspect them.
 - `/capture/frame.jpg` and `/capture/frame.bin`: original v1 image/bundle.
+- `/capture/surface.bin`: live rendering subset. Selects a fresh tracked native
+  v2 RGB/raw-depth/raw-confidence frame when it is at most 200 ms behind v1;
+  otherwise returns the eligible original v1 bundle. V2 uses the existing envelope
+  with only those three sections and same-frame calibration/pose metadata. Section
+  bytes are unchanged. Returns 204 if unavailable/stale, or 304 for a matching
+  `If-None-Match`. `ETag` and `X-Capture-Age-Ms` are exposed to cross-origin viewers.
+  Pose receipt must be at most 250 ms old; frame receipt and capture time relative
+  to the current pose must be at most one second old. Frames preceding tracking
+  loss or belonging to a retired session cannot be served. Full download and
+  archive routes retain the complete original packets.
 
 Depth PNGs use a fixed 0–5 m display scale; invalid readings are black. Confidence
 is gray/amber/green for 0/1/2. Rendering changes only previews, never raw packets.

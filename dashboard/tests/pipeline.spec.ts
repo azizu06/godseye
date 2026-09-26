@@ -20,6 +20,11 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
     let phone: WebSocket | undefined;
     let poses: ReturnType<typeof setInterval> | undefined;
     let stderr = "";
+    const captureRequests: string[] = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path.startsWith("/capture/")) captureRequests.push(path);
+    });
     backend.stderr.on("data", (data) => {
       stderr += data;
     });
@@ -139,6 +144,14 @@ for (const mode of ["small", "legacy", "dense", "textured"]) {
         )
         .toBe(2);
       await expect(status).toHaveAttribute("data-surfaces", "true");
+      expect(captureRequests).toContain("/capture/surface.bin");
+      if (mode === "legacy") {
+        expect(captureRequests).toContain("/capture/status");
+        expect(captureRequests).toContain("/capture/frame.bin");
+      } else {
+        expect(captureRequests).not.toContain("/capture/status");
+        expect(captureRequests).not.toContain("/capture/frame.bin");
+      }
       await canvas.press("p");
       await expect(status).toHaveAttribute("data-surfaces", "false");
       const pointsOnly = await render();

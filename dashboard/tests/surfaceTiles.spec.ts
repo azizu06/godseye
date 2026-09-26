@@ -47,3 +47,31 @@ test("surface budgets preserve old triangles and still allow refinements at capa
   ).toThrow();
   expect(map.triangles).toBe(1);
 });
+
+test("shared measured vertices preserve topology, winding-independent identity and sub-cell refinements", () => {
+  const map = new SurfaceTiles(4, 8);
+  const patch: SurfacePatch = {
+    id: "shared",
+    positions: new Float32Array([
+      -0.6, 0.1, 0.1, -0.1, 0.1, 0.1, -0.6, 0.6, 0.1, -0.1, 0.6, 0.1,
+    ]),
+    colors: new Float32Array(12).fill(0.5),
+    indices: new Uint32Array([0, 2, 1, 1, 2, 3]),
+  };
+  const first = map.add(patch)[0];
+  expect(first.positions.length).toBe(12);
+  expect(map.triangles).toBe(2);
+  expect(
+    map.add({ ...patch, indices: new Uint32Array([1, 2, 0, 3, 2, 1]) }),
+  ).toEqual([]);
+  const refined = {
+    ...patch,
+    positions: patch.positions.map((v, i) => (i % 3 === 2 ? v + 0.0005 : v)),
+  };
+  const update = map.add(refined)[0];
+  expect(map.triangles).toBe(2);
+  expect(update.indices).toEqual(first.indices);
+  for (let i = 2; i < update.positions.length; i += 3)
+    expect(update.positions[i]).toBeCloseTo(0.1005, 6);
+  expect(map.capacity).toBe(false);
+});

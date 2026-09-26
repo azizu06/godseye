@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
 from backend.rich_capture import KINDS, MAX_PACKET, RichPacket, decode_rich, render_sensor
+from backend.surface_preview import has_surface, surface_payload
 
 IMAGE_SENSORS = {'rgb', 'raw_depth', 'raw_confidence', 'smoothed_depth',
                  'smoothed_confidence', 'person_mask', 'person_depth'}
@@ -28,6 +29,44 @@ def legacy_packet(frame):
 
 
 def register_capture_routes(app):
+    @app.get('/capture/surface.bin')
+    async def surface(request: Request):
+        state = app.state
+
+        def eligible(header, metadata, received_at):
+            now = time.monotonic()
+            return (state.phone is not None and state.pose is not None and
+                    state.pose_at is not None and now - state.pose_at <= .25 and
+                    state.pose.tracking == 'normal' and metadata.get('tracking') == 'normal' and
+                    (header['session_id'], header['map_epoch']) == state.session and
+                    header['t_capture'] > state.tracking_lost_capture and
+                    header['t_capture'] >= state.pose.t_capture - 1 and
+                    now - received_at <= 1)
+
+        rich, legacy = state.rich_capture.latest.get('frame'), state.capture.latest
+        if rich is not None and (not has_surface(rich) or not eligible(
+                rich.header, rich.header['metadata'], rich.received_at)):
+            rich = None
+        if legacy is not None and not eligible(legacy.metadata, legacy.metadata, legacy.received_at):
+            legacy = None
+        use_rich = rich is not None and (legacy is None or
+                                        rich.header['t_capture'] >= legacy.metadata['t_capture'] - .2)
+        selected = rich if use_rich else legacy
+        if selected is None:
+            return Response(status_code=204, headers=HEADERS)
+        tag = f'"surface-{selected.token}"'
+        headers = dict(HEADERS, ETag=tag)
+        if request.headers.get('if-none-match') == tag:
+            return Response(status_code=304, headers=headers)
+        owner = state.phone
+        payload = await asyncio.to_thread(surface_payload, rich) if use_rich else legacy.payload
+        header, metadata = (rich.header, rich.header['metadata']) if use_rich else (legacy.metadata, legacy.metadata)
+        # A reset or tracking loss during packing must not publish retired geometry.
+        if state.phone is not owner or not eligible(header, metadata, selected.received_at):
+            return Response(status_code=204, headers=HEADERS)
+        headers['X-Capture-Age-Ms'] = str((time.monotonic() - selected.received_at) * 1000)
+        return Response(payload, media_type='application/octet-stream', headers=headers)
+
     @app.post('/capture/ingest')
     async def ingest(request: Request):
         owner, session = app.state.phone, app.state.session

@@ -1,6 +1,7 @@
 import { decodeCaptureSurface } from "./captureSurface";
 import { bakeSurfaceColors } from "./surfaceColor";
 import { SurfaceTiles } from "./surfaceTiles";
+import { SurfaceFeed } from "./surfaceFeed";
 import type { CapturedSurface, SurfacePatch } from "./surfaceTypes";
 import type { CloudBounds } from "./pointCloud";
 
@@ -17,45 +18,13 @@ const worker = self as unknown as {
   ) => void;
   postMessage: (message: SurfaceUpdate, transfer: Transferable[]) => void;
 };
-const record = (v: unknown): Record<string, any> =>
-  v && typeof v === "object" && !Array.isArray(v) ? v : {};
 const map = new SurfaceTiles();
-let base = "",
-  identity = "",
+let feed: SurfaceFeed;
+let identity = "",
   active = false,
   busy = false,
   latest = -1;
 let request: AbortController | undefined;
-let token = "";
-
-async function boundedBody(response: Response, signal: AbortSignal) {
-  const maximum = 32 * 1024 * 1024;
-  if (!response.ok || Number(response.headers.get("Content-Length")) > maximum)
-    throw Error("Capture unavailable");
-  const reader = response.body?.getReader();
-  if (!reader) throw Error("Capture empty");
-  const chunks: Uint8Array[] = [];
-  let count = 0;
-  try {
-    while (!signal.aborted) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      count += value.length;
-      if (count > maximum) throw Error("Capture too large");
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  const bytes = new Uint8Array(count);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return bytes.buffer;
-}
-
 async function poll() {
   if (!active || busy) return;
   busy = true;
@@ -64,53 +33,18 @@ async function poll() {
   const timeout = setTimeout(() => request?.abort(), 3000);
   let bitmap: ImageBitmap | undefined;
   try {
-    const response = await fetch(`${base}/capture/status`, {
-      signal,
-      cache: "no-store",
-    });
-    if (!response.ok) return;
-    const status = record(await response.json());
-    if (status.tracking !== "normal" || record(status.health).phone !== "ok")
-      return;
-    const rich = record(record(record(status.rich).packets).frame),
-      legacy = record(status.frame);
-    const richTime = Number(rich.t_capture),
-      legacyTime = Number(record(legacy.metadata).t_capture);
-    const sections = Array.isArray(rich.sections)
-      ? rich.sections.map((s: unknown) => record(s).name)
-      : [];
-    const useRich =
-      ["rgb", "raw_depth", "raw_confidence"].every((n) =>
-        sections.includes(n),
-      ) &&
-      typeof rich.age_ms === "number" &&
-      rich.age_ms <= 1000 &&
-      (!Number.isFinite(legacyTime) || richTime >= legacyTime - 0.2);
-    const frame = useRich ? rich : legacy;
-    const nextToken = String(
-      useRich ? (frame.token ?? "") : (frame.capture_id ?? ""),
-    );
-    if (
-      !nextToken ||
-      token === nextToken ||
-      typeof frame.age_ms !== "number" ||
-      frame.age_ms > 1000
-    )
-      return;
-    const packet = await fetch(
-      `${base}/capture/${useRich ? "rich/frame" : "frame"}.bin`,
-      { signal, cache: "no-store" },
-    );
-    const surface = decodeCaptureSurface(await boundedBody(packet, signal));
+    const capture = await feed.read(signal);
+    if (!capture) return;
+    const surface = decodeCaptureSurface(capture.buffer);
     if (
       !active ||
       signal.aborted ||
       JSON.stringify([surface.sessionId, surface.mapEpoch]) !== identity ||
       surface.capturedAt <= latest ||
-      surface.capturedAt <= (status.tracking_lost_capture ?? -1)
+      surface.capturedAt <= capture.trackingLostCapture ||
+      performance.now() > capture.expiresAt
     )
       return;
-    token = nextToken;
     if (!surface.indices.length || !surface.jpeg) return;
     bitmap = await createImageBitmap(
       new Blob([surface.jpeg as BlobPart], { type: "image/jpeg" }),
@@ -127,7 +61,8 @@ async function poll() {
       surface,
       context.getImageData(0, 0, canvas.width, canvas.height),
     );
-    if (!active || signal.aborted) return;
+    if (!active || signal.aborted || performance.now() > capture.expiresAt)
+      return;
     const tiles = map.add(colored);
     // ImageBitmap ignores WebGL's flipY flag: flip pixels explicitly before transfer.
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -168,7 +103,7 @@ async function poll() {
   }
 }
 worker.onmessage = ({ data }) => {
-  if (data.base) base = data.base;
+  if (data.base) feed = new SurfaceFeed(data.base);
   if (data.map) identity = data.map;
   active = data.active;
   if (!active) request?.abort();

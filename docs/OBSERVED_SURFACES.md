@@ -11,13 +11,20 @@ work. **F** frames the displayed scan, including a surface-only capture.
 
 ## Geometry and image detail
 
-The surface worker reads `/capture/status` and the matching capture stream, at
-most once per 200 ms with one request/decode/integration job in flight. It prefers
-native RGB from `/capture/rich/frame.bin` when current, with v1 `/capture/frame.bin`
-as fallback. JPEG, depth, intrinsics, and camera transform come from the same
-packet. Mismatched sessions, epochs, calibration, tracking, stale captures, and
-invalid depths are rejected. The backend exposes `tracking_lost_capture` in the
-capture status so a pre-loss rich frame cannot reenter after tracking recovers.
+The surface worker makes one conditional request to `/capture/surface.bin` per
+200 ms, with one request/decode/integration job in flight. The endpoint selects a
+fresh native RGB-D frame when available and sends only its JPEG, raw depth, raw
+confidence, and calibration. These section bytes are **identical** to the original;
+the full capture and recordings retain all sensors. Unchanged frames return 304.
+The backend checks map identity, current tracking, pose freshness, and the latest
+tracking loss before replying. Download/decode time counts toward the viewer's
+one-second freshness limit.
+
+On older backends without that endpoint, the worker falls back to `/capture/status`
+and `/capture/rich/frame.bin` or `/capture/frame.bin`. This compatibility path also
+honors `tracking_lost_capture` when exposed. JPEG, depth, intrinsics, and camera
+transform always come from the same packet. Mismatched sessions, epochs,
+calibration, tracking, stale captures, and invalid depths are rejected.
 
 Like main, the renderer connects neighboring measured depth samples and applies
 their camera image. It does not draw ARKit wall bounding rectangles. Changes from
@@ -47,6 +54,8 @@ can be culled independently. Coincident vertices are associated using 2 mm cells
 their stored coordinates remain actual measurements. Only observed triangle
 topology is retained, and repeated matching faces update rather than duplicate.
 There is no repeated global mesh coarsening or full-map transfer.
+Vertex spatial keys are calculated once per frame and reused by adjacent faces;
+triangle identity and measured positions are unchanged.
 
 The retained mesh is capped at **500,000 vertices**, **500,000 triangles**, and
 **2,048 tiles**. At capacity, existing faces can still refine; extra retained
@@ -74,9 +83,19 @@ npm run build
 npm run format:check
 npm test
 node tools/benchmark-surfaces.mjs
+node tools/benchmark-surfaces.mjs --baseline 6517382
+# From the repository root, inspect a local recording without replaying it:
+python3 tools/benchmark_capture_preview.py path/to/frame.capture
 ```
 
 Tests cover calibrated v1/v2 projection, texture orientation, openings, confidence,
 depth breaks, adaptive refinement, bounded incremental tile updates, display-mode
 switching, offline retention, and map resets through an isolated real backend.
 Physical-phone calibration and tracking quality still need live validation.
+
+A recorded frame measured 5.44 MB in the full sensor envelope and about 0.80 MB
+as a compact preview (about 85% less dashboard transfer). Sizes depend on camera
+resolution, JPEG content, and optional sensors. This saves backend-to-dashboard
+bandwidth; it does not reduce the phone's full-sensor upload. The surface benchmark
+also exercises a 97,410-triangle frame, alongside sparse updates to a retained
+450,000-triangle map. Timings measure CPU work, not physical-device FPS.

@@ -56,6 +56,9 @@ When calibrated RGB-D capture is available, the default view shows observed
 triangles textured with their matching camera image. A background worker refines
 curves and depth edges while leaving missing readings open. Persistent geometry
 updates in spatial tiles, and recent high-resolution textures preserve image detail.
+Updated backends serve a compact, conditional RGB-D preview so the dashboard
+does not repeatedly download unused sensor sections. Older backends automatically
+use the original capture routes; full phone capture and recording stay intact.
 Press **P** to compare with points. See [observed surfaces](../docs/OBSERVED_SURFACES.md)
 for its relationship to main's renderer, quality checks, and memory limits.
 
