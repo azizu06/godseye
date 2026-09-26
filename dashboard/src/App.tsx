@@ -17,6 +17,7 @@ import Scene from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
+import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
 import { useMission } from "./useMission";
 import {
   Dialog,
@@ -167,6 +168,18 @@ export default function App() {
     // Recompute only for new detector output or when it turns stale.
     [mission.detections, detectionsFresh],
   );
+  const approach = useApproachRoute(config.apiUrl, mission);
+  const routeResult =
+    "result" in approach.route ? approach.route.result : undefined;
+  const approachDrawing =
+    "start" in approach.route
+      ? {
+          start: approach.route.start,
+          points: routeResult?.status === "ok" ? routeResult.points : null,
+          approach: routeResult?.status === "ok" ? routeResult.approach : null,
+        }
+      : null;
+  const pickingRouteStart = approach.route.phase === "picking";
   const select = (id: string) => {
     setSelected(id);
     setPanel("intelligence");
@@ -276,6 +289,7 @@ export default function App() {
         onSelect={select}
         canGoal={
           controller.canDrive &&
+          !pickingRouteStart &&
           mission.health?.mode !== "explore" &&
           !panel &&
           !settings &&
@@ -284,6 +298,15 @@ export default function App() {
         }
         onGoal={(x, z) => void controller.navigate(x, z)}
         liveDetections={live}
+        approachRoute={approachDrawing}
+        pickingRouteStart={pickingRouteStart && !panel}
+        onRouteStart={approach.pickStart}
+      />
+      <ApproachRouteCard
+        state={approach.route}
+        personLastSeen={approach.person?.last_seen ?? null}
+        now={now}
+        onClear={approach.clear}
       />
       <DetectionOverlay
         detections={mission.detections}
@@ -425,6 +448,11 @@ export default function App() {
               events={mission.events}
               now={now}
               onFocus={closePanel}
+              onApproach={() => {
+                if (!object) return;
+                approach.begin(object.id);
+                closePanel();
+              }}
             />
           )}
           {panel === "activity" && (

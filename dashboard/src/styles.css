@@ -3349,3 +3349,49 @@ input[type="checkbox"] {
     max-width: none;
   }
 }
+
+/* Suggested approach route: visualization only, never a rover path. */
+.route-card {
+  position: absolute;
+  z-index: 18;
+  right: 20px;
+  bottom: 20px;
+  width: 340px;
+  max-width: calc(100% - 40px);
+  padding: 10px 12px;
+  border: 1px solid #6b5230;
+  border-radius: 3px;
+  background: var(--panel);
+  box-shadow: 0 4px 18px #0003;
+  font-size: 11px;
+}
+.route-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.route-card p {
+  margin: 6px 0 0;
+}
+.route-assumptions {
+  color: var(--muted);
+  font: 10px/1.5 var(--mono);
+}
+.route-label {
+  white-space: nowrap;
+  padding: 4px 7px;
+  border: 1px solid #ffb86b;
+  border-radius: 4px;
+  background: #2b2012e8;
+  color: #ffd9aa;
+  font: 600 9px/1 var(--mono);
+}
+@media (max-width: 760px) {
+  .route-card {
+    right: 12px;
+    bottom: 132px; /* above the viewport status */
+    width: calc(100% - 24px);
+    max-width: none;
+  }
+}

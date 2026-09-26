@@ -8,7 +8,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke` (see Car-ready smoke there).
 
-- Live `points`, `objects`, `detections` and `event` payloads, limits, object memory, the same-frame detection image and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Live detection overlay, Rescan and change events).
+- Live `points`, `objects`, `detections` and `event` payloads, limits, object memory, the same-frame detection image and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Live detection overlay, Suggested approach route, Rescan and change events).
 - Opt-in Gemini crop labels, persisted identity statuses and saved-object `/ask` search: `backend/README.md` (Gemini crop labels and saved-object search); fake-only acceptance: `python -m unittest backend.tests.test_labels -v`.
 - `/goal`/explore planning, follow loop, stop reasons and the unverified yaw-sign/mount/turn-in-place car dependencies: `backend/README.md` (Navigation).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.

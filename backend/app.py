@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.approach import approach_route
 from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
@@ -34,8 +35,8 @@ from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
-from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
-from backend.navigation import path_message
+from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
@@ -70,6 +71,13 @@ class Goal(Input):
 
 class Ask(Input):
     question: str = Field(min_length=1, max_length=2000)
+
+
+class Route(Input):
+    session_id: str = Field(min_length=1, max_length=256)
+    map_epoch: int = Field(ge=1)
+    object_id: str = Field(min_length=1, max_length=256)
+    start: list[float] = Field(min_length=2, max_length=2)  # operator-selected entrance/start, world (x, z)
 
 
 class Hello(Input):
@@ -707,6 +715,35 @@ def create_app(db_path: str | None = None, build_points=None,
         publish(objects_message(session))
         return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
                     baseline_objects=len(started.baseline))
+
+    @app.post('/route')
+    async def route(body: Route):
+        """Suggested walking approach to a remembered person; visualization only.
+
+        Never sets a rover goal, path or motion. The dashboard re-requests it when the
+        map or the person's evidence changes and drops it on a map reset.
+        """
+        session = (body.session_id, body.map_epoch)
+        if session != app.state.session:
+            raise HTTPException(409, 'Route requested for a map that is no longer active')
+        person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                       if o['id'] == body.object_id and o['class'] == 'person'), None)
+        if person is None:
+            raise HTTPException(404, 'No localized person with that id in the active map')
+        target = (person['position'][0], person['position'][2])
+        grid = active_grid()
+
+        def plan():
+            revision, origin, cells = (None, None, None) if grid is None else grid.snapshot()
+            planned = approach_route(None if cells is None else
+                                     Grid.from_array(cells, origin=origin, cell_m=CELL_M), body.start, target)
+            return revision, planned
+
+        revision, planned = await asyncio.to_thread(plan)
+        if app.state.session != session:
+            raise HTTPException(409, 'Map reset while planning')
+        return dict(version=1, session_id=session[0], map_epoch=session[1], object_id=body.object_id,
+                    person=list(target), start=list(body.start), occupancy_revision=revision, **planned)
 
     @app.post('/ask')
     async def ask(body: Ask):

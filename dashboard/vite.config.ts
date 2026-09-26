@@ -23,6 +23,8 @@ export default defineConfig(({ mode }) => {
         "^/live(?:\\?|$)": { target, ws: true },
         "^/capture(?:/|\\?|$)": { target },
         "^/health(?:\\?|$)": { target },
+        // Read-only suggested walking route; it cannot set a goal or move the rover.
+        "^/route$": { target },
       }
     : undefined;
   return {

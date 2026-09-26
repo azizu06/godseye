@@ -3,8 +3,14 @@ import { useFrame } from "@react-three/fiber";
 import { Vector3 } from "three";
 import { LIDAR_RANGE_M } from "./sensorProfile";
 import type { Mission } from "./state";
-import type { Vec3 } from "./protocol";
+import type { Vec2, Vec3 } from "./protocol";
 import { className, type LiveMarker } from "./detections";
+/** An operator-started approach route to draw: start always, path once planned. */
+export interface ApproachDrawing {
+  start: Vec2;
+  points: Vec2[] | null;
+  approach: Vec2 | null;
+}
 export interface SceneLabel {
   id: string;
   position: Vec3;
@@ -17,6 +23,7 @@ export function useSceneLabels(
   onSelect: (id: string) => void,
   objectsVisible: boolean,
   live: LiveMarker[] = [],
+  route: ApproachDrawing | null = null,
 ): SceneLabel[] {
   return useMemo(() => {
     const labels: SceneLabel[] = objectsVisible
@@ -57,6 +64,27 @@ export function useSceneLabels(
           </span>
         ),
       });
+    if (route) {
+      labels.push({
+        id: "__route-start",
+        position: [route.start[0], 0.1, route.start[1]],
+        content: (
+          <span className="route-label" data-testid="route-start-label">
+            START · operator-selected
+          </span>
+        ),
+      });
+      if (route.approach)
+        labels.push({
+          id: "__route-approach",
+          position: [route.approach[0], 0.1, route.approach[1]],
+          content: (
+            <span className="route-label" data-testid="route-approach-label">
+              APPROACH POINT · suggested
+            </span>
+          ),
+        });
+    }
     if (mission.pose) {
       const p = mission.pose;
       labels.push(
@@ -99,6 +127,7 @@ export function useSceneLabels(
     onSelect,
     objectsVisible,
     live,
+    route,
   ]);
 }
 // DOM nodes belong exclusively to the outer React root. Projection only updates
