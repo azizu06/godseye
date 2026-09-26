@@ -87,7 +87,7 @@ function verifyCompressedCapture(
   for (let y = -0.3; y < 2.4; y += 0.2)
     for (let x = -1.8; x < 1.9; x += 0.2) expect(sample(x, y)).not.toBeNull();
 }
-test("default solid surfaces discover progressively and point cloud remains optional", async ({
+test("received solid surfaces render and point cloud remains optional", async ({
   page,
 }) => {
   await observedFeed(page);

@@ -91,7 +91,14 @@ test("stationary right click opens workspace, right drag stays a view gesture, a
   await page.mouse.up({ button: "right" });
   await expect(page.locator(".workspace-drawer")).toHaveCount(0);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
+  await Promise.all([
+    page.waitForResponse("http://localhost:9877/arm"),
+    page.getByRole("button", { name: "Arm rover", exact: true }).click(),
+  ]);
+  // Wait for the controller to consume both Arm acknowledgement and telemetry.
+  await expect(
+    page.locator('.flight-controls [aria-label="Move forward"]'),
+  ).toBeEnabled();
   const rover = page.locator("svg.map2d g[transform*=rotate]");
   const before = await rover.getAttribute("transform");
   await page.keyboard.down("ArrowUp");
@@ -115,7 +122,14 @@ test("touch long press opens workspace and a second touch cancels the gesture", 
   await page.setViewportSize({ width: 390, height: 844 });
   await observedFeed(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
+  await Promise.all([
+    page.waitForResponse("http://localhost:9877/arm"),
+    page.getByRole("button", { name: "Arm rover", exact: true }).click(),
+  ]);
+  // Wait for the controller to consume both Arm acknowledgement and telemetry.
+  await expect(
+    page.locator('.flight-controls [aria-label="Move forward"]'),
+  ).toBeEnabled();
   const rover = page.locator("svg.map2d g[transform*=rotate]");
   const before = await rover.getAttribute("transform");
   const cdp = await page.context().newCDPSession(page);

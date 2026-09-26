@@ -55,6 +55,9 @@ test("without an external feed the workspace invents neither data nor control st
     page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeDisabled();
   expect(commands).toBe(0);
+  await page.screenshot({ path: "/tmp/godseye-real-empty-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "/tmp/godseye-real-empty-mobile.png" });
 });
 
 async function snapshot(page: Page) {
@@ -127,6 +130,7 @@ test("only received observations populate the map and disconnect retains them wi
   await expect(page.locator(".object-row")).toHaveCount(1);
   await expect(page.locator(".object-row")).toContainText("Chair");
   const received = await snapshot(page);
+  await page.screenshot({ path: "/tmp/godseye-real-received-desktop.png" });
   expect(received.objects).toEqual([object]);
   expect(received.pose.position).toEqual([0, 1, 0]);
   expect(received.point_chunks).toHaveLength(1);
@@ -139,7 +143,9 @@ test("only received observations populate the map and disconnect retains them wi
   socket!.close();
   await page.waitForTimeout(1600);
   const offline = await snapshot(page);
-  expect(offline.pose).toBeNull();
+  // Failed reconnects preserve the last received snapshot as history. A
+  // successful reopen clears transient pose/chunks (missionLifecycle.spec.ts).
+  expect(offline.pose).toEqual(received.pose);
   expect(offline.objects).toEqual(received.objects);
   expect(offline.point_chunks).toEqual(received.point_chunks);
   expect(offline.occupancy).toBeNull();
