@@ -3085,10 +3085,6 @@ input[type="checkbox"] {
   padding-top: 14px;
   border-top: 1px solid var(--line);
 }
-.minimal-workspace .workspace-drawer .operator-panel .mode-control,
-.minimal-workspace .workspace-drawer .operator-panel .arm-control {
-  display: none;
-}
 .minimal-workspace .scene-tools-panel {
   padding: 18px;
   display: flex;

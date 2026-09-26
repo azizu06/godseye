@@ -180,7 +180,7 @@ function ViewScope({ mission }: { mission: Mission }) {
           <bufferAttribute attach="attributes-position" args={[fan, 3]} />
         </bufferGeometry>
         <meshBasicMaterial
-          color="#75e7d5"
+          color="#8ab4f8"
           transparent
           opacity={0.075}
           side={THREE.DoubleSide}
@@ -189,14 +189,14 @@ function ViewScope({ mission }: { mission: Mission }) {
       </mesh>
       <Line
         points={[[0, 0, 0], arc[0]]}
-        color="#77d5c8"
+        color="#91b4e6"
         lineWidth={0.8}
         transparent
         opacity={0.4}
       />
       <Line
         points={[[0, 0, 0], arc[arc.length - 1]]}
-        color="#77d5c8"
+        color="#91b4e6"
         lineWidth={0.8}
         transparent
         opacity={0.4}
@@ -205,7 +205,7 @@ function ViewScope({ mission }: { mission: Mission }) {
         <Line
           key={radius}
           points={scopeArc(radius)}
-          color="#77d5c8"
+          color="#91b4e6"
           lineWidth={radius === LIDAR_RANGE_M ? 1 : 0.6}
           transparent
           opacity={radius === LIDAR_RANGE_M ? 0.55 : 0.25}
@@ -216,7 +216,7 @@ function ViewScope({ mission }: { mission: Mission }) {
           [0, 0, 0.3],
           [0, 0, LIDAR_RANGE_M],
         ]}
-        color="#8de6d4"
+        color="#a6c2eb"
         lineWidth={0.7}
         dashed
         dashSize={0.08}
@@ -231,8 +231,8 @@ function Trajectory({ mission }: { mission: Mission }) {
   const colors = useMemo(
     () =>
       mission.trajectory.map((_, i) =>
-        new THREE.Color("#233e46").lerp(
-          new THREE.Color("#88d7c6"),
+        new THREE.Color("#303946").lerp(
+          new THREE.Color("#8faed6"),
           i / Math.max(1, mission.trajectory.length - 1),
         ),
       ),
@@ -296,10 +296,10 @@ function World({
         args={[26, 26]}
         cellSize={0.5}
         cellThickness={0.5}
-        cellColor="#233d48"
+        cellColor="#34373c"
         sectionSize={2}
         sectionThickness={0.8}
-        sectionColor="#375361"
+        sectionColor="#51565e"
         fadeDistance={25}
         fadeStrength={1.6}
         infiniteGrid
@@ -318,7 +318,7 @@ function World({
       {mission.path.length > 1 && (
         <Line
           points={mission.path.map((p) => [p[0], 0.075, p[1]])}
-          color="#87e9db"
+          color="#98b9ea"
           lineWidth={2.5}
           dashed
           dashSize={0.1}
@@ -367,7 +367,7 @@ function World({
                 }
               />
               <meshStandardMaterial
-                color={o.id === selected ? "#a6efe4" : "#608991"}
+                color={o.id === selected ? "#c2d6f5" : "#718198"}
                 transparent
                 opacity={o.id === selected ? 0.28 : 0.12}
               />
@@ -376,8 +376,8 @@ function World({
                   o.state === "moved"
                     ? "#e9b373"
                     : o.id === selected
-                      ? "#b0f4e7"
-                      : "#83bdc3"
+                      ? "#d1e1fa"
+                      : "#97aecb"
                 }
               />
             </mesh>
@@ -386,7 +386,7 @@ function World({
                 [0, 0.1, 0],
                 [0, 0.72, 0],
               ]}
-              color={o.state === "moved" ? "#e9b373" : "#78b9b8"}
+              color={o.state === "moved" ? "#e9b373" : "#91a6c2"}
               transparent
               opacity={0.6}
             />
@@ -400,26 +400,26 @@ function World({
         >
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[0.2, 0.23, 48]} />
-            <meshBasicMaterial color="#7ee8d5" side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#a4c5f2" side={THREE.DoubleSide} />
           </mesh>
           <mesh>
             <boxGeometry args={[0.25, 0.12, 0.35]} />
             <meshStandardMaterial
-              color="#9ecbc3"
+              color="#a5b7cf"
               metalness={0.6}
               roughness={0.3}
-              emissive="#274e48"
+              emissive="#293c58"
             />
-            <Edges color="#b5f4e4" />
+            <Edges color="#c6d9f5" />
           </mesh>
           <mesh position={[0, 0.16, 0]} rotation={[-0.15, 0, 0]}>
             <boxGeometry args={[0.12, 0.2, 0.035]} />
-            <meshStandardMaterial color="#1e4848" />
-            <Edges color="#a0f4e2" />
+            <meshStandardMaterial color="#263953" />
+            <Edges color="#bad1f2" />
           </mesh>
           <mesh position={[0, 0.02, 0.33]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.1, 0.2, 3]} />
-            <meshBasicMaterial color="#b3ffed" />
+            <meshBasicMaterial color="#d8e7fc" />
           </mesh>
         </group>
       )}
@@ -506,7 +506,7 @@ export function Map2D({
           <path
             d="M .5 0 H 0 V .5"
             fill="none"
-            stroke="#233641"
+            stroke="#373c44"
             strokeWidth=".012"
           />
         </pattern>
@@ -528,7 +528,7 @@ export function Map2D({
                 y={grid.origin[1] + Math.floor(i / grid.width) * grid.cell_m}
                 width={grid.cell_m}
                 height={grid.cell_m}
-                fill={c === 2 ? "#b98d60" : "#326f67"}
+                fill={c === 2 ? "#b98d60" : "#3d526f"}
                 opacity={c === 2 ? 0.8 : 0.2}
               />
             ),
@@ -540,7 +540,7 @@ export function Map2D({
           y1={mission.trajectory[i][2]}
           x2={p[0]}
           y2={p[2]}
-          stroke="#88d7c6"
+          stroke="#8faed6"
           strokeOpacity={0.12 + (0.5 * i) / mission.trajectory.length}
           strokeWidth=".025"
         />
@@ -549,7 +549,7 @@ export function Map2D({
         <polyline
           points={mission.path.map((p) => p.join(",")).join(" ")}
           fill="none"
-          stroke="#8de3d3"
+          stroke="#a0bde7"
           strokeWidth=".04"
           strokeDasharray=".12 .08"
         />
@@ -584,14 +584,14 @@ export function Map2D({
             cx={o.position[0]}
             cy={o.position[2]}
             r={o.id === selected ? 0.15 : 0.09}
-            fill={o.state === "moved" ? "#e9b373" : "#81dfd0"}
-            stroke="#0e191f"
+            fill={o.state === "moved" ? "#e9b373" : "#94b7e8"}
+            stroke="#1b1e24"
             strokeWidth=".04"
           />
           <text
             x={o.position[0] + 0.2}
             y={o.position[2] + 0.06}
-            fill="#d0e1e4"
+            fill="#d9e0e9"
             fontSize=".17"
           >
             {objectName(o)}
@@ -606,9 +606,9 @@ export function Map2D({
             d={`M 0 0 ${scopeArc()
               .map(([x, , z]) => `L ${x} ${z}`)
               .join(" ")} Z`}
-            fill="#7cebd0"
+            fill="#a3c4f2"
             fillOpacity=".08"
-            stroke="#7cebd0"
+            stroke="#a3c4f2"
             strokeOpacity=".35"
             strokeWidth=".015"
           />
@@ -616,7 +616,7 @@ export function Map2D({
             x="0"
             y={LIDAR_RANGE_M + 0.23}
             textAnchor="middle"
-            fill="#77aaa1"
+            fill="#879fbd"
             fontSize=".09"
             letterSpacing=".015"
           >
@@ -624,12 +624,12 @@ export function Map2D({
           </text>
           <circle
             r=".23"
-            fill="#7cebd0"
+            fill="#a3c4f2"
             fillOpacity=".12"
-            stroke="#7cebd0"
+            stroke="#a3c4f2"
             strokeWidth=".025"
           />
-          <path d="M 0 .18 L -.09 -.09 L .09 -.09 Z" fill="#b3ffed" />
+          <path d="M 0 .18 L -.09 -.09 L .09 -.09 Z" fill="#d8e7fc" />
         </g>
       )}
     </svg>
@@ -724,6 +724,15 @@ export default function Scene(props: SceneProps) {
         aria-label="View mode"
         title="Workspace: Escape, right-click or long-press the canvas"
       >
+        <div
+          className="viewport-brand"
+          aria-label="God’s Eye spatial workspace"
+        >
+          <Crosshair size={19} strokeWidth={1.4} aria-hidden="true" />
+          <span>
+            GOD’S EYE<small>SPATIAL WORKSPACE</small>
+          </span>
+        </div>
         <div className="segmented">
           <button
             aria-pressed={view === "3d"}
@@ -790,10 +799,10 @@ export default function Scene(props: SceneProps) {
               dpr={[1, 1.8]}
               gl={{ antialias: true, alpha: true }}
               onCreated={({ gl }) => {
-                gl.setClearColor("#0c141c", 1);
+                gl.setClearColor("#202226", 1);
               }}
             >
-              <fog attach="fog" args={["#0c141c", 18, 38]} />
+              <fog attach="fog" args={["#202226", 18, 38]} />
               <Suspense fallback={null}>
                 <World {...props} layers={layers} />
               </Suspense>

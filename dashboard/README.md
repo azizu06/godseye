@@ -21,7 +21,7 @@ The real car adapter remains logging-only and cannot arm hardware.
 
 ## Workspace
 
-The map fills the screen with 2D/3D, Frame scan, Standard/Explore and compact Arm/Stop controls. Visible diagnostics show the feed address, connection, received point count, displayed triangle count, layer visibility and capture reason.
+The map fills the screen with 2D/3D and Frame scan controls. Standard/Explore and Arm/Stop live in the workspace's Rover Controls panel. Visible diagnostics show the feed address, connection, received point count, displayed triangle count, layer visibility and capture reason.
 Press Escape, Shift+F10 or the context-menu key, right-click without dragging, or touch and hold the canvas to open the workspace.
 Spatial Memory, Object Intelligence, Recent Activity, Rover Controls, Scene settings, connection, export and session actions remain there.
 Keyboard navigation also reveals an Open workspace launcher on focus.

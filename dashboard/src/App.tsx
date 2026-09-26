@@ -472,9 +472,6 @@ export default function App() {
           )}
         </aside>
       )}
-      <div className="flight-controls">
-        <OperatorControls controller={controller} compact />
-      </div>
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>
