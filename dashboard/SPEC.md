@@ -82,7 +82,8 @@ Show connecting, connected, reconnecting, disconnected, and stale states.
 Mark data stale when health is not refreshed for 2 seconds; inhibit ordinary motion controls until fresh telemetry returns.
 Reconnect with bounded retry delays, cancel old listeners/timers on source changes, and clear spatial state on a new connection to avoid mixing uncertain epochs.
 Keep real backend health authoritative and separate from transport connection state.
-A successful local /session clears scene state; backend-initiated map resets need the future contract extension below.
+A successful local /session clears scene state.
+Consume the backend's documented optional session_id/map_epoch fields on points, objects, and events to clear spatial state on backend-initiated map changes.
 
 ## Two-way commands
 
@@ -115,13 +116,16 @@ No battery measurement, raw RGB feed, calibrated geometry, or real-world accurac
 
 These are recorded follow-ups, not blockers and not unilateral v1 extensions:
 
-1. Explicit session ID/map epoch/reset notification on /live to reliably clear geometry on backend-initiated resets.
+1. A dedicated session-reset/capability contract remains future work; current documented additive session_id/map_epoch fields are supported.
 2. Historical observations and evidence references, distinguishing detector confidence, geometric uncertainty, and identity confidence.
 3. Backend session export/deletion and replay lifecycle.
 4. Capability advertisement for navigation, rescan, query, hardware actuation, and optional imagery.
 5. Backend acknowledgement semantics for long-running operations and timestamps/units for all object and event history.
 
-Until coordinated, the dashboard labels history as received during this connection, exports only its local snapshot, treats endpoint errors as authoritative, and never invents unsupported payload fields.
+The dashboard hydrates documented GET /events history when an external API is enabled, validates map identity, and deduplicates stable event IDs.
+Rescan acknowledges a saved baseline and ongoing observation matching; no completion duration is invented.
+The dashboard exports only its local bounded snapshot and treats endpoint errors as authoritative.
+See [the backend integration increment](INTEGRATION.md) for implemented support and validation.
 
 ## Acceptance criteria
 

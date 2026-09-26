@@ -48,5 +48,7 @@ Linux needs Chromium's system libraries; `npx playwright install --with-deps chr
 Received point chunks, trajectory samples, and event history are bounded in memory.
 Unknown message types are ignored and malformed known messages are rejected.
 A reconnect clears spatial data before receiving a new snapshot.
+Backend map identity changes also clear spatial data; enabled API connections hydrate matching saved events and merge them with live events.
+Rescan saves a baseline and watches new observations; it does not command a physical revisit.
 Exports contain the dashboard's bounded received state, not a complete backend session recording.
 Live camera calibration, hardware drive behavior, and session lifecycle extensions require coordination with their owning components.

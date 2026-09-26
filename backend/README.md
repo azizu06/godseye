@@ -36,7 +36,9 @@ bundles at 8 MiB; dimension/payload lengths must agree. Pose must have 16
 column-major floats. Bundle transform belongs to the same captured frame.
 
 `/live` sends versioned JSON: health every 500 ms, pose at most 15 Hz,
-an objects snapshot and an empty path at connection and map reset. Bounded queues
+an objects snapshot and an empty path at connection and map reset.
+Map resets discard queued updates from the previous map and immediately publish fresh health, objects and path.
+Bounded queues
 drop the oldest pending update for slow viewers. Occupancy will be supplied by
 later work; no fake scene is emitted. `points`, `objects` and `event` are
 described under Live map points, Live objects, and Rescan and change events. Position is transform entries 12–14 in ARKit Y-up meters. Yaw
@@ -74,7 +76,8 @@ one in-flight bundle per phone.
 - `positions`: flat ARKit world meters (+Y up, right-handed), rounded to 1 mm.
   `colors`: flat floats in 0..1 (same length, same order; matches `tools/fake_live.py`).
 - Up to **2500 points** (about 90 KB of JSON) per chunk, at most **4 chunks/s**.
-  `chunk_id` counts from 1 within a session. Chunks are **not cumulative**: the
+  `chunk_id` counts from 1 within a session/epoch and continues across phone reconnects to the same map while the backend is running.
+  Chunks are **not cumulative**: the
   dashboard appends and caps its own total, and should clear its cloud when
   `session_id` or `map_epoch` changes.
 - Points are depth pixels with confidence 2 (high), finite depth from 0.05 to
