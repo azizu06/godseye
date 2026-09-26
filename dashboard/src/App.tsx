@@ -1,3 +1,4 @@
+import { SIMULATED_SURFACE_CELL_M } from "./simulatorSurfaces";
 import { useColorSurfaces } from "./useColorSurfaces";
 import { useState } from "react";
 import {
@@ -72,7 +73,7 @@ export default function App() {
       : []
     : capture.patches;
   const persistent = simulated ? controller.simSurface : capture.persistent;
-  const mapCellM = simulated ? 0.1 : capture.cellM;
+  const mapCellM = simulated ? SIMULATED_SURFACE_CELL_M : capture.cellM;
   const object = mission.objects.find((o) => o.id === selected);
   const sourceLabel = simulated
     ? "Simulation"

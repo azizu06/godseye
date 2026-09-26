@@ -2,7 +2,9 @@ import type { Vec3 } from "./protocol";
 import type { SurfacePatch } from "./surfaceTypes";
 
 type FurnitureBox = { position: Vec3; size: Vec3 };
-const SPACING = 0.1;
+// Coarse display cells trade detail for fast, connected observed coverage.
+export const SIMULATED_SURFACE_CELL_M = 0.3;
+const TRIANGLES_PER_SCAN = 3_600;
 const linear = (channel: number) =>
   channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
 const rgb = (hex: string) =>
@@ -22,8 +24,8 @@ export function makeRoomSurfaces(furniture: FurnitureBox[]): SurfacePatch {
     reverse = false,
     wood = false,
   ) => {
-    const columns = Math.ceil(Math.hypot(...u) / SPACING),
-      rows = Math.ceil(Math.hypot(...v) / SPACING);
+    const columns = Math.ceil(Math.hypot(...u) / SIMULATED_SURFACE_CELL_M),
+      rows = Math.ceil(Math.hypot(...v) / SIMULATED_SURFACE_CELL_M);
     const base = positions.length / 3,
       tone = rgb(color);
     for (let row = 0; row <= rows; row++)
@@ -106,15 +108,12 @@ export class SurfaceDiscovery {
   private readonly retained: number[] = [];
   private cursor = 0;
   private scanEpoch = 0;
-  private stride = 7919;
   private dirty = false;
   private cached: SurfacePatch | null = null;
   constructor(private readonly geometry: SurfacePatch) {
     const count = geometry.indices.length / 3;
     this.seen = new Uint8Array(count);
     this.vertexVisibility = new Int32Array(geometry.positions.length / 3);
-    const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
-    while (gcd(this.stride, count) !== 1) this.stride++;
   }
   reset() {
     this.seen.fill(0);
@@ -142,9 +141,14 @@ export class SurfaceDiscovery {
       return result;
     };
     const count = this.seen.length;
-    for (let checked = 0; checked < Math.min(900, count); checked++) {
+    for (
+      let checked = 0;
+      checked < Math.min(TRIANGLES_PER_SCAN, count);
+      checked++
+    ) {
       const triangle = this.cursor;
-      this.cursor = (this.cursor + this.stride) % count;
+      // Adjacent triangles share their cell, avoiding scattered speckles.
+      this.cursor = (this.cursor + 1) % count;
       if (this.seen[triangle]) continue;
       const offset = triangle * 3;
       const a = this.geometry.indices[offset],
@@ -156,6 +160,17 @@ export class SurfaceDiscovery {
         (axis) => (points[0][axis] + points[1][axis] + points[2][axis]) / 3,
       ) as Vec3;
       if (!visible(center)) continue;
+      if (
+        [0, 1, 2].some(
+          (i) =>
+            !visible(
+              points[i].map(
+                (value, axis) => (value + points[(i + 1) % 3][axis]) / 2,
+              ) as Vec3,
+            ),
+        )
+      )
+        continue;
       this.seen[triangle] = 1;
       this.retained.push(a, b, c);
       this.dirty = true;
