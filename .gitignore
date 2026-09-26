@@ -6,6 +6,7 @@
 *.pt
 *.db
 *.db-*
+backend/captures/
 __pycache__/
 *.py[cod]
 
@@ -16,4 +17,6 @@ DerivedData/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
+**/xcuserdata/
+.swiftpm/
 .DS_Store

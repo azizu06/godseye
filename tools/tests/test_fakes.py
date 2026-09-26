@@ -41,6 +41,16 @@ class FakeContractTests(unittest.TestCase):
         self.assertEqual(expected["transform"][12:15],
                          [math.sin(.25), 1., math.cos(.25)])
 
+    def test_local_photo_replaces_the_gradient_at_contract_size(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png") as photo:
+            Image.new("RGB", (64, 48), (10, 200, 30)).save(photo.name)
+            jpeg, depth, confidence = synthetic_sensors(photo.name)
+        with Image.open(io.BytesIO(jpeg)) as decoded:
+            self.assertEqual((decoded.format, decoded.size), ("JPEG", (960, 720)))
+            self.assertLess(abs(decoded.getpixel((480, 360))[1] - 200), 8)
+        self.assertEqual((depth, confidence), synthetic_sensors()[1:])
+
     def test_live_types_shapes_and_synthetic_move(self):
         before = messages(0, 100, False)
         after = messages(5, 105, True)

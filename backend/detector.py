@@ -1,8 +1,9 @@
 """Explicit local-weights YOLO/MPS adapter; import does not load the model."""
+import os
 from pathlib import Path
 
 from .frame_bundle import FrameBundle
-from .localization import Detection, LocalizedDetection, LocalizationError, localize_detection
+from .localization import Detection, LocalizedDetection, localize_all
 
 
 class MPSDetector:
@@ -14,6 +15,8 @@ class MPSDetector:
         weights = Path(weights).expanduser()
         if not weights.is_file():
             raise FileNotFoundError(f'local YOLO weights missing: {weights}')
+        # Ultralytics skips its online checks, asset downloads and telemetry when offline.
+        os.environ.setdefault('YOLO_OFFLINE', '1')
         import torch
         from ultralytics import YOLO
 
@@ -39,11 +42,4 @@ class MPSDetector:
 
     def localize(self, frame: FrameBundle) -> list[LocalizedDetection]:
         """Reject individual boxes with inadequate depth; never fabricate positions."""
-        localized = []
-        for detection in self.detect(frame):
-            try:
-                localized.append(localize_detection(frame, detection,
-                                                   min_detection_confidence=self.confidence))
-            except LocalizationError:
-                continue
-        return localized
+        return localize_all(frame, self.detect(frame), min_detection_confidence=self.confidence)

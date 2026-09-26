@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>God's Eye · Live capture</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e8edf1; background: #101416; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 1500px; margin: auto; padding: 32px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 26px; }
+    .brand { font-size: 13px; letter-spacing: .13em; text-transform: uppercase; color: #96a8af; margin: 0 0 8px; }
+    h1 { margin: 0; font-size: clamp(26px, 4vw, 36px); font-weight: 600; letter-spacing: -.035em; }
+    .badge { display: inline-flex; align-items: center; gap: 9px; padding: 9px 13px; border: 1px solid #354147; border-radius: 100px; font-size: 13px; white-space: nowrap; }
+    .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #9aa8ae; }
+    .badge[data-state="live"]::before { background: #83e5b4; box-shadow: 0 0 12px #83e5b440; }
+    .badge[data-state="stale"]::before { background: #f1be72; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+    .viewer { background: #080b0d; border: 1px solid #293238; border-radius: 16px; overflow: hidden; }
+    .screen { position: relative; aspect-ratio: 4/3; display: grid; place-items: center; overflow: hidden; }
+    .screen img { width: 100%; height: 100%; object-fit: contain; position: absolute; }
+    .empty { text-align: center; max-width: 370px; padding: 24px; color: #9badb6; line-height: 1.6; }
+    .empty strong { display: block; font-size: 19px; font-weight: 500; color: #e4e9ec; margin-bottom: 8px; }
+    .overlay { position: absolute; left: 16px; top: 16px; padding: 8px 12px; border-radius: 7px; background: #11191ee8; color: #f1be72; font-size: 13px; }
+    [hidden] { display: none !important; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-top: 1px solid #293238; background: #171d21; }
+    .frame-label { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: #91a5ae; }
+    .buttons { display: flex; gap: 8px; }
+    button { font: inherit; font-size: 13px; padding: 8px 12px; color: #dfe8ec; background: #222e34; border: 1px solid #3a4a52; border-radius: 7px; cursor: pointer; }
+    button:hover:not(:disabled) { border-color: #8da7b4; background: #2b3b43; }
+    button:disabled { opacity: .4; cursor: default; }
+    button:focus-visible { outline: 2px solid #83e5b4; outline-offset: 3px; }
+    .panel { background: #171d21; border: 1px solid #293238; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+    h2 { font-size: 13px; letter-spacing: .07em; text-transform: uppercase; font-weight: 500; color: #91a5ae; margin: 0 0 20px; }
+    dl { margin: 0; }
+    .metric { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 12px 0; border-bottom: 1px solid #293238; }
+    .metric:first-child { padding-top: 0; }
+    .metric:last-child { border-bottom: 0; padding-bottom: 0; }
+    dt { color: #9badb6; font-size: 13px; }
+    dd { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; margin: 0; text-align: right; }
+    p.note { color: #8fa2ac; line-height: 1.6; font-size: 13px; margin: 16px 0 0; }
+    code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; overflow-wrap: anywhere; color: #b8d8df; }
+    .position { font: 13px/1.9 ui-monospace, SFMono-Regular, monospace; color: #c5d4db; white-space: pre-line; }
+    .foot { color: #71858f; font-size: 12px; margin-top: 18px; line-height: 1.7; }
+    .inspect { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    select { font: inherit; padding: 8px; border-radius: 7px; color: #dfe8ec; background: #222e34; border: 1px solid #3a4a52; max-width: 100%; }
+    pre { font: 12px/1.6 ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; color: #b8d8df; }
+    summary { cursor: pointer; color: #a4bbc4; font-size: 13px; }
+    a { color: #a5e8d0; }
+    .downloads { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; font-size: 13px; }
+    .readout { white-space: pre-line; font: 13px/1.8 ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; max-height: 430px; overflow: auto; }
+    @media (max-width: 850px) { .inspect { grid-template-columns: 1fr; } }
+    @media (max-width: 850px) { main { padding: 20px 14px; } .layout { grid-template-columns: 1fr; } aside { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; } .panel { margin: 0; } }
+    @media (max-width: 500px) { header { align-items: flex-start; } .badge { font-size: 11px; padding: 8px; } aside { grid-template-columns: 1fr; } .toolbar { flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><p class="brand">God's Eye / Development</p><h1>Live capture</h1></div>
+    <div id="badge" class="badge" role="status" data-state="waiting">Connecting to backend</div>
+  </header>
+  <div class="layout">
+    <section class="viewer" aria-label="iPhone camera feed">
+      <div class="toolbar"><label for="sensor">Sensor view</label><select id="sensor">
+        <option value="rgb">Native camera</option><option value="raw_depth">Raw LiDAR depth</option>
+        <option value="raw_confidence">Raw depth confidence</option><option value="smoothed_depth">Smoothed depth</option>
+        <option value="smoothed_confidence">Smoothed confidence</option><option value="person_mask">People mask</option>
+        <option value="person_depth">Estimated person depth</option>
+      </select></div>
+      <div class="screen">
+        <img id="feed" alt="Live rear camera feed from the iPhone" hidden>
+        <div id="empty" class="empty"><strong>Waiting for the iPhone</strong><span>Enable Stream to laptop in the app and start capture.</span></div>
+        <div id="overlay" class="overlay" hidden></div>
+      </div>
+      <div class="toolbar">
+        <span id="frame-label" class="frame-label">No frame received</span>
+        <div class="buttons"><button id="pause" type="button">Pause preview</button><button id="save" type="button" disabled>Save frame</button></div>
+      </div>
+    </section>
+    <aside>
+      <section class="panel">
+        <h2>Incoming stream</h2>
+        <dl>
+          <div class="metric"><dt>Frame rate</dt><dd id="rate">—</dd></div>
+          <div class="metric"><dt>Frame age</dt><dd id="age">—</dd></div>
+          <div class="metric"><dt>Camera</dt><dd id="resolution">—</dd></div>
+          <div class="metric"><dt>LiDAR depth</dt><dd id="depth">—</dd></div>
+          <div class="metric"><dt>Tracking</dt><dd id="tracking">—</dd></div>
+          <div class="metric"><dt>Frames received</dt><dd id="count">0</dd></div>
+        </dl>
+        <p class="note">Frame rate measures image/depth bundles arriving at the laptop, not the camera's native FPS.</p>
+      </section>
+      <section class="panel">
+        <h2>Camera position</h2>
+        <div id="position" class="position">X —<br>Y —<br>Z —</div>
+        <p class="note">Meters from the current AR session origin. Y points up.</p>
+      </section>
+      <section class="panel">
+        <h2>Phone connection</h2>
+        <code id="endpoint"></code>
+        <p class="note">Pausing freezes this preview. The iPhone keeps capturing and streaming.</p>
+      </section>
+    </aside>
+  </div>
+  <p id="legend" class="foot">Native image when full capture is available; otherwise the standard camera stream.</p>
+  <div class="inspect">
+    <section class="panel">
+      <h2>Full sensor capture</h2>
+      <div id="rich-summary" class="readout">Waiting for the updated iPhone app.</div>
+      <p id="recording" class="note"></p>
+      <div class="downloads">
+        <a id="download-frame" href="/capture/rich/frame.bin" hidden>Full frame</a>
+        <a id="download-telemetry" href="/capture/rich/telemetry.bin" hidden>Motion + location</a>
+        <a id="download-geometry" href="/capture/rich/geometry.bin" hidden>Mesh + planes</a>
+        <a id="download-still" href="/capture/rich/still.bin" hidden>High-res photo</a>
+      </div>
+      <p class="note">Downloads preserve original measurements. Depth colors show 0–5 m: red near, blue far, black invalid. Confidence: gray low, amber medium, green high. Smoothed depth includes past observations.</p>
+    </section>
+    <section class="panel">
+      <h2>Motion, location & device</h2>
+      <div id="sensor-summary" class="readout">No telemetry received.</div>
+      <p class="note">Readings retain their own timestamps and units. Missing measurements stay unavailable. A negative location accuracy, speed, or heading means iOS could not determine that value.</p>
+    </section>
+  </div>
+  <section class="panel"><details><summary>Inspect calibration, sensor readings, capabilities and packet metadata</summary><pre id="metadata">Waiting for data.</pre></details></section>
+  <p class="foot">Full capture packets are recorded on this laptop when enabled. Preview pause does not pause recording. Rover control is not implemented.</p>
+</main>
+<script>
+  const byId = id => document.getElementById(id);
+  const feed = byId('feed'), badge = byId('badge'), overlay = byId('overlay');
+  let paused = false, latestStatus = null, etag = '', imageURL = null, imageEpoch = 0;
+  let lastStatusAt = 0, displayedFrame = '', backendAvailable = false, imageError = false;
+  let sensor = 'rgb';
+  const units = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  const frameFrom = status => status?.rich?.packets?.frame ?? status?.frame;
+  byId('endpoint').textContent = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/phone`;
+
+  function clearFrame() {
+    imageEpoch++; etag = ''; displayedFrame = '';
+    feed.hidden = true; feed.removeAttribute('src');
+    if (imageURL) URL.revokeObjectURL(imageURL);
+    imageURL = null;
+    byId('empty').hidden = false; byId('save').disabled = true;
+    byId('frame-label').textContent = 'No frame received';
+  }
+
+  function showStatus() {
+    const frame = frameFrom(latestStatus);
+    const age = frame ? frame.age_ms + performance.now() - lastStatusAt : null;
+    const phone = latestStatus?.health.phone;
+    let label = 'Waiting for iPhone', state = 'waiting', warning = '';
+    if (!backendAvailable) { label = 'Backend disconnected'; warning = 'Reconnecting to the laptop…'; }
+    else if (phone === 'down') { label = 'Phone disconnected'; warning = 'Waiting for the iPhone to reconnect'; }
+    else if (!frame) { label = 'Waiting for camera frames'; warning = 'Phone connected · waiting for image and depth'; }
+    else if (imageError) { label = 'Preview unavailable'; state = 'stale'; warning = 'Unable to load camera frame · retrying…'; }
+    else if (age > 1000) { label = 'Feed stale'; state = 'stale'; warning = 'No recent camera frame'; }
+    else if (latestStatus?.tracking !== 'normal') { label = 'Tracking limited'; state = 'stale'; warning = 'Camera tracking is limited'; }
+    else if (phone !== 'ok') { label = 'Pose delayed'; state = 'stale'; warning = 'Waiting for a fresh camera pose'; }
+    else { label = 'Live from iPhone'; state = 'live'; }
+    badge.textContent = label; badge.dataset.state = state;
+    overlay.textContent = paused ? 'Preview paused' : warning;
+    overlay.hidden = !overlay.textContent;
+    byId('rate').textContent = backendAvailable ? `${(latestStatus?.frame_hz ?? 0).toFixed(1)} fps` : '—';
+    byId('age').textContent = age === null ? '—' : age < 1000 ? `${Math.round(age)} ms` : `${(age / 1000).toFixed(1)} s`;
+    byId('count').textContent = latestStatus?.received_frames?.toLocaleString() ?? '0';
+    const metadata = frame?.metadata;
+    const camera = metadata?.native_image ?? metadata?.image;
+    const depthShape = frame?.sections?.find(section => section.name === 'raw_depth')?.shape;
+    byId('resolution').textContent = camera ? `${camera.width} × ${camera.height}` : '—';
+    byId('depth').textContent = depthShape ? `${depthShape[1]} × ${depthShape[0]}` : metadata?.depth ? `${metadata.depth.width} × ${metadata.depth.height}` : '—';
+    byId('tracking').textContent = latestStatus?.tracking ?? '—';
+    const p = latestStatus?.position;
+    byId('position').textContent = p ? `X ${p[0].toFixed(3)} m\nY ${p[1].toFixed(3)} m\nZ ${p[2].toFixed(3)} m` : 'X —\nY —\nZ —';
+    showRich();
+  }
+
+  function showRich() {
+    const rich = latestStatus?.rich, packets = rich?.packets ?? {};
+    for (const kind of ['frame', 'telemetry', 'geometry', 'still']) byId(`download-${kind}`).hidden = !packets[kind];
+    const entries = Object.entries(packets).map(([kind, value]) => `${kind}: ${units(value.bytes)} · ${(value.age_ms / 1000).toFixed(1)} s ago`);
+    byId('rich-summary').textContent = entries.length ? `${rich.received_packets} packets · ${units(rich.bytes_received)} received\n${entries.join('\n')}` : 'Waiting for the updated iPhone app. Standard camera and raw depth remain available.';
+    const mesh = packets.geometry?.metadata;
+    if (mesh) byId('rich-summary').textContent += `\n${mesh.mesh_count} meshes · ${mesh.plane_count} planes\n${mesh.vertex_count} vertices · ${mesh.face_count} faces`;
+    byId('recording').textContent = rich?.recording_error ?? (rich?.recording_enabled ?
+      `Laptop recording: ${units(rich.recorded_bytes)} / ${units(rich.session_budget_bytes)} per session.${rich.recording_folder ? ` Folder: ${rich.recording_folder}` : ' Starts with the first full packet.'}` : 'Laptop recording is disabled. Live packets are available for download.');
+    const telemetry = packets.telemetry?.metadata;
+    const readings = telemetry?.latest ?? {};
+    byId('sensor-summary').textContent = Object.entries(readings).map(([name, sample]) => {
+      const values = Object.entries(sample.values).filter(([, value]) => typeof value === 'number' || Array.isArray(value) && value.length <= 4);
+      return `${name} · ${sample.timestamp.toFixed(3)} ${sample.clock}\n${values.map(([key, value]) => `${key}: ${Array.isArray(value) ? value.map(v => Number(v).toFixed(3)).join(', ') : Number(value).toFixed(3)}`).join('\n')}`;
+    }).join('\n\n') || 'No telemetry received.';
+    if (telemetry) byId('sensor-summary').textContent += `\n\nDropped samples: ${telemetry.dropped_samples}\nReplaced/failed uploads: ${telemetry.upload_dropped_packets}\nSkipped image captures: ${telemetry.capture_skipped_frames}`;
+    byId('metadata').textContent = JSON.stringify({standard_frame: latestStatus?.frame?.metadata, full_capture: rich}, null, 2);
+  }
+
+  async function pollStatus() {
+    try {
+      const response = await fetch('/capture/status', {cache: 'no-store', signal: AbortSignal.timeout(2500)});
+      if (!response.ok) throw new Error('Status unavailable');
+      const next = await response.json();
+      const old = frameFrom(latestStatus)?.metadata, current = frameFrom(next)?.metadata;
+      if (!paused && (!current || (old && (old.session_id !== current.session_id || old.map_epoch !== current.map_epoch)))) clearFrame();
+      latestStatus = next; lastStatusAt = performance.now(); backendAvailable = true;
+    } catch { backendAvailable = false; }
+    showStatus(); setTimeout(pollStatus, 500);
+  }
+
+  async function pollImage() {
+    try {
+      if (!paused && !document.hidden) {
+        const epoch = imageEpoch;
+        const response = await fetch(`/capture/sensor/${sensor}`, {
+          cache: 'no-store', headers: etag ? {'If-None-Match': etag} : {}, signal: AbortSignal.timeout(2500)
+        });
+        if (paused || epoch !== imageEpoch) return;
+        if (response.status === 204) {
+          clearFrame(); imageError = false;
+          byId('empty').textContent = latestStatus?.health.phone === 'down' ? 'Waiting for the iPhone. Start capture in the app.' : 'This sensor has not supplied an image. It may be unsupported, disabled, or waiting for a detection.';
+          return;
+        }
+        if (response.status === 304) { imageError = false; return; }
+        if (!response.ok) throw new Error('Image unavailable');
+        const url = URL.createObjectURL(await response.blob());
+        const decoded = new Image(); decoded.src = url;
+        try { await decoded.decode(); } catch (error) { URL.revokeObjectURL(url); throw error; }
+        if (paused || epoch !== imageEpoch) { URL.revokeObjectURL(url); return; }
+        const previous = imageURL;
+        imageURL = url; feed.src = url; feed.hidden = false;
+        if (previous) URL.revokeObjectURL(previous);
+        etag = response.headers.get('ETag') ?? '';
+        displayedFrame = response.headers.get('X-Frame-Id') ?? '';
+        byId('frame-label').textContent = `FRAME ${displayedFrame} · ${decoded.naturalWidth} × ${decoded.naturalHeight}`;
+        byId('empty').hidden = true; byId('save').disabled = false; imageError = false;
+      }
+    } catch { imageError = true; showStatus(); }
+    finally { setTimeout(pollImage, 100); }
+  }
+
+  byId('pause').addEventListener('click', () => {
+    paused = !paused; imageEpoch++;
+    byId('pause').textContent = paused ? 'Resume preview' : 'Pause preview';
+    if (!paused) clearFrame();
+    showStatus();
+  });
+  byId('save').addEventListener('click', () => {
+    if (!imageURL) return;
+    const link = document.createElement('a'); link.href = imageURL;
+    link.download = `godseye-${sensor}-${displayedFrame || 'snapshot'}.${sensor === 'rgb' ? 'jpg' : 'png'}`; link.click();
+  });
+  byId('sensor').addEventListener('change', event => {
+    sensor = event.target.value; clearFrame(); imageError = false;
+    feed.style.imageRendering = sensor === 'rgb' ? 'auto' : 'pixelated';
+    feed.alt = `iPhone ${event.target.selectedOptions[0].textContent}`;
+    byId('legend').textContent = sensor === 'rgb' ? 'Native image when full capture is available; otherwise the standard camera stream.' : sensor.endsWith('confidence') ? 'Confidence: gray low · amber medium · green high · black invalid.' : sensor === 'person_mask' ? 'People segmentation estimate. Missing mask means unavailable, not an empty scene.' : 'Depth: red near · blue at 5 m and beyond · black invalid. Raw numerical values are preserved in the download.';
+  });
+  pollStatus(); pollImage();
+</script>
+</body>
+</html>

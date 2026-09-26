@@ -1,0 +1,48 @@
+name: GodsEye
+options:
+  bundleIdPrefix: com.godseye
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  SensorCore:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 4RV56K4RMH
+targets:
+  GodsEye:
+    type: application
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.godseyeshellhacks.GodsEye
+    sources:
+      - App
+    dependencies:
+      - package: SensorCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: "God's Eye"
+        NSCameraUsageDescription: "Capture camera images and LiDAR depth to map the rover's surroundings."
+        NSLocalNetworkUsageDescription: "Stream synchronized sensor data to your laptop on the demo network."
+        NSMotionUsageDescription: "Record motion measurements alongside camera and depth data."
+        NSLocationWhenInUseUsageDescription: "Record position, heading, and accuracy alongside rover sensor data while capture is running."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+schemes:
+  GodsEye:
+    build:
+      targets:
+        GodsEye: all

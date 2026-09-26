@@ -8,7 +8,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`.
 
+- Live `points`, `objects` and `event` payloads, limits, object memory and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Rescan and change events).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
+
+- iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 
 ## Maintaining this file
 

@@ -1,7 +1,9 @@
 # Detection and localization integration
 
 `docs/INTERFACES.md` is the wire/coordinate authority. These modules do not own
-FastAPI routes, database records, object IDs, association, or vehicle commands.
+FastAPI routes, database records, object IDs, association, or vehicle commands;
+`app.py` and `objects.py` wire them into `/phone`, SQLite and `/live` (see
+README "Live objects").
 
 ```python
 from backend.frame_bundle import parse_frame_bundle, FrameValidationError
@@ -22,14 +24,14 @@ time, session, epoch, tracking and transform. Without an external reference, the
 sender's same-ARFrame guarantee cannot be independently verified; the bundle's
 transform is used, never a separately cached latest pose. Routing must recheck the
 active session/epoch when consuming completed inference, since it can reset while
-inference is running. Ordering/staleness policies belong to A's ingestion layer.
+inference is running; `app.py` does, and drops results after disconnect or reset.
 
 `localize_detection` is the pure geometry seam. It selects depth sample centers
 inside JPEG xyxy edges using independent width/height scales, takes the median of
 finite positive depth with confidence **2**, and projects the JPEG box-center ray.
 Defaults require at least three usable samples and 25% usable box coverage; callers
 can tune these thresholds. Invalid or low-confidence boxes raise
-`LocalizationError`; the detector adapter skips them. The result is a representative
+`LocalizationError`; `localize_all` (used by the detector adapter) skips them. The result is a representative
 surface point, not a physical object center. Depth is optical-axis Z in meters.
 Optical `(x,y,z)` becomes ARKit camera `(x,-y,-z)` before camera-to-world projection.
 No screen rotation or second scaling of the already JPEG-scaled intrinsics occurs.

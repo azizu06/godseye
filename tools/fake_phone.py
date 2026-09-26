@@ -22,10 +22,15 @@ def pose(frame_id, t_capture, t_wall_ms, session_id, map_epoch=1):
                            math.sin(yaw), 1., math.cos(yaw), 1.], tracking="normal")
 
 
-def synthetic_sensors():
-    image = Image.new("RGB", (960, 720))
-    image.putdata([(x * 255 // 959, y * 255 // 719, 96)
-                   for y in range(720) for x in range(960)])
+def synthetic_sensors(image_path=None):
+    """Gradient JPEG, or a local photo resized to 960x720 so a detector has something to find."""
+    if image_path:
+        with Image.open(image_path) as photo:
+            image = photo.convert("RGB").resize((960, 720))
+    else:
+        image = Image.new("RGB", (960, 720))
+        image.putdata([(x * 255 // 959, y * 255 // 719, 96)
+                       for y in range(720) for x in range(960)])
     output = io.BytesIO()
     image.save(output, format="JPEG", quality=60)
     depth = b"".join(struct.pack("<f", 1. + x / 256 + y / 192)
@@ -46,8 +51,8 @@ def frame_bundle(frame_pose, sensors):
     return struct.pack("<I", len(encoded)) + encoded + jpeg + depth + confidence
 
 
-async def run(url, frame_hz):
-    sensors = synthetic_sensors()
+async def run(url, frame_hz, image_path=None):
+    sensors = synthetic_sensors(image_path)
     session = str(uuid.uuid4())
     async with connect(url) as websocket:
         await websocket.send(json.dumps(dict(version=1, type="hello", device="synthetic-phone",
@@ -74,9 +79,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="ws://localhost:8765/phone")
     parser.add_argument("--frame-hz", type=int, choices=range(5, 11), default=5)
+    parser.add_argument("--image", help="local JPEG/PNG to send instead of the gradient (depth stays synthetic)")
     args = parser.parse_args()
     try:
-        asyncio.run(run(args.url, args.frame_hz))
+        asyncio.run(run(args.url, args.frame_hz, args.image))
     except KeyboardInterrupt:
         pass
 
