@@ -7,10 +7,11 @@ network, or threads: callers run it on the event loop after inference.
 from dataclasses import dataclass
 import json
 import math
+from typing import NamedTuple
 from uuid import uuid4
 
 from .frame_bundle import parse_frame_bundle
-from .localization import LocalizedDetection
+from .localization import LocalizedDetection, view_status
 
 MATCH_RADIUS_M = .5  # same-class sightings closer than this are the same object
 MAX_SNAPSHOT = 256  # objects per snapshot, most recently seen first
@@ -24,17 +25,31 @@ class FrameObjects:
     t_capture: float
     t_wall_ms: int
     found: tuple[LocalizedDetection, ...]
+    views: tuple | None = None  # (rescan_id, ((object_id, view_status), ...)) for watched points
 
 
-def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int) -> FrameObjects:
+class Sighting(NamedTuple):
+    """One stored observation and the object it was folded into."""
+    observation_id: str
+    object_id: str
+    class_name: str
+    position: tuple[float, float, float]
+    created: bool  # this observation started a new object
+
+
+def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int, watch=None) -> FrameObjects:
     """Decode a v1 bundle against the active session/epoch, then run `detector.localize`.
 
-    Raises FrameValidationError for bad bundles. Blocking (JPEG decode and
-    inference), so async callers run it in a worker thread.
+    `watch` is `(rescan_id, ((object_id, position), ...))`; each position is probed
+    with `view_status` against this frame's depth. Raises FrameValidationError for
+    bad bundles. Blocking (JPEG decode and inference), so async callers run it in a
+    worker thread.
     """
     frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
+    views = None if watch is None else (
+        watch[0], tuple((object_id, view_status(frame, position)) for object_id, position in watch[1]))
     return FrameObjects(frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture,
-                        frame.t_wall_ms, tuple(detector.localize(frame)))
+                        frame.t_wall_ms, tuple(detector.localize(frame)), views)
 
 
 def associate(tracks, found, radius_m=MATCH_RADIUS_M):
@@ -62,14 +77,16 @@ class ObjectMemory:
         self.db = db
         self.radius_m = radius_m
 
-    def record(self, session, frame_id, seen_at, found) -> bool:
-        """Persist one frame's detections; return whether any object changed.
+    def record(self, session, frame_id, seen_at, found) -> list[Sighting]:
+        """Persist one frame's detections; return one Sighting each (empty: nothing changed).
 
         `session` is `(session_id, map_epoch)`, which must already have a
         `frames` row for `frame_id`. `seen_at` is phone wall-clock seconds.
+        A sighting marks its object `present`, except that `moved` is kept.
         """
+        sightings = []
         if not found:
-            return False
+            return sightings
         rows = self.db.execute(
             'SELECT id, class, position_json, identity_confidence, observations, first_seen, last_seen '
             'FROM objects WHERE session_id=? AND map_epoch=?', session).fetchall()
@@ -79,7 +96,8 @@ class ObjectMemory:
         with self.db:
             for located, object_id in zip(found, matches):
                 score = located.detection.confidence
-                if object_id is None:
+                created = object_id is None
+                if created:
                     object_id = str(uuid4())
                     self.db.execute(
                         'INSERT INTO objects(id,session_id,map_epoch,class,position_json,identity_confidence,'
@@ -93,17 +111,49 @@ class ObjectMemory:
                                 for p, q in zip(json.loads(position), located.position)]
                     self.db.execute(
                         'UPDATE objects SET position_json=?, identity_confidence=?, first_seen=?, last_seen=?, '
-                        "observations=?, state='present' WHERE id=?",
+                        "observations=?, state=CASE state WHEN 'moved' THEN 'moved' ELSE 'present' END WHERE id=?",
                         (json.dumps(position), (confidence * count + score) / (count + 1),
                          min(first, seen_at), max(last, seen_at), count + 1, object_id))
+                observation_id = str(uuid4())
                 self.db.execute(
                     'INSERT INTO observations(id,session_id,map_epoch,frame_id,class,box_mask_json,position_json,'
                     'uncertainty_json,detector_confidence,object_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (str(uuid4()), *session, frame_id, located.detection.class_name,
+                    (observation_id, *session, frame_id, located.detection.class_name,
                      json.dumps(dict(box=list(located.detection.box))), json.dumps(located.position),
                      json.dumps(dict(depth_m=located.depth_m, depth_samples=located.depth_samples)),
                      score, object_id))
-        return True
+                sightings.append(Sighting(observation_id, object_id, located.detection.class_name,
+                                          tuple(located.position), created))
+        return sightings
+
+    def set_state(self, session, state, object_ids=None) -> bool:
+        """Set `state` on some (default: all) objects of a session; return whether any changed.
+
+        Runs in the caller's transaction.
+        """
+        query = 'UPDATE objects SET state=? WHERE session_id=? AND map_epoch=? AND state!=?'
+        if object_ids is None:
+            return self.db.execute(query, (state, *session, state)).rowcount > 0
+        return sum(self.db.execute(query + ' AND id=?', (state, *session, state, object_id)).rowcount
+                   for object_id in object_ids) > 0
+
+    def merge(self, keep, drop, position, state):
+        """Fold object `drop` into `keep`: one identity at `position` with both histories.
+
+        Raw observations stay untouched except for their object link. Runs in the
+        caller's transaction.
+        """
+        rows = {object_id: self.db.execute(
+                    'SELECT identity_confidence, observations, first_seen, last_seen FROM objects WHERE id=?',
+                    (object_id,)).fetchone() for object_id in (keep, drop)}
+        (kc, kn, kf, kl), (dc, dn, df, dl) = rows[keep], rows[drop]
+        self.db.execute('UPDATE observations SET object_id=? WHERE object_id=?', (keep, drop))
+        self.db.execute('DELETE FROM objects WHERE id=?', (drop,))
+        self.db.execute(
+            'UPDATE objects SET position_json=?, identity_confidence=?, first_seen=?, last_seen=?, '
+            'observations=?, state=? WHERE id=?',
+            (json.dumps(list(position)), (kc * kn + dc * dn) / (kn + dn), min(kf, df), max(kl, dl),
+             kn + dn, state, keep))
 
     def snapshot(self, session) -> list[dict]:
         """The v1 `objects` list for one session/epoch, newest sighting first."""

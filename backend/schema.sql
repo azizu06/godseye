@@ -36,3 +36,13 @@ CREATE TABLE IF NOT EXISTS health_events (
     component TEXT NOT NULL, reason TEXT NOT NULL, mode TEXT NOT NULL, armed INTEGER NOT NULL,
     FOREIGN KEY (session_id, map_epoch) REFERENCES sessions
 );
+CREATE TABLE IF NOT EXISTS rescans (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, map_epoch INTEGER NOT NULL,
+    started_at_ms INTEGER NOT NULL, after_t_capture REAL NOT NULL, baseline_json TEXT NOT NULL,
+    FOREIGN KEY (session_id, map_epoch) REFERENCES sessions
+);
+CREATE TABLE IF NOT EXISTS rescan_events (
+    rescan_id TEXT NOT NULL REFERENCES rescans(id), event_id TEXT NOT NULL UNIQUE REFERENCES events(id),
+    kind TEXT NOT NULL, object_id TEXT NOT NULL,
+    PRIMARY KEY (rescan_id, kind, object_id)
+);

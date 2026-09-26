@@ -20,7 +20,8 @@ objects, events, health_events. Session/epoch composite keys isolate phone data.
 Frame metadata, safety events, detected objects and their raw observations are
 saved; JPEG/depth/confidence bytes are validated for the wire, turned into live
 points and objects (below), and never stored. No raw recordings or model weights are produced.
-The events table is still an integration seam.
+Rescan baselines (`rescans`) and change events (`events`, linked through
+`rescan_events`) are saved too; see Rescan and change events.
 Runtime databases are gitignored; never commit databases or credentials.
 
 ## Transport
@@ -34,9 +35,9 @@ column-major floats. Bundle transform belongs to the same captured frame.
 
 `/live` sends versioned JSON: health every 500 ms, pose at most 15 Hz,
 an objects snapshot and an empty path at connection and map reset. Bounded queues
-drop the oldest pending update for slow viewers. Occupancy and object change
-events will be supplied by later work; no fake scene is emitted. `points` and
-`objects` are described under Live map points and Live objects. Position is transform entries 12–14 in ARKit Y-up meters. Yaw
+drop the oldest pending update for slow viewers. Occupancy will be supplied by
+later work; no fake scene is emitted. `points`, `objects` and `event` are
+described under Live map points, Live objects, and Rescan and change events. Position is transform entries 12–14 in ARKit Y-up meters. Yaw
 uses camera forward (-Z), measured from world +Z toward +X; mount calibration
 and rover base heading remain future work.
 
@@ -112,7 +113,9 @@ most 2 s earlier; otherwise they are counted and dropped.
   become running means over its observations, `observations` counts them, and
   `first_seen`/`last_seen` are phone wall-clock seconds. Otherwise a new object
   starts. Each object takes at most one detection per frame, so two same-class
-  items seen together never merge. `state` is always `present` in this slice.
+  items seen together never merge. A sighting marks its object `present`
+  (`moved` is kept); rescans also use `last_seen`, `moved` and
+  `not_found_on_rescan` (see Rescan and change events).
 - `confidence` is the mean detector score, not a calibrated identity probability.
   `position` is the depth surface point under the box center (`DETECTION.md`).
 - Objects never cross sessions or epochs. A phone that reconnects with the same
@@ -157,6 +160,81 @@ phone scene nor the dashboard has been exercised against these objects yet.
 Fake-detector behavior tests (no GPU or weights):
 `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_objects -v`.
 
+## Rescan and change events
+
+`POST /rescan` (`backend/changes.py`) needs an active map with at least one
+stored frame; an empty baseline reports every confirmed object as `new`. For
+each object (up to 256, most recently seen) it freezes the newest raw
+observations (up to 20) as a baseline cluster: the median of the ones agreeing
+within 0.3 m with the newest three, with their RMS spread. Only frames captured
+after the newest stored frame at the press are revisit evidence (late inference
+for earlier frames never counts); they form separate revisit clusters the same
+way. Neither side is the running mean in `objects`. Every object becomes
+`last_seen` until a post-press sighting makes it `present` again. A new press
+starts a new baseline; the latest one resumes after a restart or phone reconnect
+of the same session/epoch. Press it before moving a prop (or keep the new spot
+out of view until then): anything seen earlier is baseline.
+
+```json
+{ "version": 1, "session_id": "uuid", "map_epoch": 1, "rescan_id": "uuid", "baseline_objects": 3 }
+```
+
+Each detection frame also depth-probes the remembered spots not yet seen again
+(`localization.view_status`): `clear` when high-confidence depth passes more than
+0.15 m beyond the spot (a remembered surface point cannot be seen through),
+`surface` when it ends there, else `occluded` or `out_of_view`. A spot is empty
+after 3 `clear` frames and no `surface` frame.
+
+A revisit cluster is confirmed by 3 agreeing observations (one per frame).
+Alignment is `ok` when at least 2 confirmed static objects are reobserved within
+0.15 m of their baseline (no looser than the probe margin), and `drifted` when
+their median shift exceeds that or two candidate moves share a displacement;
+drift suspends every movement claim.
+
+- **`new`**: a confirmed cluster of a class with no unseen remembered object.
+- **`possible_move`**: a confirmed new-identity cluster at least
+  `max(0.6 m, 3 × (both spreads))` from the nearest unseen same-class memory,
+  while identity is unproven. The two stay separate objects.
+- **`moved`**: as above, with verified alignment, exactly one unseen memory and
+  exactly one new identity of that class sighted since the press (even a single
+  unconfirmed glimpse of another competes), a confirmed baseline, and its old
+  spot empty.
+  The new identity is folded into the remembered one (its observations are
+  relinked, measurements untouched), which moves there with state `moved`.
+- **`not_found_on_rescan`** (state only): an unseen memory whose spot is empty
+  with verified alignment; a later `surface` reverts it to `last_seen`. No
+  `not_found` events are emitted, and nothing is ever called removed.
+
+Out-of-view objects simply stay `last_seen`. Nearer same-class sightings (within
+0.5 m) keep the remembered ID, and ones under the displacement threshold report
+nothing. Each (kind, object) is recorded once per rescan, so `possible_move` can
+be followed by `moved`.
+`/live` sends each event once, after the objects snapshot it changed:
+
+```json
+{ "version": 1, "type": "event", "session_id": "uuid", "map_epoch": 1,
+  "id": "uuid", "rescan_id": "uuid", "kind": "moved", "object_id": "uuid",
+  "new_object_id": "uuid", "old_position": [x, y, z], "new_position": [x, y, z],
+  "displacement_m": 1.5, "t": 1790380851.6 }
+```
+
+`object_id` is the remembered object for move kinds and the new one for `new`,
+whose `old_position` and `displacement_m` are null. `id`, `rescan_id`,
+`new_object_id` (the new sighting's object; after a `moved` merge, the surviving
+ID), `session_id` and `map_epoch` are additive to the frozen v1 shape. `t` is the
+confirming frame's phone wall-clock seconds. `GET /events` returns
+`{ version, session_id, map_epoch, events }` for the shown map (up to 256, oldest
+first) without the per-message `version`, `type`, `session_id` and `map_epoch`.
+
+`events.confidence` stays empty: there is no calibrated identity confidence yet.
+Evidence counters for empty spots live in memory and restart from zero after a
+backend restart (clusters and events come back from SQLite). Identity rests on
+class uniqueness plus the empty old spot, which suits one distinctive prop but
+is not general re-identification. Thresholds are initial values (0.6 m and three
+observations come from the spec), tested only on synthetic scenes
+(`backend/tests/test_changes.py`); real-scene accuracy, depth noise and ARKit
+drift are unmeasured.
+
 ## REST
 
 All successful responses carry `version: 1`. Errors use FastAPI's standard
@@ -170,10 +248,10 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
 | POST `/goal` | Validate x/z; 501 navigation unimplemented |
-| POST `/rescan` | 501 baseline/revisit unimplemented |
+| POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
-| GET `/events` | Versioned empty list (change events pending) |
+| GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
 | GET `/health` | Phone freshness, car down, detector status, mode, armed, stop_reason |
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
