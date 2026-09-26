@@ -6,8 +6,8 @@ import unittest
 
 import numpy as np
 
-from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PurePursuit, nearest_frontier,
-                                path_blocked, path_message, plan_path, traversable_mask)
+from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PurePursuit, is_frontier,
+                                nearest_frontier, path_blocked, path_message, plan_path, traversable_mask)
 
 UNKNOWN, FREE, OCCUPIED = 0, 1, 2
 
@@ -410,6 +410,22 @@ class FrontierTests(unittest.TestCase):
         self.assertIn(UNKNOWN, neighbors)
         self.assertLess(col, 30)  # never across the wall
         self.assertGreaterEqual(point_distance(goal, (.5, .75)), PlannerConfig().frontier_min_distance_m)
+
+    def test_free_cells_on_the_cropped_grid_edge_are_frontiers(self):
+        g = grid(20, 20)  # all free: the edge borders unmapped space
+        goal = nearest_frontier(g, (.5, .5), PlannerConfig(robot_radius_m=.05, margin_m=0.))
+        self.assertIsNotNone(goal)
+        self.assertTrue(is_frontier(g, goal))
+        self.assertFalse(is_frontier(g, (.5, .5)))
+        self.assertFalse(is_frontier(g, (5., 5.)))  # outside the grid
+
+    def test_replaced_follower_keeps_scan_progress(self):
+        follower = PurePursuit([[0., 0.], [0., 2.]], FollowerConfig(scan_turn=True))
+        follower.step(0., 0., 0.)
+        follower.step(0., 0., 3.)
+        follower.step(0., 0., 6.)  # about 6 rad turned so far
+        replacement = follower.replaced([[0., 0.], [0., 3.]])
+        self.assertEqual(replacement.step(0., 0., .3).status, 'follow')
 
     def test_no_frontier_when_fully_explored(self):
         g = with_cells(grid(20, 20), lambda c: (c.__setitem__((0, slice(None)), OCCUPIED),

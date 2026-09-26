@@ -404,10 +404,23 @@ def path_blocked(grid: Grid, points, config: PlannerConfig = PlannerConfig(), st
     return False
 
 
+def _frontier_cells(grid: Grid) -> np.ndarray:
+    unknown = np.pad(grid.cells == UNKNOWN, 1, constant_values=True)
+    touches_unknown = unknown[:-2, 1:-1] | unknown[2:, 1:-1] | unknown[1:-1, :-2] | unknown[1:-1, 2:]
+    return (grid.cells == FREE) & touches_unknown
+
+
+def is_frontier(grid: Grid, xz) -> bool:
+    """Whether world (x, z) is still a free cell bordering unknown (or unmapped) space."""
+    cell = grid.world_to_cell(float(xz[0]), float(xz[1]))
+    return cell is not None and bool(_frontier_cells(grid)[cell])
+
+
 def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig()):
     """World (x, z) of the nearest reachable frontier, or None.
 
-    A frontier is a free, traversable cell with an unknown 4-neighbor. Reachability is
+    A frontier is a free, traversable cell with an unknown 4-neighbor; space outside the
+    grid counts as unknown, since the published grid is cropped to the mapped area. Reachability is
     an 8-connected breadth-first search over known-free traversable cells (unknown is
     always blocked here, whatever the config says), bounded by
     ``config.max_expansions``; frontiers closer than ``config.frontier_min_distance_m``
@@ -421,9 +434,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
     if start is None:
         return None
-    unknown = np.pad(grid.cells == UNKNOWN, 1, constant_values=False)
-    touches_unknown = unknown[:-2, 1:-1] | unknown[2:, 1:-1] | unknown[1:-1, :-2] | unknown[1:-1, 2:]
-    frontier = (mask & (grid.cells == FREE) & touches_unknown).ravel().tolist()
+    frontier = (mask & _frontier_cells(grid)).ravel().tolist()
     h, w = mask.shape
     free = mask.ravel().tolist()
     seen = bytearray(h * w)
@@ -505,6 +516,10 @@ class PurePursuit:
 
     def __post_init__(self):
         self.path = [(float(x), float(z)) for x, z in self.path]
+
+    def replaced(self, path) -> PurePursuit:
+        """A follower for a replanned path that keeps any scan-turn progress."""
+        return PurePursuit(path, self.config, _scanned_rad=self._scanned_rad, _last_yaw=self._last_yaw)
 
     def _limits(self) -> tuple[float, float]:
         cfg = self.config
