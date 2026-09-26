@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.drive import FakeCar
+from backend.motion import DriveStop
+from backend.tests.test_command_envelope import faults
 from backend.tests.test_map_transport import frame, hello, wait_for
 from backend.tests.test_objects import FakeDetector
 
@@ -75,10 +77,11 @@ class DriveSafetyTests(unittest.TestCase):
             time.sleep(.1)
 
     def armed_and_moving(self, client, car):
-        """Arm, hold, and return the call count once motion is being sent."""
+        """Arm, hold, and return the call count once this hold's motion is being sent."""
+        before = len(car.calls)
         self.assertEqual(client.post('/arm').status_code, 200)
         client.post('/manual', json=HOLD)
-        wait_for(lambda: sends(car.calls))
+        wait_for(lambda: sends(car.calls[before:]))
         return len(car.calls)
 
     def test_default_logging_car_reports_down_so_arm_is_refused(self):
@@ -174,6 +177,27 @@ class DriveSafetyTests(unittest.TestCase):
             car.error = None
             wait_for(lambda: car.calls[-1:] == [('zero',)])  # retried until the car accepted it
             self.assertEqual(client.post('/arm').status_code, 200)
+
+    def test_each_arm_opens_a_command_session_that_a_stop_ends(self):
+        with self.rig() as (client, car):
+            self.armed_and_moving(client, car)
+            client.post('/stop')
+            self.armed_and_moving(client, car)
+            car.error = OSError('link dropped')
+            with self.assertLogs('backend.motion', 'ERROR'):
+                client.post('/manual', json=HOLD)
+                wait_for(lambda: not self.health(client)['armed'])
+            self.assertEqual(client.post('/arm').status_code, 409)  # the Stop is still unconfirmed
+            mark = len(car.envelopes)
+            car.error = None
+            wait_for(lambda: any(isinstance(envelope, DriveStop) for envelope in car.envelopes[mark:]))
+            self.armed_and_moving(client, car)
+            client.post('/stop')
+            envelopes = list(car.envelopes)
+        self.assertEqual(faults(envelopes), [])
+        sessions = {envelope.session_id for envelope in envelopes if not isinstance(envelope, DriveStop)}
+        self.assertEqual(len(sessions), 3)
+        self.assertIsInstance(envelopes[-1], DriveStop)  # shutdown's Stop ends the last session too
 
     def test_pose_loss_while_held_stops_all_motion(self):
         with self.rig() as (client, car):
