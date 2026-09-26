@@ -13,12 +13,16 @@ import time
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.changes import ChangeTracker
 from backend.drive import drive
+from backend.capture import CaptureBuffer
+from backend.capture_routes import register_capture_routes
+from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
@@ -152,7 +156,7 @@ class LatestFrame:
 
 
 def create_app(db_path: str | None = None, build_points=build_point_chunk,
-               detector=None, weights: str | None = None) -> FastAPI:
+               detector=None, weights: str | None = None, capture_directory: str | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
@@ -184,6 +188,10 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
         app.state.listeners = set()
+        app.state.capture = CaptureBuffer()
+        app.state.rich_capture = RichCapture(capture_directory if capture_directory is not None else
+            (None if db_path == ':memory:' else os.environ.get('GODSEYE_CAPTURE_DIR', 'backend/captures')))
+        app.state.capture_ingest_lock = asyncio.Lock()
         app.state.chunk_id = 0
         app.state.map_stats = Counter()
         task = asyncio.create_task(watchdog())
@@ -197,6 +205,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             db.close()
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
+    register_capture_routes(app)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
@@ -325,6 +334,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
         stop('session_reset')
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.capture.clear()
+        app.state.rich_capture.reset()
         app.state.chunk_id = 0
         for listener in app.state.listeners:
             listener.points.clear()
@@ -338,6 +349,40 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
     @app.get('/health')
     async def get_health():
         return health()
+
+    @app.get('/capture', response_class=HTMLResponse)
+    async def capture_page():
+        return HTMLResponse(Path(__file__).with_name('static').joinpath('capture.html').read_text(),
+                            headers={'Cache-Control': 'no-store'})
+
+    @app.get('/capture/status')
+    async def capture_status(response: Response):
+        response.headers['Cache-Control'] = 'no-store'
+        pose = app.state.pose
+        return dict(version=1, **app.state.capture.status(), health=health(),
+                    rich=app.state.rich_capture.status(),
+                    tracking=None if pose is None else pose.tracking,
+                    position=None if pose is None else pose.transform[12:15])
+
+    @app.get('/capture/frame.jpg')
+    async def capture_jpeg(request: Request):
+        frame = app.state.capture.latest
+        headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
+        if frame is None:
+            return Response(status_code=204, headers=headers)
+        headers.update({'ETag': f'"{frame.token}"', 'X-Frame-Id': str(frame.metadata['frame_id'])})
+        if request.headers.get('if-none-match') == headers['ETag']:
+            return Response(status_code=304, headers=headers)
+        return Response(frame.jpeg, media_type='image/jpeg', headers=headers)
+
+    @app.get('/capture/frame.bin')
+    async def capture_bundle():
+        frame = app.state.capture.latest
+        if frame is None:
+            raise HTTPException(404, 'No camera frame has arrived in this session')
+        return Response(frame.payload, media_type='application/octet-stream', headers={
+            'Cache-Control': 'no-store',
+            'Content-Disposition': f'attachment; filename="godseye-frame-{frame.metadata["frame_id"]}.bin"'})
 
     @app.post('/session')
     async def new_session():
@@ -459,6 +504,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                      json.dumps(pose.transform), pose.tracking,
                      json.dumps(pose.image.intrinsics) if isinstance(pose, Frame) else None))
                 app.state.db.commit()
+                if isinstance(pose, Frame):
+                    app.state.capture.update(message['bytes'], pose.model_dump())
                 if isinstance(pose, Frame) and pose.tracking == 'normal':
                     if mailbox.put(message['bytes']):
                         app.state.map_stats['replaced'] += 1
@@ -479,6 +526,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             if app.state.phone is owner:
                 app.state.phone = None
                 app.state.pose = app.state.pose_at = app.state.detected_at = None
+                app.state.capture.clear()
+                app.state.rich_capture.reset()
                 stop('phone_disconnected')
                 publish(health())
 

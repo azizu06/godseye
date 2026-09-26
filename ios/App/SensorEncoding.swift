@@ -93,10 +93,9 @@ final class SensorEncoder {
             data["light"] = ["ambient_intensity_lumens": light.ambientIntensity,
                              "ambient_color_temperature_kelvin": light.ambientColorTemperature]
         }
-        if let points = frame.rawFeaturePoints {
-            data["feature_points"] = ["positions": points.points.map(vector),
-                                      "ids": points.identifiers.map { String($0) }]
-        }
+        data["coordinates"] = "ARKit world meters; +Y up; camera forward -Z; column-major matrices"
+        data["depth_units"] = "optical-axis meters; align depth to native_image using scaled intrinsics"
+        data["capture_clock"] = "device uptime seconds; other sensors keep their own timestamps"
         // EXIF can contain Foundation values that JSON does not support; preserve those
         // as descriptions without risking failure of the rest of the frame metadata.
         data["exif"] = frame.exifData.mapValues { value -> Any in

@@ -6,6 +6,7 @@
 *.pt
 *.db
 *.db-*
+backend/captures/
 __pycache__/
 *.py[cod]
 

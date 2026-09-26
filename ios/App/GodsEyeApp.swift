@@ -33,7 +33,7 @@ struct CaptureView: View {
     @State private var stream = true
     @State private var record = true
     @State private var mesh = true
-    @State private var lossless = false
+    @State private var lossless = true
     @State private var rate = 10.0
     @State private var archiveRate = 2.0
 
@@ -54,6 +54,7 @@ struct CaptureView: View {
                         Text(capture.status).font(.headline)
                         Text(capture.capabilities)
                         Text(capture.network)
+                        Text(capture.fullCaptureStatus)
                         Text(capture.archiveStatus)
                         Text("Temperature: \(capture.thermalStatus)")
                         if !capture.sensorStats.isEmpty { Text(capture.sensorStats).font(.caption.monospaced()) }
@@ -63,6 +64,8 @@ struct CaptureView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle("Stream to laptop", isOn: $stream)
                             if stream {
+                                Text("Includes native RGB, lossless sensor data, scene geometry, and motion/location telemetry. The laptop records received full-capture packets.")
+                                    .font(.caption).foregroundStyle(.secondary)
                                 TextField("ws://<laptop IP>:8765/phone", text: $endpoint)
                                     .textContentType(.URL).keyboardType(.URL)
                                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -74,13 +77,13 @@ struct CaptureView: View {
                             }
                             Toggle("Record full sensor data", isOn: $record)
                             Toggle("Reconstruct classified mesh", isOn: $mesh)
+                            Toggle("Keep lossless camera planes", isOn: $lossless)
                             if record {
                                 Picker("Recorded frames per second", selection: $archiveRate) {
                                     Text("2 / sec").tag(2.0)
                                     Text("5 / sec").tag(5.0)
                                     Text("10 / sec").tag(10.0)
                                 }.pickerStyle(.segmented)
-                                Toggle("Keep lossless camera planes", isOn: $lossless)
                                 Text("Records native RGB, raw and smoothed depth, confidence, scene geometry, and metadata. Lossless color uses substantially more storage.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }

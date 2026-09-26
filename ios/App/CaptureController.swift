@@ -10,7 +10,7 @@ struct CaptureOptions {
     var stream = true
     var record = true
     var mesh = true
-    var losslessColor = false
+    var losslessColor = true
     var frameHz = 10.0
     var archiveHz = 2.0
 }
@@ -30,7 +30,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private let captureQueue = DispatchQueue(label: "com.godseye.capture", qos: .userInitiated)
     private let encodingQueue = DispatchQueue(label: "com.godseye.encoding", qos: .utility)
     private let encoder = SensorEncoder()
-    private let motion = CMMotionManager()
+    @Published private(set) var fullCaptureStatus = "Full sensor capture ready"
+    private var sensors: PhoneSensors!
+    private lazy var rich = RichUploader(queue: captureQueue)
+    private var telemetryTimer: DispatchSourceTimer?
+    private var telemetryRecordingBusy = false
+    private var telemetryRecordingDropped = 0
+    private var lastRichFrame = -Double.infinity
+    private var lastGeometry = -Double.infinity
     private lazy var stream = PhoneStream(queue: captureQueue)
     private var identity: CaptureIdentity?
     private var epoch = 0
@@ -40,6 +47,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private var encoding = false
     private var stillPending = false
     private var stillSupported = false
+    private var captureConfiguration: [String: Any] = [:]
     private var lastPose = -Double.infinity
     private var lastBundle = -Double.infinity
     private var lastArchive = -Double.infinity
@@ -49,6 +57,10 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
 
     override init() {
         super.init()
+        sensors = PhoneSensors(queue: captureQueue)
+        rich.onStatus = { [weak self] text in
+            DispatchQueue.main.async { self?.fullCaptureStatus = text }
+        }
         session.delegate = self
         session.delegateQueue = captureQueue
         capabilities = "LiDAR: \(ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) ? "available" : "unavailable") · Classified mesh: \(ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) ? "available" : "unavailable")"
@@ -97,6 +109,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         let current = CaptureIdentity(epoch: epoch)
         identity = current; frameID = 0; droppedCaptures = 0
         lastPose = -.infinity; lastBundle = -.infinity; lastArchive = -.infinity; lastUI = -.infinity
+        lastRichFrame = -.infinity; lastGeometry = -.infinity; telemetryRecordingDropped = 0
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
         config.isAutoFocusEnabled = true
@@ -106,6 +119,10 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         if hasDepth { config.frameSemantics.insert(.sceneDepth) }
         if ARWorldTrackingConfiguration.supportsFrameSemantics([.sceneDepth, .smoothedSceneDepth]) {
             config.frameSemantics.formUnion([.sceneDepth, .smoothedSceneDepth])
+        }
+        for semantic: ARConfiguration.FrameSemantics in [.personSegmentationWithDepth, .bodyDetection] {
+            let combined = config.frameSemantics.union(semantic)
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(combined) { config.frameSemantics = combined }
         }
         if requested.mesh {
             if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
@@ -132,6 +149,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         // Keep the sensor color planes 8-bit and compatible with JPEG/raw YCbCr export.
         config.videoHDRAllowed = false
         let device = UIDevice.current.model
+        captureConfiguration = ["device": device, "os": UIDevice.current.systemVersion,
+            "scene_depth": hasDepth, "frame_semantics": config.frameSemantics.rawValue,
+            "scene_reconstruction": config.sceneReconstruction.rawValue,
+            "native_video_width": config.videoFormat.imageResolution.width,
+            "native_video_height": config.videoFormat.imageResolution.height,
+            "native_video_fps": config.videoFormat.framesPerSecond,
+            "full_frame_target_hz": 5, "telemetry_target_hz": 5, "geometry_target_hz": 1,
+            "lossless_color": requested.losslessColor, "high_resolution_stills": stillSupported,
+            "clock_sync": "ARKit and Core Motion: uptime seconds; location: unix seconds; envelope t_wall_ms: encoding time"]
         if requested.record {
             do {
                 archive = try CaptureArchive(identity: current, configuration: [
@@ -144,6 +170,8 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                     "native_video_fps": config.videoFormat.framesPerSecond,
                     "stream_frame_hz": requested.frameHz, "archive_target_hz": requested.archiveHz,
                     "lossless_color": requested.losslessColor,
+                    "sensors": sensors.capabilities,
+                    "frame_semantics": config.frameSemantics.rawValue,
                     "high_resolution_stills": stillSupported])
             } catch { publish { $0.archiveStatus = error.localizedDescription } }
         }
@@ -153,16 +181,17 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
            let hello = try? WireProtocol.json(WireProtocol.hello(current, device: device,
                 sceneDepth: hasDepth, mesh: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh))) {
             stream.connect(url: url, hello: hello)
+            rich.start(phoneURL: url)
         }
-        if motion.isDeviceMotionAvailable {
-            motion.deviceMotionUpdateInterval = 1.0 / 100
-            // We retain the latest fused motion sample with its own timestamp per archive frame.
-            motion.startDeviceMotionUpdates(using: .xArbitraryZVertical)
-        }
+        sensors.start()
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now() + 0.2, repeating: 0.2)
+        timer.setEventHandler { [weak self] in self?.sendTelemetry() }
+        telemetryTimer = timer; timer.resume()
         session.delegate = self
         session.delegateQueue = captureQueue
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        let availableStill = stillSupported && archive != nil
+        let availableStill = stillSupported && (archive != nil || requested.stream)
         publish {
             $0.canTakeStill = availableStill
             $0.status = hasDepth ? "Capturing camera + LiDAR" : "Capturing RGB + pose; this device has no scene depth"
@@ -171,12 +200,13 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func end(reason: String) {
         identity = nil
-        session.pause(); motion.stopDeviceMotionUpdates(); stream.disconnect()
+        telemetryTimer?.cancel(); telemetryTimer = nil
+        session.pause(); sensors.stop(); stream.disconnect(); rich.stop()
         if let previous = archive {
             encodingQueue.async { previous.finish(reason: reason) }
         }
         archive = nil
-        publish { $0.network = "Offline" }
+        publish { $0.network = "Offline"; $0.fullCaptureStatus = "Full sensor upload stopped" }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -197,24 +227,31 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                 stream.offer(SensorMessage(capture: frame.timestamp, data: data, isFrame: false))
             }
             lastPose = frame.timestamp
+            sensors.recordPose(pose, timestamp: frame.timestamp)
         }
         let frameHz = thermal == .serious ? 5 : options.frameHz
         let normal = tracking(frame.camera.trackingState) == "normal"
         let wantBundle = options.stream && normal && frame.sceneDepth != nil && frame.timestamp - lastBundle >= 1 / frameHz - 0.001
         let archiveInterval = thermal == .serious ? 1 : 1 / options.archiveHz
         let wantArchive = archive != nil && frame.timestamp - lastArchive >= archiveInterval - 0.001
-        if wantBundle || wantArchive {
+        let wantRich = options.stream && frame.timestamp - lastRichFrame >= (thermal == .serious ? 0.5 : 0.2)
+        if wantBundle || wantArchive || wantRich {
             if encoding { droppedCaptures += 1 }
             else {
                 encoding = true
                 if wantBundle { lastBundle = frame.timestamp }
                 if wantArchive { lastArchive = frame.timestamp }
+                if wantRich { lastRichFrame = frame.timestamp }
+                let wantGeometry = (wantArchive || wantRich) && frame.timestamp - lastGeometry >= 1
+                if wantGeometry { lastGeometry = frame.timestamp }
                 let recording = wantArchive ? archive : nil
+                let geometryRecording = wantGeometry ? archive : nil
                 let lossless = options.losslessColor
-                let motionData = motionMetadata()
+                let motionData = sensors.latestMotion
                 encodingQueue.async { [self] in
                     encode(frame, id: id, identity: identity, pose: pose, send: wantBundle,
-                           recording: recording, lossless: lossless, motion: motionData)
+                           recording: recording, lossless: lossless, motion: motionData,
+                           sendFull: wantRich, geometry: wantGeometry, geometryRecording: geometryRecording)
                 }
             }
         }
@@ -234,7 +271,8 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func encode(_ frame: ARFrame, id: Int, identity: CaptureIdentity,
                         pose: [String: Any], send: Bool, recording: CaptureArchive?,
-                        lossless: Bool, motion: [String: Any]?) {
+                        lossless: Bool, motion: [String: Any]?, sendFull: Bool, geometry: Bool,
+                        geometryRecording: CaptureArchive?) {
         defer { captureQueue.async { self.encoding = false } }
         do {
             let raw = try frame.sceneDepth.map(PackedDepth.init)
@@ -261,18 +299,26 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                     }
                 }
             }
-            if let recording {
+            if recording != nil || sendFull {
                 do {
-                    var metadata = encoder.metadata(frame, pose: pose)
-                    metadata["motion"] = motion
-                    try recording.frame(frame, id: id, metadata: metadata, encoder: encoder, raw: raw,
-                        smoothed: try frame.smoothedSceneDepth.map(PackedDepth.init), losslessColor: lossless)
+                    var encoded = try FullFrameEncoder.frame(frame, pose: pose, encoder: encoder,
+                                                            raw: raw, losslessColor: lossless)
+                    encoded.metadata["motion"] = motion
+                    let packet = try RichCapturePacket.encode(identity: identity, kind: "frame", frameID: id,
+                        capture: frame.timestamp, metadata: encoded.metadata, sections: encoded.sections)
+                    if sendFull { upload(packet, kind: "frame", identity: identity) }
+                    save(packet, kind: "frame", frameID: id, recording: recording, identity: identity)
+                    if geometry {
+                        let mesh = try FullFrameEncoder.geometry(frame.anchors)
+                        let packet = try RichCapturePacket.encode(identity: identity, kind: "geometry", frameID: id,
+                            capture: frame.timestamp, metadata: mesh.metadata, sections: mesh.sections)
+                        upload(packet, kind: "geometry", identity: identity)
+                        save(packet, kind: "geometry", frameID: id, recording: geometryRecording, identity: identity)
+                    }
                 } catch {
-                    recording.finish(reason: error.localizedDescription)
                     captureQueue.async {
                         guard self.identity == identity else { return }
-                        self.archive = nil
-                        self.publish { $0.archiveStatus = error.localizedDescription; $0.canTakeStill = false }
+                        self.publish { $0.fullCaptureStatus = error.localizedDescription }
                     }
                 }
             }
@@ -284,20 +330,58 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    private func motionMetadata() -> [String: Any]? {
-        guard let data = motion.deviceMotion else { return nil }
-        let q = data.attitude.quaternion
-        return ["t_motion": data.timestamp, "attitude_quaternion_xyzw": [q.x, q.y, q.z, q.w],
-                "gravity_g": [data.gravity.x, data.gravity.y, data.gravity.z],
-                "user_acceleration_g": [data.userAcceleration.x, data.userAcceleration.y, data.userAcceleration.z],
-                "rotation_rate_rad_s": [data.rotationRate.x, data.rotationRate.y, data.rotationRate.z],
-                "reference_frame": "xArbitraryZVertical; not calibrated into ARKit world"]
+    private func upload(_ packet: Data, kind: String, identity: CaptureIdentity) {
+        captureQueue.async {
+            guard self.identity == identity else { return }
+            self.rich.offer(packet, kind: kind)
+        }
+    }
+
+    /// Encoding queue only. A full disk stops recording, while capture/upload continues.
+    private func save(_ packet: Data, kind: String, frameID: Int,
+                      recording: CaptureArchive?, identity: CaptureIdentity) {
+        guard let recording else { return }
+        do { try recording.packet(packet, kind: kind, frameID: frameID) }
+        catch {
+            recording.finish(reason: error.localizedDescription)
+            captureQueue.async {
+                guard self.identity == identity, self.archive === recording else { return }
+                self.archive = nil
+                self.publish { $0.archiveStatus = error.localizedDescription }
+            }
+        }
+    }
+
+    private func sendTelemetry() {
+        guard let identity else { return }
+        var metadata = sensors.drain()
+        metadata["upload_dropped_packets"] = rich.dropped
+        metadata["capture_skipped_frames"] = droppedCaptures
+        metadata["archive_dropped_telemetry"] = telemetryRecordingDropped
+        metadata["frame_semantics"] = session.configuration?.frameSemantics.rawValue
+        metadata["configuration"] = captureConfiguration
+        do {
+            let packet = try RichCapturePacket.encode(identity: identity, kind: "telemetry", frameID: frameID,
+                capture: ProcessInfo.processInfo.systemUptime, metadata: metadata)
+            rich.offer(packet, kind: "telemetry")
+            if let recording = archive {
+                if telemetryRecordingBusy { telemetryRecordingDropped += 1 }
+                else {
+                    telemetryRecordingBusy = true
+                    let id = frameID
+                    encodingQueue.async {
+                        self.save(packet, kind: "telemetry", frameID: id, recording: recording, identity: identity)
+                        self.captureQueue.async { self.telemetryRecordingBusy = false }
+                    }
+                }
+            }
+        } catch { publish { $0.fullCaptureStatus = error.localizedDescription } }
     }
 
     func takeStill() {
         captureQueue.async {
-            guard let identity = self.identity, let recording = self.archive,
-                  self.stillSupported else { return }
+            guard let identity = self.identity, self.stillSupported else { return }
+            let recording = self.archive
             guard !self.stillPending, !self.encoding else {
                 self.publish { $0.status = "Capture is busy. Try the high-resolution photo again in a moment." }
                 return
@@ -321,10 +405,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                         transform: floats(frame.camera.transform), tracking: tracking(frame.camera.trackingState))
                     self.encodingQueue.async {
                         do {
-                            // Stills carry their own calibration; no live depth is substituted.
-                            try recording.still(frame, encoder: self.encoder,
-                                metadata: self.encoder.metadata(frame, pose: pose))
-                            self.publish { $0.status = "High-resolution photo saved" }
+                            let value = try FullFrameEncoder.frame(frame, pose: pose, encoder: self.encoder,
+                                raw: try frame.sceneDepth.map(PackedDepth.init), losslessColor: true)
+                            let packet = try RichCapturePacket.encode(identity: identity, kind: "still",
+                                frameID: pose["frame_id"] as! Int, capture: frame.timestamp,
+                                metadata: value.metadata, sections: value.sections)
+                            self.upload(packet, kind: "still", identity: identity)
+                            self.save(packet, kind: "still", frameID: pose["frame_id"] as! Int, recording: recording, identity: identity)
+                            self.publish { $0.status = "High-resolution photo captured; upload queued when streaming" }
                         } catch { self.publish { $0.status = error.localizedDescription } }
                         self.captureQueue.async { self.encoding = false }
                     }

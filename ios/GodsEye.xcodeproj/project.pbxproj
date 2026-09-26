@@ -8,8 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		0329BECFC05E1AC07AFEF92D /* SensorCore in Frameworks */ = {isa = PBXBuildFile; productRef = E3B3D064D2D851A5C71951AE /* SensorCore */; };
+		03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD35F1C133775241800AEABA /* PhoneSensors.swift */; };
 		2DB90CC52A2DEA61BC337914 /* CaptureArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5372276C167819EC2BE48104 /* CaptureArchive.swift */; };
 		597311B703E52ED7139F8D55 /* PhoneStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EA470F2C29DD230C4E32C /* PhoneStream.swift */; };
+		AF786B52146FFB7B8C36ED56 /* FullFrameEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDF70B8F25925C386B950F2C /* FullFrameEncoder.swift */; };
+		B331BACA726E454127DA7AC8 /* RichUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BD6C843425D221F2038BB1F /* RichUploader.swift */; };
 		DE32B8241CD239C035F15BE4 /* GodsEyeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */; };
 		E9A41C4CC1F51112CD8AFA5D /* SensorEncoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */; };
 		EFE2D69A85C969C9945AC2EA /* CaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F240158F56D5C0A62B06D540 /* CaptureController.swift */; };
@@ -17,13 +20,16 @@
 
 /* Begin PBXFileReference section */
 		16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GodsEyeApp.swift; sourceTree = "<group>"; };
-		25329B30A6B57F4B351B2382 /* GodsEye.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GodsEye.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		25329B30A6B57F4B351B2382 /* GodsEye.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GodsEye.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorEncoding.swift; sourceTree = "<group>"; };
 		39D54286D33030A3CD00AC9D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		508C056C7F19760AC87352F1 /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ios; path = .; sourceTree = SOURCE_ROOT; };
 		5372276C167819EC2BE48104 /* CaptureArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureArchive.swift; sourceTree = "<group>"; };
+		8BD6C843425D221F2038BB1F /* RichUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichUploader.swift; sourceTree = "<group>"; };
 		D55EA470F2C29DD230C4E32C /* PhoneStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneStream.swift; sourceTree = "<group>"; };
+		EDF70B8F25925C386B950F2C /* FullFrameEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullFrameEncoder.swift; sourceTree = "<group>"; };
 		F240158F56D5C0A62B06D540 /* CaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureController.swift; sourceTree = "<group>"; };
+		FD35F1C133775241800AEABA /* PhoneSensors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSensors.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,9 +74,12 @@
 			children = (
 				5372276C167819EC2BE48104 /* CaptureArchive.swift */,
 				F240158F56D5C0A62B06D540 /* CaptureController.swift */,
+				EDF70B8F25925C386B950F2C /* FullFrameEncoder.swift */,
 				16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */,
 				39D54286D33030A3CD00AC9D /* Info.plist */,
+				FD35F1C133775241800AEABA /* PhoneSensors.swift */,
 				D55EA470F2C29DD230C4E32C /* PhoneStream.swift */,
+				8BD6C843425D221F2038BB1F /* RichUploader.swift */,
 				2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */,
 			);
 			path = App;
@@ -108,6 +117,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					BEFF1953EA527C6AB02040D4 = {
+						DevelopmentTeam = 4RV56K4RMH;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -141,8 +151,11 @@
 			files = (
 				2DB90CC52A2DEA61BC337914 /* CaptureArchive.swift in Sources */,
 				EFE2D69A85C969C9945AC2EA /* CaptureController.swift in Sources */,
+				AF786B52146FFB7B8C36ED56 /* FullFrameEncoder.swift in Sources */,
 				DE32B8241CD239C035F15BE4 /* GodsEyeApp.swift in Sources */,
+				03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */,
 				597311B703E52ED7139F8D55 /* PhoneStream.swift in Sources */,
+				B331BACA726E454127DA7AC8 /* RichUploader.swift in Sources */,
 				E9A41C4CC1F51112CD8AFA5D /* SensorEncoding.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -186,6 +199,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 4RV56K4RMH;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -220,7 +234,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = 4RV56K4RMH;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -237,7 +250,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = 4RV56K4RMH;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -285,6 +297,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 4RV56K4RMH;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;

@@ -19,7 +19,9 @@ are created at startup from `schema.sql`: sessions, frames, observations,
 objects, events, health_events. Session/epoch composite keys isolate phone data.
 Frame metadata, safety events, detected objects and their raw observations are
 saved; JPEG/depth/confidence bytes are validated for the wire, turned into live
-points and objects (below), and never stored. No raw recordings or model weights are produced.
+points and objects (below), and never stored in the session database. The latest accepted bundle
+is also held in memory for the `/capture` preview. Full v2 capture uploads are recorded separately
+as described below; no model weights are produced.
 Rescan baselines (`rescans`) and change events (`events`, linked through
 `rescan_events`) are saved too; see Rescan and change events.
 Runtime databases are gitignored; never commit databases or credentials.
@@ -46,6 +48,14 @@ within 250 ms of the Mac clock. Synchronize phone/Mac wall clocks for the demo.
 Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
+
+## Camera and full sensor capture
+
+Open `http://<mac>:8765/capture` while the iPhone streams to `/phone`. The page shows native camera, raw/smoothed depth, confidence, optional people masks/depth, telemetry, calibration, geometry counts, and recording state. Missing data stays unavailable. The older phone app still supplies standard RGB and raw depth/confidence previews. **Pause preview** freezes the browser image; **Save frame** saves the displayed JPEG/PNG.
+
+Full packets arrive through a separate `POST /capture/ingest`. By default their exact bytes are recorded in gitignored `backend/captures/<session-hash>/`, capped at 8 GiB per session with a 1 GiB free-space reserve. Set `GODSEYE_CAPTURE_DIR` to another directory, or an empty string to disable recording. Disk errors/limits are shown in the app and page; capture continues. Export/delete old sessions manually. No image recording is added for v1-only senders.
+
+See [docs/CAPTURE.md](../docs/CAPTURE.md) for the v2 envelope, full sensor inventory, timestamps, units, download/preview routes and limitations. Live buffers are bounded and cleared on disconnect/reset; disk recordings persist. Full capture does not refresh drive health or change the frozen v1 interface. These development routes use the same trusted private network as the rest of the backend.
 
 ## Live map points
 

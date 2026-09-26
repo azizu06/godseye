@@ -31,6 +31,8 @@
 	<string>Capture camera images and LiDAR depth to map the rover's surroundings.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Stream synchronized sensor data to your laptop on the demo network.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Record position, heading, and accuracy alongside rover sensor data while capture is running.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Record motion measurements alongside camera and depth data.</string>
 	<key>UIFileSharingEnabled</key>

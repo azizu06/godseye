@@ -64,6 +64,42 @@ final class SensorCoreTests: XCTestCase {
         XCTAssertThrowsError(try WireProtocol.json(["depth": Double.nan]))
     }
 
+    func testFullCapturePreservesBinaryAndMarksMissingLandmarks() throws {
+        let jpeg = try Data(contentsOf: Bundle.module.url(forResource: "rgb", withExtension: "jpg")!)
+        let depth = Data([0, 0, 128, 63, 0, 0, 192, 127]) // 1 m and a preserved NaN.
+        let packet = try RichCapturePacket.encode(identity: identity, kind: "frame", frameID: 18,
+            capture: 12.7, metadata: ["landmarks": [[Double.nan, 0.25]], "motion": ["timestamp": 12.69]],
+            sections: [CaptureSection("rgb", format: "jpeg", data: jpeg, shape: [3, 4]),
+                       CaptureSection("raw_depth", format: "f32le", data: depth, shape: [1, 2])])
+        let size = packet.prefix(4).enumerated().reduce(0) { $0 | Int($1.element) << ($1.offset * 8) }
+        let header = try XCTUnwrap(JSONSerialization.jsonObject(with: packet[4..<(4 + size)]) as? [String: Any])
+        XCTAssertEqual(header["version"] as? Int, 2)
+        XCTAssertEqual(header["kind"] as? String, "frame")
+        let metadata = try XCTUnwrap(header["metadata"] as? [String: Any])
+        let landmarks = try XCTUnwrap(metadata["landmarks"] as? [[Any]])
+        XCTAssertTrue(landmarks[0][0] is NSNull)
+        XCTAssertEqual(packet.suffix(depth.count), depth)
+        if let path = ProcessInfo.processInfo.environment["GODSEYE_WIRE_FIXTURE"] {
+            try packet.write(to: URL(fileURLWithPath: path + ".capture"))
+        }
+    }
+
+    func testFullCaptureRejectsIncorrectShapesFormatsAndDuplicateSections() {
+        let invalid = [
+            CaptureSection("raw_depth", format: "f32le", data: Data([0]), shape: [1, 1]),
+            CaptureSection("../escape", format: "u8", data: Data([0]), shape: [1]),
+            CaptureSection("rgb", format: "jpeg", data: Data([0]), shape: [1]),
+            CaptureSection("color", format: "unknown", data: Data([0]), shape: [1]),
+            CaptureSection("color", format: "u8", data: Data(), shape: [Int.max, 2])]
+        for item in invalid {
+            XCTAssertThrowsError(try RichCapturePacket.encode(identity: identity, kind: "frame", frameID: 1,
+                capture: 1, metadata: [:], sections: [item]))
+        }
+        let item = CaptureSection("mask", format: "u8", data: Data([1]), shape: [1, 1])
+        XCTAssertThrowsError(try RichCapturePacket.encode(identity: identity, kind: "frame", frameID: 1,
+            capture: 1, metadata: [:], sections: [item, item]))
+    }
+
     func testBundleRoundTripAndPythonFixture() throws {
         // Real 4x3 JPEG: backend validation decodes these bytes independently.
         let jpegURL = Bundle.module.url(forResource: "rgb", withExtension: "jpg")!
