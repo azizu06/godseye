@@ -1,4 +1,4 @@
-"""God's Eye v1 transport skeleton; all motion is logging-only."""
+"""God's Eye v1 transport skeleton; the default car adapter only logs motion."""
 import asyncio
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
@@ -20,12 +20,13 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.changes import ChangeTracker
-from backend.drive import drive
+from backend.drive import LoggingCar
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
+from backend.motion import Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
@@ -161,7 +162,8 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None) -> FastAPI:
+               point_settings: PointSettings | None = None, car=None,
+               motion_limits: MotionLimits | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -170,10 +172,14 @@ def create_app(db_path: str | None = None, build_points=None,
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
     Without a detector, `weights` names existing local YOLO weights to load at
     startup; with neither, object detection is off and health reports it down.
+
+    `car` is the drive adapter (`backend.drive`); the default only logs and
+    reports the car down, so /arm stays refused. Only the 20 Hz pump sends motion.
     """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
     point_settings = point_settings or PointSettings.from_env()
     build_points = build_points or partial(build_point_chunk, max_points=point_settings.samples)
+    car = LoggingCar() if car is None else car
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
 
     @asynccontextmanager
@@ -197,6 +203,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.armed = False
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
+        app.state.motion = Motion(car, motion_check, stop, limits=motion_limits or MotionLimits())
         app.state.listeners = set()
         app.state.capture = CaptureBuffer()
         app.state.rich_capture = RichCapture(capture_directory if capture_directory is not None else
@@ -225,7 +232,7 @@ def create_app(db_path: str | None = None, build_points=None,
     def stop(reason):
         app.state.armed = False
         app.state.stop_reason = reason
-        drive(0.0, 0.0)
+        app.state.motion.halt()  # drops every held command, then an explicit zero
         session = app.state.session or (None, None)
         app.state.db.execute(
             'INSERT INTO health_events(t_wall_ms,session_id,map_epoch,component,reason,mode,armed) VALUES(?,?,?,?,?,?,?)',
@@ -242,9 +249,33 @@ def create_app(db_path: str | None = None, build_points=None,
             detector = 'stale'
             if app.state.detected_at is not None and time.monotonic() - app.state.detected_at <= DETECTOR_OK_S:
                 detector = 'ok'
-        return dict(version=1, type='health', phone=phone, car='down', detector=detector,
+        return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
                     stop_reason=app.state.stop_reason)
+
+    def car_health():
+        try:
+            state = car.health()
+        except Exception:
+            logger.exception('car health check failed')
+            return 'down'
+        return state if state in ('ok', 'stale', 'down') else 'down'
+
+    def hazard():
+        """Why the rover must not move now, e.g. 'car_stale'; None when phone, car and detector are ok."""
+        current = health()
+        for key in ('phone', 'car', 'detector'):
+            if current[key] != 'ok':
+                return f'{key}_{current[key]}'
+        return None
+
+    def motion_check(command):
+        """Rechecked before every send; stop, reset, loss and shutdown already cut the generation."""
+        if not app.state.armed:
+            return 'disarmed'
+        if command.mode != app.state.mode:
+            return 'mode_change'
+        return hazard()
 
     def publish(message):
         for listener in app.state.listeners:
@@ -387,6 +418,9 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
                 if app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
+            if app.state.armed and (reason := hazard()) is not None:
+                stop(reason)
+            app.state.motion.tick()  # the 20 Hz dispatch pump
             ticks += 1
             if ticks % 10 == 0:
                 publish(health())
@@ -471,8 +505,9 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/arm')
     async def arm():
-        if any(health()[key] != 'ok' for key in ('phone', 'car', 'detector')):
-            raise HTTPException(409, 'Health must all be ok; car and detector are unavailable in this skeleton')
+        if hazard() is not None:
+            raise HTTPException(409, 'Health must all be ok; the default logging car always reports down')
+        app.state.motion.begin()  # a fresh generation: nothing from before this arm can move
         app.state.armed = True
         app.state.stop_reason = None
         return health()
@@ -485,9 +520,11 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/manual')
     async def manual(body: Manual):
-        if not app.state.armed or app.state.mode != 'manual':
+        motion = app.state.motion
+        if (not app.state.armed or app.state.mode != 'manual'
+                or not motion.submit(motion.generation, 'manual', body.v_mps, body.yaw_rate_rps)):
             raise HTTPException(409, 'Disarmed or not in manual mode')
-        raise HTTPException(501, 'Motion is not implemented; drive adapter only logs')
+        return health()
 
     @app.post('/goal')
     async def goal(body: Goal):

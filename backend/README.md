@@ -333,19 +333,60 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | Route | Skeleton behavior |
 |---|---|
 | POST `/session` | Create map identity, revoke phone, clear current pose and disarm |
-| POST `/arm` | 409 while any health component is not ok; car is always down here |
+| POST `/arm` | 409 while any health component is not ok (the default logging car always reports down); opens a fresh command generation |
 | POST `/stop` | Always accepted; latch operator stop and log zero drive |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
-| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
+| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or not in manual mode; otherwise hold the command for a 250 ms lease and return health |
 | POST `/goal` | Validate x/z; 501 navigation unimplemented |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
-| GET `/health` | Phone freshness, car down, detector status, mode, armed, stop_reason |
+| GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason |
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
-serial, vendor, motor or credential integration. Startup is disarmed. Manual
-leases, 20 Hz commands, navigation, detector and hardware watchdogs must be
-implemented and independently verified before anyone enables arming. The
-skeleton cannot arm or drive the rover.
+serial, vendor, motor or credential integration. Startup is disarmed, and the
+default `LoggingCar` adapter reports the car down, so this backend cannot arm
+or drive the rover. See Drive commands for the fake-tested command boundary.
+
+## Drive commands
+
+`create_app(car=...)` takes a car adapter from `drive.py` with `send(v_mps,
+yaw_rate_rps)`, `zero()` and `health()` (`ok`/`stale`/`down`). `LoggingCar`
+(default) logs through `drive()` and reports down. `FakeCar` records calls and
+reports the health a test sets; it moves nothing. A real adapter may report
+`ok` only from verified car feedback, never from a successful write, and does
+not exist yet: the vendor protocol, acknowledgement and health semantics belong
+to [issue 6](https://github.com/azizu06/godseye/issues/6).
+
+`motion.py` holds at most one desired command per arm generation:
+
+- `/arm` checks phone, car and detector health, zeroes, and opens a new
+  generation. Every stop (operator, mode change, session reset, phone or pose
+  loss, tracking loss, car/detector health loss, adapter error, shutdown)
+  closes it, drops the held command and sends an explicit zero. A later arm
+  never revives an older manual hold or goal.
+- Only the watchdog's 20 Hz pump sends motion, at most once per tick, newest
+  command wins. Before each send it rechecks arm, mode, phone freshness and
+  tracking, car and detector health; any failure is a latched stop. While
+  armed, the same health check also runs with no command held.
+- Commands are clamped to 0.15 m/s and 0.5 rad/s (`MotionLimits`; speed may
+  be configured up to the 0.20 m/s contract maximum, never above). A command
+  not renewed within 250 ms is zeroed once; the operator stays armed.
+  Non-finite input zeroes and raises.
+- An adapter `send` error stops with `car_error`; a failing `zero` is logged
+  and cannot resurrect a command.
+
+Navigation plugs in without touching the adapter: read
+`app.state.motion.generation` when a goal is accepted, then call
+`app.state.motion.submit(generation, mode, v_mps, yaw_rate_rps)` on every
+follower step (well inside 250 ms). `False` means the generation ended, so
+drop the goal and publish an empty path. Navigation owns goal and path policy;
+this boundary owns dispatch safety.
+
+Proof is `backend/tests/test_motion.py` (fake clock) and
+`backend/tests/test_drive_safety.py` (real app, streaming phone, fake detector
+and `FakeCar`). This is backend evidence only. The Mac's lease is not the car's
+independent 300 ms stop, and no test here validates a physical protocol, stop
+distance or bench behavior; those need hardware evidence and explicit approval
+before any physical adapter is connected.
