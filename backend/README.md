@@ -197,13 +197,68 @@ only when the picture changed:
   monotonic time of the newest accepted frame, even one that adds nothing, so a
   planner can tell fresh sensing from a stale map without waiting for a new
   `occupancy` message.
-- **Limitations:** not calibrated to the rover (the 8 cm to 1.5 m band is a
-  generic guess, not its clearance); the handheld floor estimate can shift by a
-  slice as evidence grows; there is no free-space ray carving (cells are only
+- **Limitations:** without a motion-ready rover calibration (below) the 8 cm to
+  1.5 m band is a generic guess, not its clearance; the handheld floor estimate
+  can shift by a slice as evidence grows; there is no free-space ray carving (cells are only
   known where a surface was seen) and no decay, so a removed object stays
   occupied. `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
   produces no grid; tested on synthetic floors and boxes only
   (`backend/tests/test_occupancy.py`).
+
+## Rover calibration and the navigation map
+
+Occupancy is safe to plan motion on only once the rover's own geometry is
+measured. `GODSEYE_ROVER_CALIBRATION` names a JSON file validated at startup by
+`backend/calibration.py` (a malformed or missing file stops the server; unset
+means uncalibrated). There are no defaults: until Tomiwa's measurements exist,
+the file holds nulls and the map stays **not motion-ready**:
+
+```json
+{ "version": 1, "measured_by": null, "obstacle_min_m": null,
+  "footprint_length_m": null, "footprint_width_m": null, "clearance_margin_m": null,
+  "camera_forward_m": null, "camera_left_m": null, "camera_yaw_rad": null }
+```
+
+Pending hardware prerequisites, owned by Tomiwa: the lowest obstacle height the
+car cannot drive over; chassis length and width including bumpers; the clearance
+margin to keep; the phone camera's offset from the chassis center (forward,
+left) and its yaw relative to the chassis; and `measured_by`, naming who measured
+and where the evidence lives. Steering/speed response, stopping distance and
+bench-stop evidence are separate, and no backend test stands in for any of them. Meters and radians;
+bounds only reject typos (a footprint side over 1 m, centimeters, NaN, unknown
+keys).
+
+- A complete, verified calibration replaces the generic 8 cm obstacle floor with
+  `obstacle_min_m - 0.02` for both `/live` and the snapshot: a voxel's height
+  can read one 2 cm slice low. A threshold at or below 6 cm is
+  `obstacle_min_unsupported`, since those hazards read as floor noise within
+  4 cm of the floor. Such a car needs better sensing, not a smaller number.
+- The footprint is covered by a disc around the camera's floor point (the v1
+  rover position): radius `hypot(length / 2 + |forward|, width / 2 + |left|)`
+  plus the margin, so no heading or rover base frame is needed. `camera_yaw_rad`
+  is recorded for a future follower and not applied by the backend.
+
+`app.state.map_snapshot()` is the navigation map handle: it classifies the active
+map's evidence (blocking; call it from a worker thread) and returns None without
+an active map. Otherwise it returns an immutable `OccupancySnapshot` for the
+current session/epoch only: `cells` in the `/live` layout with `origin`,
+`floor_y`, `blockers` (empty exactly when `ready`), `inflation_m`, and the grid's
+own `revision` and `accepted_at` (above), read together with the evidence. There
+is no separate counter: repeated views keep `accepted_at` fresh even when `/live`
+sends no new grid, and dropped frames never refresh it. The staleness limit is the
+navigation owner's policy. `traversable(x, z)` is False unless the map is ready
+and every cell with any part within `inflation_m` of the point is known free;
+unknown, occupied, off-grid and nonfinite queries block. A map reset starts an
+empty snapshot (revision 0, no `accepted_at`) and keeps the calibration.
+Calibration never arms or drives.
+Tested on synthetic floors and boxes only (`backend/tests/test_calibration.py`),
+with TEST values that describe no real car.
+
+Navigation (below) does not consume this yet. Its planner reads the grid's
+`snapshot()`, which uses the same calibrated threshold. It still uses its
+placeholder radius and margin, plans through unknown cells, and does not check
+`blockers`. Wiring `/goal` and explore to refuse unless ready and to inflate by
+`inflation_m` belongs to the navigation owner.
 
 ## Live objects
 
