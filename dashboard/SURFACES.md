@@ -17,3 +17,17 @@ Implementation sequence: (1) calibrated decoder/triangulation and simulator geom
 Dense observed planar regions are simplified before accumulation using normal agreement, an 8 mm plane-fit residual limit, preserved polygon boundaries/holes, and a 0.04 total linear-color error budget.
 Uniform regions and smooth color gradients can release interior vertices; uncertain geometry and sharp color detail retain their observed mesh.
 This is a conservative geometric approximation, not a semantic wall detector; see [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md).
+
+## Coarse coverage preview
+
+Issue #32 prioritizes quick visible wall coverage over fine triangle density, as requested for the demo.
+The simulator uses approximately 30 cm cells and examines up to 3,600 adjacent triangles per 100 ms tick, replacing the scattered 10 cm sample sweep.
+New maps still start empty, and only currently in-range, in-view, unoccluded triangles accumulate.
+Vertices, edge midpoints and centroids must pass the simulator visibility checks; the doorway and furniture occlusion remain intact.
+Tracking loss pauses discovery and new sessions clear it.
+
+Live RGB-D reconstruction uses a bounded approximately 3,072-vertex coarse grid, including the depth image's far edges, and accepts measured medium or high confidence.
+Validate every skipped depth pixel inside each coarse cell, retaining holes from zero-confidence/missing/out-of-range data and rejecting depth discontinuities.
+Triangles become larger and fusion has fewer vertices, while synchronized image UVs retain camera texture detail.
+This trades fine surface and confidence precision for preview coverage and processing speed; it does not increase hardware capture rate, extend the 5 m range, or infer an unobserved wall.
+The existing planar compression, accumulated-map budgets, source lifecycle and API contracts remain unchanged.
