@@ -242,7 +242,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
         app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
-                                  occupancy=lambda: app.state.occupancy, submit=app.state.motion.submit,
+                                  occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None)
         app.state.labels = ObjectLabels(db, label_provider,
@@ -639,7 +639,7 @@ def create_app(db_path: str | None = None, build_points=None,
             nav_stop('pose_stale')
             raise HTTPException(409, 'No current rover pose')
         if not result.ok:
-            reason = PLAN_STOP_REASONS.get(result.reason, 'no_path')
+            reason = PLAN_STOP_REASONS.get(result.reason, result.reason)
             nav_stop(reason)
             raise HTTPException(409, reason)
         app.state.nav.start_goal((body.x, body.z), result, generation)

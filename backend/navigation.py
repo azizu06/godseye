@@ -104,6 +104,7 @@ class PlannerConfig:
     robot_radius_m: float = .15
     margin_m: float = .03
     unknown_traversable: bool = True  # False: unknown is a wall and the grid is not padded
+    footprint_clearance: bool = False  # require clearance for every point of a path cell
     unknown_cost: float = 3.  # cost multiplier for unknown cells relative to free (>= 1)
     snap_radius_m: float = .15  # goal snaps to the nearest traversable cell within this
     start_snap_radius_m: float = .30  # the rover itself may sit in an inflation band
@@ -138,16 +139,33 @@ def path_message(points, *, session_id: str | None = None, map_epoch: int | None
 def _disk(grid: Grid, config: PlannerConfig) -> list[tuple[int, int]]:
     """Cell offsets within robot radius + margin of a cell center (the inflation kernel)."""
     reach = max(config.robot_radius_m + config.margin_m, 0.) / grid.cell_m + 1e-9
+    if config.footprint_clearance:
+        r = int(math.ceil(reach)) + 1
+        # Minimum distance between two closed cell squares, not their centers.
+        return [(dr, dc) for dr in range(-r, r + 1) for dc in range(-r, r + 1)
+                if max(abs(dr) - 1, 0) ** 2 + max(abs(dc) - 1, 0) ** 2 <= reach * reach]
     r = int(math.floor(reach))
     return [(dr, dc) for dr in range(-r, r + 1) for dc in range(-r, r + 1) if dr * dr + dc * dc <= reach * reach]
 
 
 def traversable_mask(grid: Grid, config: PlannerConfig = PlannerConfig()) -> np.ndarray:
-    """Cells whose center is farther than radius + margin from every occupied cell center.
+    """Traversable cells under the caller's policy.
 
-    Unknown cells are traversable unless ``config.unknown_traversable`` is False; they
-    are never inflated.
+    ``footprint_clearance`` inflates unknown, occupied and off-grid squares using
+    the minimum distance between their edges, keeping the whole path cell clear.
+    The legacy simulation policy otherwise inflates occupied centers only.
     """
+    if config.footprint_clearance:
+        # Outside is unknown too. Padding handles even grids smaller than the footprint.
+        offsets = _disk(grid, config)
+        pad = max(max(abs(dr), abs(dc)) for dr, dc in offsets)
+        unsafe = grid.cells != FREE
+        padded = np.pad(unsafe, pad, constant_values=True)
+        blocked = unsafe.copy()
+        h, w = unsafe.shape
+        for dr, dc in offsets:
+            blocked |= padded[pad + dr:pad + dr + h, pad + dc:pad + dc + w]
+        return ~blocked
     occupied = grid.cells == OCCUPIED
     blocked = occupied.copy()
     h, w = occupied.shape
@@ -395,6 +413,15 @@ def path_blocked(grid: Grid, points, config: PlannerConfig = PlannerConfig(), st
     if not config.unknown_traversable and (not inside.all() or (grid.cells[rows, cols] == UNKNOWN).any()):
         return True
     rows, cols = rows[inside], cols[inside]
+    if config.footprint_clearance:
+        # Same all-points policy as A*; include off-grid neighbors in the footprint.
+        for dr, dc in _disk(grid, config):
+            rr, cc = rows + dr, cols + dc
+            if ((rr < 0) | (rr >= grid.height) | (cc < 0) | (cc >= grid.width)).any():
+                return True
+            if (grid.cells[rr, cc] != FREE).any():
+                return True
+        return False
     occupied = grid.cells == OCCUPIED
     for dr, dc in _disk(grid, config):
         rr, cc = rows + dr, cols + dc
@@ -410,10 +437,22 @@ def _frontier_cells(grid: Grid) -> np.ndarray:
     return (grid.cells == FREE) & touches_unknown
 
 
-def is_frontier(grid: Grid, xz) -> bool:
+def _safe_frontiers(grid: Grid, config: PlannerConfig) -> np.ndarray:
+    if not config.footprint_clearance:
+        return _frontier_cells(grid)
+    # Explore the boundary of footprint-clear known floor, staying inside sensing.
+    known = Grid.from_array(np.where(grid.cells == UNKNOWN, UNKNOWN, FREE),
+                            origin=grid.origin, cell_m=grid.cell_m)
+    known_clear = traversable_mask(known, config)
+    inset = Grid.from_array(np.where(known_clear, FREE, UNKNOWN),
+                            origin=grid.origin, cell_m=grid.cell_m)
+    return _frontier_cells(inset)
+
+
+def is_frontier(grid: Grid, xz, config: PlannerConfig = PlannerConfig()) -> bool:
     """Whether world (x, z) is still a free cell bordering unknown (or unmapped) space."""
     cell = grid.world_to_cell(float(xz[0]), float(xz[1]))
-    return cell is not None and bool(_frontier_cells(grid)[cell])
+    return cell is not None and bool((_safe_frontiers(grid, config) & traversable_mask(grid, config))[cell])
 
 
 def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig()):
@@ -434,7 +473,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
     if start is None:
         return None
-    frontier = (mask & _frontier_cells(grid)).ravel().tolist()
+    frontier = (mask & _safe_frontiers(grid, config)).ravel().tolist()
     h, w = mask.shape
     free = mask.ravel().tolist()
     seen = bytearray(h * w)
