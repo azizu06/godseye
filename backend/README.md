@@ -403,14 +403,18 @@ drift are unmeasured.
 
 `POST /goal` and explore mode plan on the active session's occupancy grid
 (`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
-(`backend/navigator.py`). Commands reach only the logging-only `drive()`, and
-`/arm` still refuses while the car reports down, so runs are exercised only by
-tests that set the armed flag directly.
+(`backend/navigator.py`). Each follower command goes through
+`Motion.submit` under the arm generation the run started in, so it reaches the
+car only via the leased 20 Hz pump (see Drive commands). `/arm` still refuses
+while the default car reports down, so runs are exercised by tests with
+`FakeCar`.
 
 - **Starting:** `/goal {x, z}` needs the backend armed in `navigate` mode (409
   otherwise; there is no disarmed preview). It plans from the current pose (at
   most 250 ms old), answers `{version, goal, points}`, publishes `path` and starts
-  following; a new goal replaces the current run. Explore starts by itself
+  following; a new goal replaces the current run. The arm generation is read
+  before planning, so a stop and re-arm while it plans answers 409 `Stopped
+  while planning` and the old goal never moves. Explore starts by itself
   whenever the backend is armed in `explore` mode and drives to the nearest
   reachable frontier (a known-free cell next to unknown or the edge of the cropped
   grid), then the next, until none is left. Before any floor is mapped, goals plan
@@ -421,9 +425,9 @@ tests that set the armed flag directly.
   traversable at 3x the cost of free ones (depth sees only a few meters ahead)
   and the grid is padded with unknown so goals beyond the mapped area still plan
   (up to 1,000,000 cells).
-- **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `drive()` call per
+- **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
-  the contract's 0.20 m/s and 0.5 rad/s. Heading errors above 0.6 rad turn in
+  the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
   place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
 - **Replanning:** a full replan from the current pose about once per second; a
   new map revision also triggers a blocked-path check (at most 4 Hz) that halts
@@ -439,7 +443,8 @@ tests that set the armed flag directly.
   `out_of_bounds`, `start_blocked`; `pose_stale` (no pose within 250 ms),
   `tracking_lost`; `no_progress` (motion commanded while the pose moved under
   5 cm and 0.15 rad for 5 s); `nav_error` (planner or loop failure); `disarmed`
-  (defensive: the armed mode changed without a stop). Operator stop, mode change,
+  (defensive: the armed mode changed without a stop); `command_stale` (Motion
+  refused a command because its generation ended). `/arm` also ends any run. Operator stop, mode change,
   map reset, phone loss, tracking loss, the pose watchdog and shutdown end the
   run through `stop` as well. A `/goal` that cannot be planned answers 409 with
   the reason and disarms.
@@ -449,7 +454,7 @@ tests that set the armed flag directly.
   camera forward, so the phone must face the rover's direction of travel (no
   mount calibration); turning in place assumes a skid- or differential-steer
   base; radius, margin, speeds and tolerances are placeholders, not measured car
-  parameters. Because the logging-only car never moves, a live run ends with
+  parameters. With a car that never moves (`FakeCar`), a live run ends with
   `no_progress` after 5 s.
 - **Tests:** `backend/tests/test_navigation.py` (planner, follower, 400 x 400
   timing) and `backend/tests/test_navigator.py` (runs against a kinematic
@@ -463,22 +468,68 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | Route | Skeleton behavior |
 |---|---|
 | POST `/session` | Create map identity, revoke phone, clear current pose and disarm |
-| POST `/arm` | 409 while any health component is not ok; car is always down here |
-| POST `/stop` | Always accepted; latch operator stop, end any navigation run and log zero drive |
+| POST `/arm` | 409 while any health component is not ok (the default logging car always reports down); opens a fresh command generation |
+| POST `/stop` | Always accepted; latch operator stop, end any navigation run and send an explicit zero |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
-| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
+| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or not in manual mode; otherwise hold the command for a 250 ms lease and return health |
 | POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
-| GET `/health` | Phone freshness, car down, detector status, mode, armed, stop_reason |
+| GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason |
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
-serial, vendor, motor or credential integration. Startup is disarmed. Manual
-leases, 20 Hz commands, detector and hardware watchdogs must be implemented and
-independently verified before anyone enables arming; navigation only reaches the
-logging stub. The skeleton cannot arm or drive the rover.
+serial, vendor, motor or credential integration. Startup is disarmed, and the
+default `LoggingCar` adapter reports the car down, so this backend cannot arm
+or drive the rover. See Drive commands for the fake-tested command boundary.
+
+## Drive commands
+
+`create_app(car=...)` takes a car adapter from `drive.py` with `send(v_mps,
+yaw_rate_rps)`, `zero()` and `health()` (`ok`/`stale`/`down`). `LoggingCar`
+(default) logs through `drive()` and reports down. `FakeCar` records calls and
+reports the health a test sets; it moves nothing. A real adapter may report
+`ok` only from verified car feedback, never from a successful write, must
+return promptly (its calls run on the event loop), and does not exist yet: the
+vendor protocol, acknowledgement and health semantics belong to
+[issue 6](https://github.com/azizu06/godseye/issues/6).
+
+`motion.py` holds at most one desired command per arm generation:
+
+- `/arm` checks phone, car and detector health, zeroes, and opens a new
+  generation. Every stop (operator, mode change, session reset, phone or pose
+  loss, tracking loss, car/detector health loss, adapter error, shutdown)
+  closes it, drops the held command and sends an explicit zero. A later arm
+  never revives an older manual hold or goal.
+- Only the watchdog's 20 Hz pump sends motion, at most once per tick, newest
+  command wins. Before each send it rechecks arm, mode, phone freshness and
+  tracking, car and detector health; any failure is a latched stop. While
+  armed, the same health check also runs with no command held.
+- Commands are clamped to 0.15 m/s and 0.5 rad/s (`MotionLimits`; speed may
+  be configured up to the 0.20 m/s contract maximum, never above). A command
+  not renewed within 250 ms is zeroed once; the operator stays armed.
+  Non-finite input zeroes and raises.
+- An adapter `send` error stops with `car_error`. A failed `zero` also stops
+  with `car_error`, is retried every tick with nothing else sent, and blocks
+  `/arm` until the car accepts one.
+- `/manual` carries no token in the frozen v1 wire, so a delayed request or a
+  second dashboard still holding the button counts as fresh input after a
+  re-arm. Only one operator surface should drive at a time.
+
+Navigation uses the same boundary: `/goal` reads `app.state.motion.generation`
+before planning, and every 10 Hz follower step calls
+`app.state.motion.submit(generation, mode, v_mps, yaw_rate_rps)`. `False` means
+the generation ended, so the run stops (`command_stale`) and publishes an empty
+path. Navigation owns goal and path policy; this boundary owns dispatch safety.
+
+Proof is `backend/tests/test_motion.py` (fake clock),
+`backend/tests/test_drive_safety.py` (real app, streaming phone, fake detector
+and `FakeCar`) and the navigation cases in `backend/tests/test_navigator.py`.
+This is backend evidence only. The Mac's lease is not the car's independent
+300 ms stop, and no test here validates a physical protocol, stop distance or
+bench behavior; those need hardware evidence and explicit approval before any
+physical adapter is connected.
 
 ## Spoken change events
 

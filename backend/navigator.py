@@ -1,9 +1,11 @@
-"""Async goal and explore runner over the live occupancy grid; drives only the logging stub.
+"""Async goal and explore runner over the live occupancy grid.
 
 One run at a time. A run ticks at ``rate_hz`` on the event loop: it reads the latest
-pose, steps a pure-pursuit follower and calls ``drive``. Grid snapshots, blocked-path
-checks and A* run in worker threads, and their results are picked up on a later tick,
-so the loop never blocks on planning.
+pose, steps a pure-pursuit follower and hands the command to ``submit`` (the app's
+``Motion.submit``) under the arm generation the run started in; only the motion pump
+ever talks to the car. A refused command means that generation ended, so the run
+stops. Grid snapshots, blocked-path checks and A* run in worker threads, and their
+results are picked up on a later tick, so the loop never blocks on planning.
 
 Every way a run ends goes through the app's ``stop(reason)``, which disarms, sends a
 zero drive and logs a health event; the run then clears the dashboard path. Stops raised
@@ -42,7 +44,7 @@ RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode i
 
 @dataclass(frozen=True)
 class NavSettings:
-    rate_hz: float = 10.  # control ticks; each one calls drive()
+    rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 1.  # full replan period
     blocked_check_s: float = .25  # at most this often, a grid change triggers a path_blocked check
     pose_max_age_s: float = .25  # matches the health/watchdog freshness rule
@@ -84,13 +86,13 @@ def _unmapped(x: float, z: float) -> Grid:
 
 class Navigator:
     def __init__(self, settings: NavSettings, *, pose: Callable[[], RoverPose | None],
-                 occupancy: Callable[[], object], drive: Callable[[float, float], None],
+                 occupancy: Callable[[], object], submit: Callable[[int, str, float, float], bool],
                  stop: Callable[[str], None], publish: Callable[[dict], None],
                  armed_mode: Callable[[], str | None]):
         """``armed_mode()`` is the current mode while armed, else None; a run whose mode
         it no longer matches stops at its next tick, even if ``halt()`` was missed."""
         self.settings = settings
-        self._pose, self._occupancy, self._drive = pose, occupancy, drive
+        self._pose, self._occupancy, self._submit = pose, occupancy, submit
         self._stop, self._publish, self._armed_mode = stop, publish, armed_mode
         self._task: asyncio.Task | None = None
         self._shown = None  # points of the last published path, to publish only changes
@@ -144,16 +146,17 @@ class Navigator:
 
     # Run lifecycle -----------------------------------------------------------------
 
-    def start_goal(self, goal, initial) -> None:
-        self._begin('goal', tuple(goal), initial)
+    def start_goal(self, goal, initial, generation: int) -> None:
+        """``generation`` is the arm generation read before planning began."""
+        self._begin('goal', tuple(goal), initial, generation)
 
-    def start_explore(self) -> None:
-        self._begin('explore', None, None)
+    def start_explore(self, generation: int) -> None:
+        self._begin('explore', None, None, generation)
 
-    def _begin(self, kind, goal, initial) -> None:
+    def _begin(self, kind, goal, initial, generation) -> None:
         self._cancel()
         self.kind, self.goal = kind, goal
-        self._task = asyncio.create_task(self._run(kind, goal, initial))
+        self._task = asyncio.create_task(self._run(kind, goal, initial, generation))
 
     def _cancel(self) -> asyncio.Task | None:
         task, self._task = self._task, None
@@ -185,7 +188,7 @@ class Navigator:
         logger.info('navigation ended: %s', reason)
         self._stop(reason)  # disarms, zero drive, and calls halt()
 
-    async def _run(self, kind, goal, initial):
+    async def _run(self, kind, goal, initial, generation):
         s = self.settings
         explore = kind == 'explore'
         period = 1. / s.rate_hz
@@ -266,7 +269,8 @@ class Navigator:
                         return self._finish('no_progress')
                 else:
                     progress = None
-                self._drive(v, w)
+                if not self._submit(generation, RUN_MODES[kind], v, w):
+                    return self._finish('command_stale')  # stopped or re-armed since this run began
                 await asyncio.sleep(period)
         except Exception:  # a follower or bookkeeping bug must still stop the rover
             logger.exception('navigation run failed')
