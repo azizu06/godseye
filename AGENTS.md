@@ -8,6 +8,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`.
 
+- Live `points` payload, limits, and the iOS/dashboard hand-off check: `backend/README.md` (Live map points).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 
 ## Maintaining this file

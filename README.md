@@ -28,10 +28,10 @@ The hackathon demo goal is a rover that navigates a small space while a laptop s
 
 This repository is an early software prototype. Autonomous navigation and live 3D reconstruction are planned capabilities.
 
-- A Python backend skeleton accepts phone pose and frame data and streams health and pose updates to clients.
+- A Python backend skeleton accepts phone pose and frame data and streams health, pose, and a live 3D `points` cloud (from phone depth) to clients.
 - Standalone detection and depth-based localization modules provide foundations for placing detected objects in 3D; they are not yet integrated into the live backend.
 - Synthetic phone and live-view data tools support development without hardware.
-- The iPhone app, 3D dashboard, mapping pipeline, navigation, and Arduino integration still need to be built and connected.
+- The iPhone app, 3D dashboard, occupancy/object memory, navigation, and Arduino integration still need to be built and connected; the live point handoff has been checked only with synthetic phone data.
 
 **The current drive adapter only logs commands. This prototype cannot arm or drive hardware.** The Arduino control link remains to be implemented.
 
@@ -51,7 +51,7 @@ In another terminal, send synthetic phone data:
 .venv/bin/python tools/fake_phone.py --url ws://127.0.0.1:8765/phone
 ```
 
-Inspect health at <http://127.0.0.1:8765/health> or REST schemas at <http://127.0.0.1:8765/docs>. The backend reports phone health/pose; object and path snapshots are empty. It has no authentication, so keep this demo local. Stop each process with Ctrl-C.
+Inspect health at <http://127.0.0.1:8765/health> or REST schemas at <http://127.0.0.1:8765/docs>. The backend reports phone health/pose and streams `points` chunks on `/live` (`python tools/probe_live.py` prints them); object and path snapshots are empty. It has no authentication, so keep this demo local. Stop each process with Ctrl-C.
 
 Run the hardware-free tests:
 
