@@ -18,6 +18,7 @@ class PointChunk:
     map_epoch: int
     frame_id: int
     t_capture: float
+    voxel_keys: np.ndarray | None = None  # set by point_dedupe for chunks it selected
 
 
 def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: int = 16,

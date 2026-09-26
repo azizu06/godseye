@@ -223,10 +223,12 @@ def floor_frame(session='occ-live', frame_id=1, t_capture=1.):
 
 
 def send_frames(client, phone, session, count=3, first=1):
+    # Repeats of the same view publish no points chunk (voxel dedupe) but still map.
+    stats = client.app.state.map_stats
     for frame_id in range(first, first + count):
-        target = client.app.state.map_stats['published'] + 1
+        target = stats['published'] + stats['no_new_points'] + 1
         phone.send_bytes(floor_frame(session, frame_id, float(frame_id)))
-        wait_for(lambda: client.app.state.map_stats['published'] >= target)
+        wait_for(lambda: stats['published'] + stats['no_new_points'] >= target)
 
 
 class LiveOccupancyTests(unittest.TestCase):
@@ -250,6 +252,18 @@ class LiveOccupancyTests(unittest.TestCase):
             with client.websocket_connect('/live') as late:
                 self.assertEqual(next_of(late, 'occupancy', limit=5)['cells'],
                                  client.app.state.occupancy.last_message['cells'])
+
+    def test_grid_keeps_accumulating_when_repeated_frames_publish_no_points(self):
+        # One frame is not enough evidence for a free cell (FREE_MIN_HITS = 2); the grid
+        # only fills in if repeats reach it even though dedupe publishes nothing for them.
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('occ-repeat'))
+                send_frames(client, phone, 'occ-repeat')
+                message = next_of(live, 'occupancy', limit=200)
+            stats = client.app.state.map_stats
+            self.assertEqual((stats['published'], stats['no_new_points']), (1, 2))
+            self.assertGreater(int((decode(message) == 1).sum()), 50)
 
     def test_map_reset_clears_the_grid_and_never_republishes_the_old_one(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:

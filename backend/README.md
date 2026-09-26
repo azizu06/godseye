@@ -13,6 +13,9 @@ Use the Mac's hotspot IP, configured in the client, for
 `ws://<mac>:8765/phone`, `ws://<mac>:8765/live`, and `http://<mac>:8765`.
 REST schemas are available at `/docs`. Use only on the private demo network;
 this scaffold has no authentication. CORS permits browser clients without credentials.
+`--host 0.0.0.0` listens on IPv4 only. On an IPv6-only iPhone hotspot (carrier CLAT, Mac IPv4 `192.0.0.x`
+unreachable) run with `--host ::`, which listens on all interfaces, and point the app at the Mac's Bonjour
+name, e.g. `ws://<mac-name>.local:8765/phone` (name from `scutil --get LocalHostName`).
 
 `GODSEYE_DB` selects the SQLite path (default `backend/godseye.db`). Tables
 are created at startup from `schema.sql`: sessions, frames, observations,
@@ -85,6 +88,34 @@ one in-flight bundle per phone.
   camera-to-world transform place them, with the same geometry as
   `localization.py`. Frames with fewer than 16 usable pixels, bad bundles, and
   non-`normal` tracking produce no chunk; the phone link stays up.
+- **Chunks carry mostly newly observed voxels** (`backend/point_dedupe.py`).
+  Each frame back-projects up to `GODSEYE_POINT_SAMPLES` candidates, keeps one
+  per world voxel of `GODSEYE_POINT_VOXEL_M`, drops voxels already sent in this
+  map, and publishes up to `GODSEYE_POINTS_PER_CHUNK` of the rest, evenly spread
+  over the image. A frame with nothing new publishes no chunk (`map_stats`
+  counts it as `no_new_points`); a chunk dropped as stale is not remembered.
+  A voxel may be sent again once it is `GODSEYE_POINT_REFRESH_S` old by
+  capture time, so a moved object or drifted surface is not frozen forever.
+  The memory is shared by all viewers and resets only when the session/epoch
+  changes (including `/session`); a phone reconnect to the same map keeps it.
+  A dashboard opened mid-session fills in as the camera sees new surfaces and
+  as revisited ones pass the refresh age. Occupancy still gets every candidate.
+  `tools/fake_phone.py` moves its depth ramp with the camera, so its world
+  surface never repeats and it keeps producing full chunks.
+
+  | Variable | Default | Range / meaning |
+  |---|---|---|
+  | `GODSEYE_POINT_VOXEL_M` | `0.02` | 0–1 m; `0` disables dedupe (old behavior) |
+  | `GODSEYE_POINT_SAMPLES` | `10000` | 1–49152 candidates per frame (one full 256×192 depth map) |
+  | `GODSEYE_POINTS_PER_CHUNK` | `2500` | 1–2500; 2500 is a hard max (dashboards reject more) |
+  | `GODSEYE_POINT_REFRESH_S` | `60` | seconds before a voxel may be resent; `0` never resends |
+  | `GODSEYE_POINT_MAX_VOXELS` | `2000000` | 1–20,000,000 remembered voxels |
+
+  Invalid values stop startup with an error naming the variable. Memory costs
+  16 bytes per remembered voxel (~32 MB at the default cap, briefly doubled
+  while merging); past the cap the oldest-sent voxels are evicted down to 90%.
+  Dedupe and merging run in the worker thread (about 5 ms per frame at a full
+  2M-voxel memory on an M5 Pro); the event loop only queues the sent keys.
 - A chunk is dropped if the session/epoch changed or the phone left while it was
   computing, or if its frame is more than 1 s old when finished.
 - A viewer that stops reading keeps at most 2 pending `points` messages; they
@@ -111,8 +142,9 @@ exercised in this slice; the shared checkpoint passes only when both are.
 
 ## Occupancy
 
-The same back-projected points (up to 2500 per mapped frame, in the mapping
-worker thread) also feed a 2D grid (`backend/occupancy.py`, pure and
+The same back-projected candidates (up to `GODSEYE_POINT_SAMPLES`, default
+10000, per mapped frame, before voxel dedupe, in the mapping worker thread) also
+feed a 2D grid (`backend/occupancy.py`, pure and
 hardware-free). A separate task snapshots it in a worker thread at most once per
 second and publishes only when the picture changed:
 
