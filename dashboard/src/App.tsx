@@ -44,6 +44,7 @@ export default function App() {
     setConfig,
     connection,
     stale,
+    trackingNormal,
     command,
     pending,
     notice,
@@ -150,9 +151,7 @@ export default function App() {
                 : "Receiving telemetry"}
         </span>
         <span>
-          {!stale && mission.pose?.tracking === "normal"
-            ? "Tracking normal"
-            : "Tracking unavailable"}
+          {trackingNormal ? "Tracking normal" : "Tracking unavailable"}
         </span>
       </div>
       <nav className="workspace-panels" aria-label="Workspace panels">
