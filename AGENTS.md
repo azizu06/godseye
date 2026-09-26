@@ -12,6 +12,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Opt-in Gemini crop labels, persisted identity statuses and saved-object `/ask` search: `backend/README.md` (Gemini crop labels and saved-object search); fake-only acceptance: `python -m unittest backend.tests.test_labels -v`.
 - `/goal`/explore planning, follow loop, stop reasons and the unverified yaw-sign/mount/turn-in-place car dependencies: `backend/README.md` (Navigation).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
+- Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 

@@ -249,6 +249,11 @@ class Navigator:
                     if command.arrived:
                         if not explore:
                             return self._finish('arrived')
+                        # A replan/check belongs to the frontier just reached. Its
+                        # late result must not restore that goal on the next tick.
+                        if job is not None:
+                            job.cancel()
+                            job = None
                         follower, goal, last_plan = None, None, -math.inf  # next frontier
                     else:
                         v, w = command.v_mps, command.yaw_rate_rps
