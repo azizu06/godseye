@@ -193,3 +193,7 @@ Read [DISCOVERY.md](DISCOVERY.md) for the accepted behavior, input handoff, and 
 
 For this work, the user authorizes merging each increment to main after code review, correction of material findings, and successful relevant checks.
 Use the issue-to-PR workflow for each increment and confirm the merged result.
+
+## Observed color surfaces (issue #19)
+
+[SURFACES.md](SURFACES.md) specifies the default 3D representation: solid triangles textured from synchronized camera color and depth. Point cloud remains optional. Prefer native v2 capture, use v1 RGB-D fallback, preserve frozen control/live schemas, and retain only a bounded set of observed views. Keep unknown areas empty and capture availability explicit.

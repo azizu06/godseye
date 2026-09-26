@@ -57,3 +57,9 @@ Backend map identity changes also clear spatial data; enabled API connections hy
 Rescan saves a baseline and watches new observations; it does not command a physical revisit.
 Exports contain the dashboard's bounded received state, not a complete backend session recording.
 Live camera calibration, hardware drive behavior, and session lifecycle extensions require coordination with their owning components.
+
+### Color surface reconstruction
+
+3D now defaults to solid observed surfaces. Scene layers keeps Point cloud available as an independent overlay. The simulator reveals warm-colored room surfaces progressively. Live rendering prefers native JPEG and raw RGB-D from `/capture/rich/frame.bin`, falling back to the calibrated v1 `/capture/frame.bin` bundle. Set Backend API base even if drive commands are disabled.
+
+Only valid, high-confidence, observed surfaces are drawn. Holes and incomplete scans remain visible; point-only feeds cannot provide textured surfaces. Native camera color is preserved, with textures capped at 1280 pixels on their longest side and a bounded view cache. This is live RGB-D reconstruction, not a watertight or photogrammetry-quality model. See [SURFACES.md](SURFACES.md) for calibration, limits and lifecycle.
