@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print what a dashboard would receive on /live: message counts and points chunk shape."""
+"""Print what a dashboard would receive on /live: message counts, points chunk shape, objects."""
 import argparse
 import asyncio
 import json
@@ -11,6 +11,7 @@ from websockets.asyncio.client import connect
 async def run(url, seconds):
     counts = {}
     last_points = None
+    last_objects = None
     async with connect(url) as websocket:
         end = time.monotonic() + seconds
         while time.monotonic() < end:
@@ -19,7 +20,12 @@ async def run(url, seconds):
             counts[message["type"]] = counts.get(message["type"], 0) + 1
             if message["type"] == "points":
                 last_points = (message, len(raw))
+            elif message["type"] == "objects":
+                last_objects = message
     print("messages:", counts)
+    if last_objects is not None:
+        print("latest objects:", [(o["class"], o["id"][:8], o["observations"], o["confidence"])
+                                  for o in last_objects["objects"]])
     if last_points is None:
         raise SystemExit("no points chunk received: is a phone (or tools/fake_phone.py) connected?")
     message, size = last_points

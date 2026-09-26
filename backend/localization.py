@@ -74,3 +74,16 @@ def localize_detection(frame: FrameBundle, detection: Detection, *,
         raise LocalizationError('projection produced a nonfinite world point')
     return LocalizedDetection(detection, tuple(float(v) for v in world[:3]), depth_m,
                               count, frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture)
+
+
+def localize_all(frame: FrameBundle, detections, *, min_detection_confidence: float = .25,
+                 **thresholds) -> list[LocalizedDetection]:
+    """Localize each detection; skip boxes with inadequate depth, never fabricate positions."""
+    localized = []
+    for detection in detections:
+        try:
+            localized.append(localize_detection(frame, detection, **thresholds,
+                                                min_detection_confidence=min_detection_confidence))
+        except LocalizationError:
+            continue
+    return localized

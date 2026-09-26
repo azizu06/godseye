@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Literal
 from uuid import uuid4
@@ -19,11 +20,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from backend.drive import drive
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
+from backend.objects import ObjectMemory, detect_objects
 
 logger = logging.getLogger(__name__)
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
 MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
 MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
+DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference
+DETECT_MAX_AGE_S = 2.  # discard detections finished this long after their frame arrived
+DETECTOR_OK_S = 2.  # health reports the detector ok this long after a used result
 
 
 class Input(BaseModel):
@@ -145,15 +150,30 @@ class LatestFrame:
         return item
 
 
-def create_app(db_path: str | None = None, build_points=build_point_chunk) -> FastAPI:
-    """`build_points(payload, session_id, map_epoch)` runs in a worker thread."""
+def create_app(db_path: str | None = None, build_points=build_point_chunk,
+               detector=None, weights: str | None = None) -> FastAPI:
+    """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
+
+    `detector.localize(frame)` also runs in a worker thread, one call at a time.
+    Without a detector, `weights` names existing local YOLO weights to load at
+    startup; with neither, object detection is off and health reports it down.
+    """
     db_path = db_path or os.environ.get('GODSEYE_DB', 'backend/godseye.db')
+    detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
 
     @asynccontextmanager
     async def lifespan(app):
         db = sqlite3.connect(db_path)
         db.executescript(Path(__file__).with_name('schema.sql').read_text())
         app.state.db = db
+        app.state.objects = ObjectMemory(db)
+        if detector is None and weights:
+            from backend.detector import MPSDetector
+            app.state.detector = await asyncio.to_thread(MPSDetector, weights)
+        else:
+            app.state.detector = detector
+        app.state.detected_at = None
+        app.state.detect_stats = Counter()
         app.state.session = None
         app.state.phone = None
         app.state.pose = None
@@ -193,7 +213,12 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
         phone = 'down' if app.state.phone is None else 'stale'
         if age is not None and age <= 250 and app.state.pose.tracking == 'normal':
             phone = 'ok'
-        return dict(version=1, type='health', phone=phone, car='down', detector='down',
+        detector = 'down'
+        if app.state.detector is not None:
+            detector = 'stale'
+            if app.state.detected_at is not None and time.monotonic() - app.state.detected_at <= DETECTOR_OK_S:
+                detector = 'ok'
+        return dict(version=1, type='health', phone=phone, car='down', detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
                     stop_reason=app.state.stop_reason)
 
@@ -207,35 +232,71 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
                 listener.queue.put_nowait(message)
             listener.wake.set()
 
-    async def map_worker(owner, session, mailbox):
-        """Turn the newest bundle into one points chunk, one at a time, off the event loop."""
-        stats = app.state.map_stats
-        last_start = -MAP_INTERVAL_S
+    def objects_message(session):
+        session_id, map_epoch = session or (None, None)
+        return dict(version=1, type='objects', session_id=session_id, map_epoch=map_epoch,
+                    objects=app.state.objects.snapshot(session))
+
+    def shown_session():
+        """The active map, else the newest stored one (restart-safe reads)."""
+        return app.state.session or app.state.objects.latest_session()
+
+    def object_locator(owner):
+        def locate(payload, session_id, map_epoch):
+            with detect_lock:
+                # Work queued behind a slow inference is skipped once its phone is gone;
+                # the worker then counts the None as discarded_reset.
+                if app.state.phone is not owner:
+                    return None
+                return detect_objects(app.state.detector, payload, session_id, map_epoch)
+        return locate
+
+    async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
+        """Run `compute` on the newest bundle, one at a time, off the event loop.
+
+        `accept` runs on the event loop only for results that are still current.
+        """
+        last_start = -interval
         last_capture = -1.0
         while True:
             await mailbox.ready.wait()
-            await asyncio.sleep(max(0., last_start + MAP_INTERVAL_S - time.monotonic()))
+            await asyncio.sleep(max(0., last_start + interval - time.monotonic()))
             payload, received = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
-                chunk = await asyncio.to_thread(build_points, payload, *session)
+                result = await asyncio.to_thread(compute, payload, *session)
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
-            except Exception:  # a mapping bug must not end the phone session
+            except Exception:  # a mapping or model bug must not end the phone session
                 stats['failed'] += 1
-                logger.exception('point chunk computation failed')
+                logger.exception('frame computation failed')
                 continue
             # The map may have reset or the phone left while this was computing.
             if app.state.phone is not owner or app.state.session != session:
                 stats['discarded_reset'] += 1
-            elif chunk.t_capture <= last_capture or time.monotonic() - received > MAP_MAX_AGE_S:
+            elif result.t_capture <= last_capture or time.monotonic() - received > max_age:
                 stats['discarded_stale'] += 1
             else:
-                last_capture = chunk.t_capture
-                app.state.chunk_id += 1
-                publish(points_message(chunk, app.state.chunk_id))
+                last_capture = result.t_capture
+                try:
+                    accept(result)
+                except Exception:
+                    stats['failed'] += 1
+                    logger.exception('frame result could not be applied')
+                    continue
                 stats['published'] += 1
+
+    def accept_points(chunk):
+        app.state.chunk_id += 1
+        publish(points_message(chunk, app.state.chunk_id))
+
+    def accept_objects(result):
+        session = (result.session_id, result.map_epoch)
+        changed = app.state.objects.record(session, result.frame_id, result.t_wall_ms / 1000, result.found)
+        app.state.detected_at = time.monotonic()
+        if changed:
+            publish(objects_message(session))
 
     async def watchdog():
         ticks = 0
@@ -251,14 +312,14 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
     def set_session(session):
         stop('session_reset')
         app.state.session = session
-        app.state.pose = app.state.pose_at = None
+        app.state.pose = app.state.pose_at = app.state.detected_at = None
         app.state.chunk_id = 0
         for listener in app.state.listeners:
             listener.points.clear()
         app.state.db.execute('INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
                              (*session, int(time.time()*1000)))
         app.state.db.commit()
-        publish(dict(version=1, type='objects', objects=[]))
+        publish(objects_message(session))
         publish(dict(version=1, type='path', points=[]))
 
     @app.get('/health')
@@ -312,7 +373,9 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
 
     @app.get('/objects')
     async def objects():
-        return dict(version=1, objects=[])
+        message = objects_message(shown_session())
+        del message['type']
+        return message
 
     @app.get('/events')
     async def events():
@@ -322,7 +385,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
     async def phone(ws: WebSocket):
         await ws.accept()
         owner = object()
-        worker = None
+        workers = []
         try:
             hello = Hello.model_validate_json(await ws.receive_text())
             if app.state.phone is not None:
@@ -330,8 +393,16 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
                 return
             set_session((hello.session_id, hello.map_epoch))
             app.state.phone = owner
+            session = (hello.session_id, hello.map_epoch)
             mailbox = LatestFrame()
-            worker = asyncio.create_task(map_worker(owner, (hello.session_id, hello.map_epoch), mailbox))
+            workers.append(asyncio.create_task(frame_worker(
+                owner, session, mailbox, build_points, accept_points, app.state.map_stats,
+                MAP_INTERVAL_S, MAP_MAX_AGE_S)))
+            detections = LatestFrame()
+            if app.state.detector is not None:
+                workers.append(asyncio.create_task(frame_worker(
+                    owner, session, detections, object_locator(owner), accept_objects, app.state.detect_stats,
+                    DETECT_INTERVAL_S, DETECT_MAX_AGE_S)))
             last_capture = -1.0
             last_pose_publish = -1.0
             while True:
@@ -367,6 +438,8 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
                 if isinstance(pose, Frame) and pose.tracking == 'normal':
                     if mailbox.put(message['bytes']):
                         app.state.map_stats['replaced'] += 1
+                    if app.state.detector is not None and detections.put(message['bytes']):
+                        app.state.detect_stats['replaced'] += 1
                 now = time.monotonic()
                 if now - last_pose_publish >= 1/15:
                     last_pose_publish = now
@@ -377,11 +450,11 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason='Invalid v1 phone protocol')
         finally:
-            if worker is not None:
+            for worker in workers:
                 worker.cancel()
             if app.state.phone is owner:
                 app.state.phone = None
-                app.state.pose = app.state.pose_at = None
+                app.state.pose = app.state.pose_at = app.state.detected_at = None
                 stop('phone_disconnected')
                 publish(health())
 
@@ -392,7 +465,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
         app.state.listeners.add(listener)
         async def send():
             await ws.send_json(health())
-            await ws.send_json(dict(version=1, type='objects', objects=[]))
+            await ws.send_json(objects_message(shown_session()))
             await ws.send_json(dict(version=1, type='path', points=[]))
             while True:
                 await listener.wake.wait()
@@ -417,4 +490,4 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk) -> Fa
     return app
 
 
-app = create_app()
+app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'))
