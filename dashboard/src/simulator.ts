@@ -1,4 +1,6 @@
 import { LIDAR_RANGE_M } from "./sensorProfile";
+import { makeRoomSurfaces, SurfaceDiscovery } from "./simulatorSurfaces";
+import type { SurfacePatch } from "./surfaceTypes";
 import {
   type ChangeEvent,
   type Health,
@@ -81,6 +83,7 @@ export class Simulator {
   private moved = false;
   private origin = Date.now() / 1000;
   private room = makeRoomPoints();
+  private surfaces = new SurfaceDiscovery(makeRoomSurfaces(FURNITURE));
   private discovered = new Set<number>();
   private seenObjects = new Set<string>();
   private pendingPoints: number[] = [];
@@ -95,6 +98,7 @@ export class Simulator {
   private reset() {
     this.elapsed = 0;
     this.discovered.clear();
+    this.surfaces.reset();
     this.seenObjects.clear();
     this.pendingPoints = [];
     this.cursor = this.chunkId = 0;
@@ -423,7 +427,13 @@ export class Simulator {
       this.rescanAt = null;
       this.health.stop_reason = "SIMULATION · rescan complete";
     }
-    if (this.tracking) this.scan();
+    if (this.tracking) {
+      this.scan();
+      this.surfaces.scan((point) => this.visible(point));
+    }
+  }
+  getSurface(): SurfacePatch | null {
+    return this.surfaces.getSurface();
   }
   snapshot(includeRoom = false): Message[] {
     const messages: Message[] = [
