@@ -178,3 +178,27 @@ export function serializeSurface(
     indices,
   };
 }
+
+/** Keep native point measurements separate from bounded appearance refinement. */
+export function compactSurface(patch: SurfacePatch): SurfacePatch {
+  const used = new Map<number, number>();
+  const positions: number[] = [],
+    uvs: number[] = [],
+    indices: number[] = [];
+  for (const index of patch.indices) {
+    let id = used.get(index);
+    if (id === undefined) {
+      id = used.size;
+      used.set(index, id);
+      positions.push(...patch.positions.subarray(index * 3, index * 3 + 3));
+      if (patch.uvs) uvs.push(...patch.uvs.subarray(index * 2, index * 2 + 2));
+    }
+    indices.push(id);
+  }
+  return {
+    id: patch.id,
+    positions: new Float32Array(positions),
+    indices: new Uint32Array(indices),
+    uvs: patch.uvs ? new Float32Array(uvs) : undefined,
+  };
+}

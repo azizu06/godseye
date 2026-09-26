@@ -24,15 +24,27 @@ for (const reset of [false, true])
           releaseQualityFusion?: () => void;
         };
         window.Worker = class extends NativeWorker {
-          postMessage(
-            message: unknown,
-            options?: Transferable[] | StructuredSerializeOptions,
-          ) {
-            state.qualityFusionStarted = true;
-            state.releaseQualityFusion = () => {
-              if (Array.isArray(options)) super.postMessage(message, options);
-              else super.postMessage(message, options);
-            };
+          constructor(url: string | URL, options?: WorkerOptions) {
+            super(url, options);
+            if (!String(url).includes("surfaceMap.worker")) return;
+            let released = false;
+            this.addEventListener(
+              "message",
+              (event) => {
+                // Decode and preview now also run off-thread. Hold the final fusion
+                // response while allowing its earlier image/point preview through.
+                if (!event.data.delta || released) return;
+                event.stopImmediatePropagation();
+                state.qualityFusionStarted = true;
+                state.releaseQualityFusion = () => {
+                  released = true;
+                  this.dispatchEvent(
+                    new MessageEvent("message", { data: event.data }),
+                  );
+                };
+              },
+              { capture: true },
+            );
           }
         };
       });

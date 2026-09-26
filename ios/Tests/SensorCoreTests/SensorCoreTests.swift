@@ -3,6 +3,29 @@ import XCTest
 @testable import SensorCore
 
 final class SensorCoreTests: XCTestCase {
+    func testWarmDeviceKeepsTemporalCoverageAndReducesBackgroundWorkFirst() {
+        let normal = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: false)
+        let warm = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: true)
+        XCTAssertEqual(normal.liveHz, 30)
+        XCTAssertEqual(warm.liveHz, 15)
+        XCTAssertLessThan(warm.fullHz, normal.fullHz / 2)
+        XCTAssertLessThan(warm.archiveHz, normal.archiveHz / 2)
+        XCTAssertLessThan(warm.geometryHz, normal.geometryHz)
+        XCTAssertEqual(CaptureCadence(liveHz: 5, archiveHz: 2, seriousThermal: true).liveHz, 5)
+    }
+    func testBusyUploadQueuePrioritizesFramesWithoutStarvingOtherSensors() {
+        var schedule = UploadSchedule()
+        let all: Set<String> = ["frame", "geometry", "telemetry", "still"]
+        let cycle = (0..<12).compactMap { _ in schedule.next(available: all) }
+        XCTAssertEqual(cycle.filter { $0 == "frame" }.count, 6)
+        for kind in ["geometry", "telemetry", "still"] {
+            XCTAssertEqual(cycle.filter { $0 == kind }.count, 2)
+        }
+        XCTAssertEqual(cycle.first, "frame")
+        XCTAssertNil(schedule.next(available: []))
+        XCTAssertEqual(schedule.next(available: ["geometry"]), "geometry")
+        XCTAssertEqual(schedule.next(available: ["frame"]), "frame")
+    }
     private let identity = CaptureIdentity(sessionID: "swift-contract-fixture", epoch: 3)
     private let transform: [Float] = [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 2, 1, -3, 1]
 
@@ -41,11 +64,28 @@ final class SensorCoreTests: XCTestCase {
         queue.offer(message(1.02, frame: true))
         XCTAssertEqual(queue.next(now: 1.04)?.capture, 1.02)
         XCTAssertEqual(queue.next(now: 1.04)?.capture, 1.03)
-        // A frame that finishes encoding after a newer pose was sent must be dropped.
+        // Older bundles cannot replace a newer bundle, even though poses are independent.
         queue.offer(message(1.01, frame: true))
         XCTAssertNil(queue.next(now: 1.04))
         queue.offer(message(1.04))
         XCTAssertNil(queue.next(now: 1.30))
+        XCTAssertEqual(queue.dropped, 3)
+    }
+
+    func testEncodedBundleSurvivesNewerPosesWithoutReorderingEitherStream() {
+        var queue = PendingMessages()
+        queue.offer(SensorMessage(capture: 10, data: Data(), isFrame: false))
+        XCTAssertEqual(queue.next(now: 10)?.capture, 10)
+        queue.offer(SensorMessage(capture: 10.05, data: Data(), isFrame: false))
+        XCTAssertEqual(queue.next(now: 10.05)?.capture, 10.05)
+        // RGB/depth encoded 80 ms after the same ARFrame's pose went out.
+        queue.offer(SensorMessage(capture: 10, data: Data([42]), isFrame: true))
+        XCTAssertEqual(queue.next(now: 10.08)?.data, Data([42]))
+        queue.offer(SensorMessage(capture: 10, data: Data(), isFrame: true))
+        queue.offer(SensorMessage(capture: 10.04, data: Data(), isFrame: false))
+        XCTAssertNil(queue.next(now: 10.09))
+        queue.offer(SensorMessage(capture: 10.01, data: Data(), isFrame: true))
+        XCTAssertNil(queue.next(now: 10.3)) // Encoded too late: age bound still applies.
         XCTAssertEqual(queue.dropped, 3)
     }
 

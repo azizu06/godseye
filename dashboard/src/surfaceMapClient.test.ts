@@ -57,3 +57,52 @@ it("source disposal rejects outstanding work and terminates its worker", async (
   expect(worker.terminated).toBe(true);
   expect(client.busy).toBe(false);
 });
+it("drains an aborted mesh delta before a later incremental append", async () => {
+  vi.stubGlobal("Worker", WorkerStub);
+  const client = new SurfaceMapClient(),
+    worker = WorkerStub.latest;
+  const abort = new AbortController();
+  const first = client.capture(
+    new ArrayBuffer(1),
+    "room",
+    Date.now() + 10000,
+    abort.signal,
+    () => {},
+  );
+  abort.abort();
+  await expect(first).rejects.toThrow("cancelled");
+  const delta = (revision: number, start: number) => ({
+    revision,
+    reset: !start,
+    vertexStart: start,
+    indexStart: start,
+    vertexCount: start + 3,
+    indexCount: start + 3,
+    positions: new Float32Array([start, 0, 0, start + 1, 0, 0, start, 1, 0]),
+    colors: new Float32Array(9).fill(0.5),
+    indices: new Uint32Array([start, start + 1, start + 2]),
+  });
+  worker.dispatchEvent(
+    new MessageEvent("message", {
+      data: { id: 1, delta: delta(1, 0), cellM: 0 },
+    }),
+  );
+  const second = client.capture(
+    new ArrayBuffer(1),
+    "room",
+    Date.now() + 10000,
+    new AbortController().signal,
+    () => {},
+  );
+  worker.dispatchEvent(
+    new MessageEvent("message", {
+      data: { id: 2, delta: delta(2, 3), cellM: 0 },
+    }),
+  );
+  const result = await second;
+  expect([...result.patch!.indices]).toEqual([0, 1, 2, 3, 4, 5]);
+  expect([...result.patch!.positions]).toEqual([
+    0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0, 0, 4, 0, 0, 3, 1, 0,
+  ]);
+  client.dispose();
+});

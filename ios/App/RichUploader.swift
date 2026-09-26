@@ -9,6 +9,7 @@ final class RichUploader {
     private var generation = UUID()
     private var request: URLSessionUploadTask?
     private var pending: [String: (data: Data, created: Double)] = [:]
+    private var schedule = UploadSchedule()
     private var busy = false
     private var retry: DispatchWorkItem?
     private(set) var dropped = 0
@@ -30,6 +31,7 @@ final class RichUploader {
         retry?.cancel(); retry = nil
         request?.cancel(); request = nil
         pending.removeAll(); busy = false
+        schedule = UploadSchedule()
     }
     func offer(_ data: Data, kind: String) {
         guard endpoint != nil else { return }
@@ -43,14 +45,14 @@ final class RichUploader {
         for (kind, packet) in pending where now - packet.created > 5 {
             pending.removeValue(forKey: kind); dropped += 1
         }
-        guard let item = pending.min(by: { $0.value.created < $1.value.created }) else { return }
-        pending.removeValue(forKey: item.key)
+        guard let kind = schedule.next(available: Set(pending.keys)),
+              let item = pending.removeValue(forKey: kind) else { return }
         busy = true
         let token = generation
         var urlRequest = URLRequest(url: endpoint, timeoutInterval: 10)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request = session.uploadTask(with: urlRequest, from: item.value.data) { [weak self] data, response, error in
+        request = session.uploadTask(with: urlRequest, from: item.data) { [weak self] data, response, error in
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self, self.generation == token else { return }
@@ -77,6 +79,7 @@ final class RichUploader {
                 }
             }
         }
+        request?.priority = URLSessionTask.lowPriority
         request?.resume()
     }
 }

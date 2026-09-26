@@ -1,4 +1,5 @@
 import type { SurfacePatch } from "./surfaceTypes";
+import type { SurfaceDelta } from "./surfaceBuffer";
 import { simplifyPlanarPatch } from "./planarSurface";
 
 type Triple = [number, number, number];
@@ -44,7 +45,13 @@ function compact(mesh: Mesh, checkpoint = () => {}): Mesh {
   );
   return { vertices, triangles, groups };
 }
-function append(mesh: Mesh, patch: SurfacePatch): Mesh {
+/** Validate and simplify the incoming patch without walking the retained room. */
+function prepareAppend(
+  mesh: Mesh,
+  patch: SurfacePatch,
+  knownVertices: Map<string, number>,
+  knownTriangles: Set<string>,
+) {
   if (
     patch.positions.length % 3 ||
     patch.indices.length % 3 ||
@@ -60,55 +67,51 @@ function append(mesh: Mesh, patch: SurfacePatch): Mesh {
   for (const color of patch.colors)
     if (!Number.isFinite(color) || color < 0 || color > 1)
       throw Error("Linear surface colors must be between zero and one.");
-  const vertexCount = patch.positions.length / 3;
   for (const index of patch.indices)
-    if (index >= vertexCount)
+    if (index >= patch.positions.length / 3)
       throw Error("Surface triangle index is outside its vertex buffer.");
-  patch = simplifyPlanarPatch(patch);
-  const vertices = [...mesh.vertices],
-    triangles = [...mesh.triangles],
-    groups = [...(mesh.groups ?? mesh.vertices.map(() => -1))];
-  const knownVertices = new Map(
-    vertices.map((v, i) => [positionKey(v.position), i]),
-  );
-  const knownTriangles = new Set(triangles.map(triangleKey));
-  const local = new Map<number, number>();
-  const vertex = (index: number) => {
-    const cached = local.get(index);
-    if (cached !== undefined) return cached;
-    const position = [
-      ...patch.positions.slice(index * 3, index * 3 + 3),
-    ] as Triple;
+  const retained = simplifyPlanarPatch(patch);
+  const vertices: Vertex[] = [],
+    triangles: Triple[] = [];
+  const localVertices = new Map<string, number>(),
+    localTriangles = new Set<string>();
+  const at = (i: number) =>
+    [...retained.positions.subarray(i * 3, i * 3 + 3)] as Triple;
+  const vertex = (index: number, position: Triple) => {
     const key = positionKey(position);
-    let mapped = knownVertices.get(key);
-    if (mapped === undefined) {
-      mapped = vertices.length;
-      // First observed color is stable across revisits; new regions keep their
-      // own samples. Coarsening never applies a synthetic color or tint.
+    let id = knownVertices.get(key) ?? localVertices.get(key);
+    if (id === undefined) {
+      id = mesh.vertices.length + vertices.length;
       vertices.push({
         position,
-        color: [...patch.colors!.slice(index * 3, index * 3 + 3)] as Triple,
+        color: [
+          ...retained.colors!.subarray(index * 3, index * 3 + 3),
+        ] as Triple,
       });
-      groups.push(-1);
-      knownVertices.set(key, mapped);
+      localVertices.set(key, id);
     }
-    local.set(index, mapped);
-    return mapped;
+    return id;
   };
-  const combined = { vertices, triangles, groups };
-  for (let i = 0; i < patch.indices.length; i += 3) {
-    const triangle = [
-      vertex(patch.indices[i]),
-      vertex(patch.indices[i + 1]),
-      vertex(patch.indices[i + 2]),
-    ] as Triple;
-    const key = triangleKey(triangle);
-    if (knownTriangles.has(key) || areaSquared(combined, triangle) === 0)
+  for (let i = 0; i < retained.indices.length; i += 3) {
+    const ids = [...retained.indices.subarray(i, i + 3)];
+    const [a, b, c] = ids.map(at);
+    const u = b.map((v, j) => v - a[j]),
+      v = c.map((n, j) => n - a[j]);
+    if (
+      Math.hypot(
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+      ) === 0
+    )
       continue;
-    knownTriangles.add(key);
+    const triangle = ids.map((id, j) => vertex(id, [a, b, c][j])) as Triple;
+    const key = triangleKey(triangle);
+    if (knownTriangles.has(key) || localTriangles.has(key)) continue;
+    localTriangles.add(key);
     triangles.push(triangle);
   }
-  return triangles.length === mesh.triangles.length ? mesh : compact(combined);
+  return { vertices, triangles, retained, localVertices, localTriangles };
 }
 
 /** Cluster only within connected observed surfaces, never across distant gaps. */
@@ -557,6 +560,12 @@ function coarsen(
 export class PersistentSurfaceMap {
   private mesh: Mesh = { vertices: [], triangles: [] };
   private cached: SurfacePatch | null = null;
+  private knownVertices = new Map<string, number>();
+  private knownTriangles = new Set<string>();
+  private revision = 0;
+  private sentVertices = 0;
+  private sentIndices = 0;
+  private replaceDelta = true;
   private spacing: number;
   private clustered = false;
   private readonly maxTriangles: number;
@@ -585,20 +594,42 @@ export class PersistentSurfaceMap {
   get triangleCount() {
     return this.mesh.triangles.length;
   }
-  add(patch: SurfacePatch): void {
-    const combined = append(this.mesh, patch);
-    if (combined === this.mesh) return;
-    // Keep observed color detail and topology intact while they fit. Applying
-    // the initial spatial grid on every frame erased small textured faces even
-    // with abundant capacity, and repeated expensive global support checks.
+  add(patch: SurfacePatch): { retained: SurfacePatch | null; reset: boolean } {
+    const addition = prepareAppend(
+      this.mesh,
+      patch,
+      this.knownVertices,
+      this.knownTriangles,
+    );
+    if (!addition.triangles.length)
+      return { retained: addition.retained, reset: false };
     if (
-      combined.vertices.length <= this.maxVertices &&
-      combined.triangles.length <= this.maxTriangles
+      this.mesh.vertices.length + addition.vertices.length <=
+        this.maxVertices &&
+      this.mesh.triangles.length + addition.triangles.length <=
+        this.maxTriangles
     ) {
-      this.mesh = combined;
+      for (const vertex of addition.vertices) {
+        this.mesh.vertices.push(vertex);
+        this.mesh.groups?.push(-1);
+      }
+      for (const triangle of addition.triangles)
+        this.mesh.triangles.push(triangle);
+      for (const [key, id] of addition.localVertices)
+        this.knownVertices.set(key, id);
+      for (const key of addition.localTriangles) this.knownTriangles.add(key);
       this.cached = null;
-      return;
+      this.revision++;
+      return { retained: addition.retained, reset: false };
     }
+    const combined: Mesh = {
+      vertices: [...this.mesh.vertices, ...addition.vertices],
+      triangles: [...this.mesh.triangles, ...addition.triangles],
+      groups: [
+        ...(this.mesh.groups ?? this.mesh.vertices.map(() => -1)),
+        ...addition.vertices.map(() => -1),
+      ],
+    };
     // Coarsening is speculative: time/memory exhaustion leaves the previous
     // snapshot intact. Check inside costly support-index construction too.
     const deadline = performance.now() + 8_000;
@@ -653,9 +684,48 @@ export class PersistentSurfaceMap {
       );
     }
     this.mesh = simplified;
+    this.knownVertices = new Map(
+      simplified.vertices.map((v, i) => [positionKey(v.position), i]),
+    );
+    this.knownTriangles = new Set(simplified.triangles.map(triangleKey));
+    this.replaceDelta = true;
+    this.revision++;
     this.clustered = true;
     this.spacing = spacing;
     this.cached = null;
+    return { retained: null, reset: true };
+  }
+  takeDelta(): SurfaceDelta {
+    const vertexStart = this.replaceDelta ? 0 : this.sentVertices;
+    const indexStart = this.replaceDelta ? 0 : this.sentIndices;
+    const positions = new Float32Array(
+      (this.mesh.vertices.length - vertexStart) * 3,
+    );
+    const colors = new Float32Array(positions.length);
+    for (let i = vertexStart; i < this.mesh.vertices.length; i++) {
+      positions.set(this.mesh.vertices[i].position, (i - vertexStart) * 3);
+      colors.set(this.mesh.vertices[i].color, (i - vertexStart) * 3);
+    }
+    const indices = new Uint32Array(
+      this.mesh.triangles.length * 3 - indexStart,
+    );
+    for (let i = indexStart / 3; i < this.mesh.triangles.length; i++)
+      indices.set(this.mesh.triangles[i], i * 3 - indexStart);
+    const delta = {
+      revision: this.revision,
+      reset: this.replaceDelta,
+      vertexStart,
+      indexStart,
+      vertexCount: this.mesh.vertices.length,
+      indexCount: this.mesh.triangles.length * 3,
+      positions,
+      colors,
+      indices,
+    };
+    this.sentVertices = delta.vertexCount;
+    this.sentIndices = delta.indexCount;
+    this.replaceDelta = false;
+    return delta;
   }
   snapshot(): SurfacePatch | null {
     if (!this.mesh.triangles.length) return null;

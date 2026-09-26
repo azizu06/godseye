@@ -94,6 +94,7 @@ export async function observedFeed(page: Page) {
   });
   await page.route("http://localhost:9877/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/capture/surface.bin") return route.fulfill({ status: 404 });
     if (path === "/capture/status")
       return route.fulfill({
         json: connected

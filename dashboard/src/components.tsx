@@ -657,7 +657,11 @@ export function exportMission(
     occupancy: controller.mission.occupancy,
     path: controller.mission.path,
     trajectory: controller.mission.trajectory,
-    point_chunks: controller.mission.chunks,
+    point_chunks: controller.mission.chunks.map((chunk) => ({
+      ...chunk,
+      positions: Array.from(chunk.positions),
+      colors: Array.from(chunk.colors),
+    })),
     colored_reconstruction: serializeSurface(surface, cellM),
   };
   const url = URL.createObjectURL(

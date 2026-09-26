@@ -124,15 +124,16 @@ class VoxelMemory:
             with self._lock:
                 self._pending.append((keys, float(t_capture)))
 
-    def select(self, chunk: PointChunk) -> PointChunk:
+    def select(self, chunk: PointChunk, *, limit: int | None = None) -> PointChunk:
         """Keep one candidate per voxel not sent within refresh_s, evenly capped.
 
         Raises NoNewPoints when nothing qualifies. The result carries the
         voxel keys to `commit` once the chunk is actually published.
         """
         settings = self.settings
+        limit = settings.per_chunk if limit is None else limit
         if not settings.dedupe:
-            return _subset(chunk, _spread(len(chunk.positions), settings.per_chunk), None)
+            return _subset(chunk, _spread(len(chunk.positions), limit), None)
         keys = voxel_keys(chunk.positions, settings.voxel_m)
         unique, first = np.unique(keys, return_index=True)
         known, stamps = self._fold()
@@ -147,7 +148,7 @@ class VoxelMemory:
         new = np.sort(first[~recent])  # back to image order, so the cap spreads evenly
         if not new.size:
             raise NoNewPoints('every voxel in this frame was sent recently')
-        keep = new[_spread(new.size, settings.per_chunk)]
+        keep = new[_spread(new.size, limit)]
         return _subset(chunk, keep, keys[keep])
 
     def remembered(self) -> np.ndarray:

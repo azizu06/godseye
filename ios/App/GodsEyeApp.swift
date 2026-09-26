@@ -35,7 +35,7 @@ struct CaptureView: View {
     @State private var record = true
     @State private var mesh = true
     @State private var lossless = true
-    @State private var rate = 10.0
+    @State private var rate = 30.0
     @State private var archiveRate = 2.0
 
     var body: some View {
@@ -79,6 +79,7 @@ struct CaptureView: View {
                                 Picker("Sensor bundles", selection: $rate) {
                                     Text("5 / sec").tag(5.0)
                                     Text("10 / sec").tag(10.0)
+                                    Text("30 / sec").tag(30.0)
                                 }.pickerStyle(.segmented)
                             }
                             Toggle("Record full sensor data", isOn: $record)
@@ -89,6 +90,7 @@ struct CaptureView: View {
                                     Text("2 / sec").tag(2.0)
                                     Text("5 / sec").tag(5.0)
                                     Text("10 / sec").tag(10.0)
+                                    Text("30 / sec").tag(30.0)
                                 }.pickerStyle(.segmented)
                                 Text("Records native RGB, raw and smoothed depth, confidence, scene geometry, and metadata. Lossless color uses substantially more storage.")
                                     .font(.caption).foregroundStyle(.secondary)

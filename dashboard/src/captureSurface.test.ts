@@ -290,7 +290,14 @@ describe("calibrated capture surfaces", () => {
         ),
       );
       expect(patch.indices.length).toBeGreaterThan(1000);
-      expect([...patch.indices]).not.toContain(0);
+      // Refinement may retain the valid native faces beside the strip; none
+      // may span the missing/discontinuous column itself.
+      for (let i = 0; i < patch.indices.length; i += 3) {
+        const pixels = [...patch.indices.subarray(i, i + 3)].map(
+          (id) => patch.uvs![id * 2] * 256 - 0.5,
+        );
+        expect(Math.min(...pixels) < 2 && Math.max(...pixels) > 2).toBe(false);
+      }
     },
   );
 
