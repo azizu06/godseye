@@ -1,4 +1,3 @@
-import { bakeSurfaceColors } from "./surfaceColor";
 import { SurfaceMapClient } from "./surfaceMapClient";
 import { decodeSurfaceImage } from "./surfaceImage";
 import { useEffect, useRef, useState } from "react";
@@ -201,6 +200,11 @@ export function useColorSurfaces(
         if (surface.jpeg && surface.indices.length)
           surface.image = await decodeSurfaceImage(surface.jpeg, signal);
         if (disposed || signal.aborted) return;
+        // Display calibrated image detail immediately; persistent integration
+        // can be much slower. Do not mark the capture fused until it finishes:
+        // a cancelled/failed job must remain eligible for a later retry.
+        bucket.patches = retainSurface(bucket.patches, surface, map);
+        publish("receiving");
         if (surface.image && surface.indices.length && !bucket.capacity) {
           const context = surface.image.getContext("2d");
           if (!context || !bucket.client)
@@ -215,8 +219,20 @@ export function useColorSurfaces(
           );
           try {
             const result = await bucket.client.add(
-              bakeSurfaceColors(surface, pixels),
+              {
+                id: surface.id,
+                positions: surface.positions,
+                indices: surface.indices,
+                uvs: surface.uvs,
+              },
               signal,
+              pixels,
+              {
+                sessionId: surface.sessionId,
+                mapEpoch: surface.mapEpoch,
+                cameraPosition: surface.cameraPosition,
+                cameraForward: surface.cameraForward,
+              },
             );
             if (disposed || signal.aborted) return;
             bucket.persistent = result.patch;
@@ -228,7 +244,6 @@ export function useColorSurfaces(
             else throw error;
           }
         }
-        bucket.patches = retainSurface(bucket.patches, surface, map);
         bucket.latest = surface.capturedAt;
         bucket.lastToken = token;
         publish(

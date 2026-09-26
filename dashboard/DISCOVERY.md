@@ -42,3 +42,9 @@ Mouse mappings are fixed: left-drag pans and right-drag rotates; middle-drag orb
 A keyboard-focus-only Open workspace button provides a discoverable accessible entry without persistent visual clutter.
 Opening or closing the drawer cancels held steering; panel/dialog controls must not steer the rover.
 Retain the simulation/source distinction in Arm labels and workspace details, and keep existing safe command/API behavior.
+
+## Deferred auditory guidance concept
+
+Parked for later agreement: conversational guidance for blind users using Gemini, live phone pose, deterministic route computation and fresh depth evidence.
+The earlier seated auditory-room exploration concept is also unimplemented.
+Current work remains rendering quality; this note does not authorize a voice-guidance implementation or claim walking/navigation safety.

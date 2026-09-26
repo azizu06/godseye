@@ -24,13 +24,14 @@ function areaSquared(mesh: Mesh, triangle: Triple) {
     (ab[0] * ac[1] - ab[1] * ac[0]) ** 2
   );
 }
-function compact(mesh: Mesh): Mesh {
+function compact(mesh: Mesh, checkpoint = () => {}): Mesh {
   const used = new Map<number, number>(),
     vertices: Vertex[] = [],
     groups: number[] = [];
   const triangles = mesh.triangles.map(
     (triangle) =>
       triangle.map((index) => {
+        checkpoint();
         let mapped = used.get(index);
         if (mapped === undefined) {
           mapped = vertices.length;
@@ -111,7 +112,7 @@ function append(mesh: Mesh, patch: SurfacePatch): Mesh {
 }
 
 /** Cluster only within connected observed surfaces, never across distant gaps. */
-function components(mesh: Mesh, initialCellM: number) {
+function components(mesh: Mesh, initialCellM: number, checkpoint: () => void) {
   const parents = mesh.vertices.map((_, i) => i);
   const find = (index: number): number => {
     while (parents[index] !== index) {
@@ -135,6 +136,7 @@ function components(mesh: Mesh, initialCellM: number) {
     else union(first, index);
   });
   for (const [a, b, c] of mesh.triangles) {
+    checkpoint();
     union(a, b);
     union(a, c);
   }
@@ -142,6 +144,7 @@ function components(mesh: Mesh, initialCellM: number) {
   // resolution. This tolerance never grows when the rendering mesh coarsens.
   const neighbors = new Map<string, number>();
   mesh.vertices.forEach((vertex, index) => {
+    checkpoint();
     const key = cellKey(vertex.position, initialCellM),
       other = neighbors.get(key);
     if (other === undefined) neighbors.set(key, index);
@@ -206,11 +209,16 @@ function subtractTriangle(
   return pieces;
 }
 /** Fast support proof for complete axis-aligned rectangles, never a holey mesh. */
-function rectangularComponents(mesh: Mesh, roots: number[]) {
+function rectangularComponents(
+  mesh: Mesh,
+  roots: number[],
+  checkpoint: () => void,
+) {
   type Region = { bounds: number[][]; vertices: number[]; triangles: Triple[] };
   const regions = new Map<number, Region>(),
     rectangles = new Set<number>();
   mesh.vertices.forEach((vertex, index) => {
+    checkpoint();
     let region = regions.get(roots[index]);
     if (!region) {
       region = {
@@ -230,8 +238,10 @@ function rectangularComponents(mesh: Mesh, roots: number[]) {
       region!.bounds[axis][1] = Math.max(region!.bounds[axis][1], v);
     });
   });
-  for (const triangle of mesh.triangles)
+  for (const triangle of mesh.triangles) {
+    checkpoint();
     regions.get(roots[triangle[0]])!.triangles.push(triangle);
+  }
   for (const [root, region] of regions) {
     const drop = region.bounds.findIndex(([min, max]) => max - min < 1e-7);
     if (drop < 0) continue;
@@ -244,6 +254,7 @@ function rectangularComponents(mesh: Mesh, roots: number[]) {
     const edges = new Map<string, { count: number; a: number; b: number }>();
     let covered = 0;
     for (const triangle of region.triangles) {
+      checkpoint();
       const [a, b, c] = triangle.map((i) => mesh.vertices[i].position);
       covered +=
         Math.abs(
@@ -261,6 +272,7 @@ function rectangularComponents(mesh: Mesh, roots: number[]) {
     if (Math.abs(covered - area) > area * 1e-7) continue;
     let valid = true;
     for (const edge of edges.values()) {
+      checkpoint();
       if (edge.count > 2) {
         valid = false;
         break;
@@ -291,10 +303,13 @@ function observedSupport(
   roots: number[],
   cellM: number,
   tolerance: number,
+  checkpoint: () => void,
 ) {
   const buckets = new Map<string, number[]>(),
     large: number[] = [];
+  let insertions = 0;
   const bounds = mesh.triangles.map((triangle) => {
+    checkpoint();
     const p = triangle.map((i) => mesh.vertices[i].position);
     return [0, 1, 2].map((axis) => [
       Math.min(...p.map((v) => v[axis])),
@@ -302,6 +317,7 @@ function observedSupport(
     ]);
   });
   mesh.triangles.forEach((triangle, index) => {
+    checkpoint();
     const range = bounds[index].map(([min, max]) => [
       Math.floor((min - tolerance) / cellM),
       Math.floor((max + tolerance) / cellM),
@@ -314,14 +330,20 @@ function observedSupport(
     for (let x = range[0][0]; x <= range[0][1]; x++)
       for (let y = range[1][0]; y <= range[1][1]; y++)
         for (let z = range[2][0]; z <= range[2][1]; z++) {
+          checkpoint();
           const key = `${roots[triangle[0]]}:${x},${y},${z}`,
             bucket = buckets.get(key);
+          if (++insertions > 4_000_000 || (!bucket && buckets.size >= 500_000))
+            throw Error(
+              "Surface map capacity reached: support indexing exceeds its bounded memory budget.",
+            );
           if (bucket) bucket.push(index);
           else buckets.set(key, [index]);
         }
   });
   let work = 0;
   return (triangle: Triple) => {
+    checkpoint();
     if (work >= 150000 || large.length > 4096) return false;
     const p = triangle.map((i) => mesh.vertices[i].position),
       [a, b, c] = p;
@@ -363,6 +385,7 @@ function observedSupport(
     let uncovered: Point2[][] = [projected],
       checked = 0;
     for (const index of candidates) {
+      checkpoint();
       if (
         bounds[index].some(
           ([min, max], axis) =>
@@ -405,25 +428,39 @@ function coarsen(
   cellM: number,
   initialCellM: number,
   representatives: number,
+  checkpoint: () => void,
 ): Mesh {
-  const originalFaces = new Set(mesh.triangles.map(triangleKey));
+  const originalFaces = new Set(
+    mesh.triangles.map((triangle) => {
+      checkpoint();
+      return triangleKey(triangle);
+    }),
+  );
   let supported: ReturnType<typeof observedSupport> | undefined;
   let rectangles: Set<number> | undefined;
   const observed = (triangle: Triple) => {
     if (originalFaces.has(triangleKey(triangle))) return true;
-    rectangles ??= rectangularComponents(mesh, roots);
+    rectangles ??= rectangularComponents(mesh, roots, checkpoint);
     if (rectangles.has(roots[triangle[0]])) return true;
-    supported ??= observedSupport(mesh, roots, cellM, initialCellM / 4);
+    supported ??= observedSupport(
+      mesh,
+      roots,
+      cellM,
+      initialCellM / 4,
+      checkpoint,
+    );
     return supported(triangle);
   };
   const origins = new Map<number, Triple>();
   mesh.vertices.forEach((vertex, index) => {
+    checkpoint();
     if (!origins.has(roots[index])) origins.set(roots[index], vertex.position);
   });
   const regionKey = (position: Triple, root: number) =>
     `${root}:${cellKey(position.map((v, axis) => v - origins.get(root)![axis]) as Triple, cellM)}`;
   const anchors = new Map<string, number>();
   const remap = mesh.vertices.map((vertex, index) => {
+    checkpoint();
     const key = regionKey(vertex.position, roots[index]);
     let anchor = anchors.get(key);
     if (anchor === undefined) {
@@ -451,6 +488,7 @@ function coarsen(
     { first: Triple; center: number[]; far: Triple; distance: number }
   >();
   for (const triangle of mesh.triangles) {
+    checkpoint();
     const root = roots[triangle[0]],
       center = [0, 1, 2].map(
         (axis) =>
@@ -478,6 +516,7 @@ function coarsen(
     if (representatives > 1) retain(end.far);
   }
   for (const triangle of mesh.triangles) {
+    checkpoint();
     const center = [0, 1, 2].map(
       (axis) =>
         triangle.reduce(
@@ -504,7 +543,10 @@ function coarsen(
   // an actual observed triangle there instead of erasing it or inventing a face.
   for (const [region, { triangle }] of fallbacks)
     if (!covered.has(region)) retain(triangle);
-  return compact({ vertices: mesh.vertices, triangles, groups: roots });
+  return compact(
+    { vertices: mesh.vertices, triangles, groups: roots },
+    checkpoint,
+  );
 }
 
 /**
@@ -516,6 +558,7 @@ export class PersistentSurfaceMap {
   private mesh: Mesh = { vertices: [], triangles: [] };
   private cached: SurfacePatch | null = null;
   private spacing: number;
+  private clustered = false;
   private readonly maxTriangles: number;
   private readonly maxVertices: number;
   private readonly initialCellM: number;
@@ -537,7 +580,7 @@ export class PersistentSurfaceMap {
     this.spacing = this.initialCellM;
   }
   get cellM() {
-    return this.spacing;
+    return this.clustered ? this.spacing : 0;
   }
   get triangleCount() {
     return this.mesh.triangles.length;
@@ -545,7 +588,28 @@ export class PersistentSurfaceMap {
   add(patch: SurfacePatch): void {
     const combined = append(this.mesh, patch);
     if (combined === this.mesh) return;
-    const roots = components(combined, this.initialCellM);
+    // Keep observed color detail and topology intact while they fit. Applying
+    // the initial spatial grid on every frame erased small textured faces even
+    // with abundant capacity, and repeated expensive global support checks.
+    if (
+      combined.vertices.length <= this.maxVertices &&
+      combined.triangles.length <= this.maxTriangles
+    ) {
+      this.mesh = combined;
+      this.cached = null;
+      return;
+    }
+    // Coarsening is speculative: time/memory exhaustion leaves the previous
+    // snapshot intact. Check inside costly support-index construction too.
+    const deadline = performance.now() + 8_000;
+    let operations = 0;
+    const checkpoint = () => {
+      if ((operations++ & 1023) === 0 && performance.now() > deadline)
+        throw Error(
+          "Surface map capacity reached: coarsening exceeded its bounded processing time.",
+        );
+    };
+    const roots = components(combined, this.initialCellM, checkpoint);
     const componentCount = new Set(roots).size;
     const capacity = Math.min(
       this.maxTriangles,
@@ -562,6 +626,7 @@ export class PersistentSurfaceMap {
         spacing,
         this.initialCellM,
         Math.min(2, Math.floor(capacity / componentCount)),
+        checkpoint,
       );
     let visits = combined.triangles.length;
     for (
@@ -584,9 +649,11 @@ export class PersistentSurfaceMap {
         spacing,
         this.initialCellM,
         Math.min(2, Math.floor(capacity / componentCount)),
+        checkpoint,
       );
     }
     this.mesh = simplified;
+    this.clustered = true;
     this.spacing = spacing;
     this.cached = null;
   }

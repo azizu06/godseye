@@ -796,7 +796,7 @@ export default function Scene(props: SceneProps) {
                 {props.surfaceStatus === "capacity"
                   ? "Map capacity reached · prior scan retained · export before reset"
                   : props.persistentSurface || props.surfaces.length
-                    ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? ` · retained at ${(props.mapCellM * 100).toFixed(0)} cm` : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
+                    ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · retained grid ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
                     : props.simulated
                       ? "Discovering color surfaces…"
                       : props.surfaceStatus === "error" ||

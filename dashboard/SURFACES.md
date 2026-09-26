@@ -32,3 +32,8 @@ Continuous depth slopes remain supported rather than treating the full coarse-ce
 Triangles become larger and fusion has fewer vertices, while synchronized image UVs retain camera texture detail.
 This trades fine surface and confidence precision for preview coverage and processing speed; it does not increase hardware capture rate, extend the 5 m range, or infer an unobserved wall.
 The existing planar compression, accumulated-map budgets, source lifecycle and API contracts remain unchanged.
+
+Issue #46 keeps the coarse depth preview while selectively retaining image color detail inside already-supported triangles before textures leave the recent-view cache.
+Plain surfaces retain large triangles; sampled color detail can use a bounded finer appearance mesh, processed in the fusion worker.
+The accumulated map applies spatial clustering only when required by its unchanged global geometry budget.
+Recent textures publish before fusion finishes; see [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md) for limits and `cell_m` semantics.

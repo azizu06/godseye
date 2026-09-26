@@ -4,10 +4,16 @@ import { readFile } from "node:fs/promises";
 import { capture } from "./captureFixture";
 
 type ExportedMap = { positions: number[]; colors: number[]; indices: number[] };
-function verifyCompressedCapture(map: ExportedMap) {
-  // The unchanged 20×15 depth fixture has 300 vertices and 532 triangles.
-  expect(map.positions.length / 3).toBeLessThan(300);
-  expect(map.indices.length / 3).toBeLessThan(532);
+function verifyCompressedCapture(
+  map: ExportedMap,
+  input: { vertices: number; triangles: number },
+) {
+  // Same 20×15 measured depth fixture. Appearance refinement adds samples
+  // between its 300 corners; compression must reduce that refined input while
+  // preserving the independently checked measured footprint and colors below.
+  expect(input.vertices).toBeGreaterThan(300);
+  expect(map.positions.length / 3).toBeLessThan(input.vertices);
+  expect(map.indices.length / 3).toBeLessThan(input.triangles);
   expect(map.indices.length).toBeGreaterThan(0);
   expect(map.colors.length).toBe(map.positions.length);
   const xs = map.positions.filter((_, i) => i % 3 === 0);
@@ -214,7 +220,43 @@ for (const version of [1, 2])
     );
     await panel(page, "Scene settings");
     expect(snapshot.colored_reconstruction).not.toBeNull();
-    verifyCompressedCapture(snapshot.colored_reconstruction);
+    const refinedInput = await page.evaluate(
+      async (bytes) => {
+        const captureModule = "/src/captureSurface.ts";
+        const imageModule = "/src/surfaceImage.ts";
+        const colorModule = "/src/surfaceColor.ts";
+        const [
+          { decodeCaptureSurface },
+          { decodeSurfaceImage },
+          { bakeSurfaceColors },
+        ] = await Promise.all([
+          import(/* @vite-ignore */ captureModule),
+          import(/* @vite-ignore */ imageModule),
+          import(/* @vite-ignore */ colorModule),
+        ]);
+        const patch = decodeCaptureSurface(Uint8Array.from(bytes).buffer);
+        const image = await decodeSurfaceImage(
+          patch.jpeg,
+          new AbortController().signal,
+        );
+        const pixels = image
+          .getContext("2d")
+          .getImageData(0, 0, image.width, image.height);
+        const refined = bakeSurfaceColors(patch, pixels);
+        return {
+          vertices: refined.positions.length / 3,
+          triangles: refined.indices.length / 3,
+        };
+      },
+      Array.from(capture(1, version)),
+    );
+    verifyCompressedCapture(snapshot.colored_reconstruction, refinedInput);
+    console.info("capture compression", {
+      version,
+      refinedInput,
+      retainedVertices: snapshot.colored_reconstruction.positions.length / 3,
+      retainedTriangles: snapshot.colored_reconstruction.indices.length / 3,
+    });
     await expect(page.locator(".scene-stat > strong")).toHaveText(
       (snapshot.colored_reconstruction.positions.length / 3).toLocaleString(),
     );
