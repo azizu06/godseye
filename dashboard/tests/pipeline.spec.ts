@@ -133,6 +133,7 @@ test("binary phone RGB + depth travels through the real backend into rendered wo
             .published,
       )
       .toBe(2);
+    const pointsBeforeGeometry = await render();
     async function geometry(anchors: unknown[]) {
       const header = Buffer.from(
         JSON.stringify({
@@ -168,34 +169,41 @@ test("binary phone RGB + depth travels through the real backend into rendered wo
         transform: [0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 2, 3, 1],
       },
     ]);
-    await expect(status).toContainText("1 walls");
-    await expect(status).toContainText("0 points");
-    await expect.poll(async () => (await render()).equals(framed)).toBe(false);
-    const solidWall = await render();
+    // Plane capture remains available, but must neither draw rectangles nor
+    // prune existing points or suppress subsequent samples on that plane.
     frame(3);
     await expect
       .poll(
         async () =>
           (await (await fetch(`${http}/capture/status`)).json()).mapping
-            .wall_only,
+            .published,
       )
-      .toBe(1);
-    await expect(status).toContainText("0 points"); // Incoming wall samples consume no point capacity.
+      .toBe(3);
+    await expect(status).toContainText("300 points");
+    await expect(status).not.toContainText("walls");
+    expect((await render()).equals(pointsBeforeGeometry)).toBe(true);
+    const stored = await fetch(`${http}/capture/rich/geometry.bin`);
+    expect(stored.ok).toBe(true);
+    const storedPacket = Buffer.from(await stored.arrayBuffer());
+    const storedHeader = JSON.parse(
+      storedPacket.subarray(4, 4 + storedPacket.readUInt32LE(0)).toString(),
+    );
+    expect(storedHeader.metadata.anchors[0].id).toBe("classified-wall");
     const foreground = [...originalHeader.transform];
     foreground[12] += 0.3;
     frame(4, foreground);
-    await expect(status).toContainText("300 points"); // Object detail 30 cm in front of the wall survives.
+    await expect(status).toContainText("600 points"); // Both wall and foreground samples remain.
     await expect
-      .poll(async () => (await render()).equals(solidWall))
+      .poll(async () => (await render()).equals(pointsBeforeGeometry))
       .toBe(false);
     const wallAndObject = await render();
     await page.screenshot({
-      path: testInfo.outputPath("wall-and-foreground.png"),
+      path: testInfo.outputPath("points-and-foreground.png"),
     });
     clearInterval(poses);
     phone.close();
     await expect(status).toContainText("Phone offline");
-    await expect(status).toContainText("300 points");
+    await expect(status).toContainText("600 points");
     expect((await render()).equals(wallAndObject)).toBe(true);
   } finally {
     clearInterval(poses);

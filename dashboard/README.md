@@ -28,7 +28,7 @@ Use `/?live=off` for an empty viewport without a backend connection.
 - **Right-drag:** orbit around the current view target.
 - **Left-drag:** pan the target and camera together. Shift + right-drag and middle-drag also pan.
 - **Scroll:** zoom in and out.
-- **F:** frame retained points and walls without changing the viewing direction.
+- **F:** frame retained points without changing the viewing direction.
 - **Home:** restore the initial camera and target.
 - **Keyboard, with the viewport focused:** arrows pan, Shift + arrows orbit, and `+` / `-` zoom.
 - **Touch:** one finger orbits; two fingers pan and pinch to zoom.
@@ -56,38 +56,16 @@ inspect surfaces after the phone moves away.
 The preview retains up to **2,000,000 points**, with one latest measured sample
 per **1 cm spatial cell**. Positions stay at their measured coordinates rather
 than snapping to cell centers. When full, new cells replace older slots in a
-ring; wall compaction frees slots for reuse. The status line reports replacement.
-This buffer limits display memory, not the
-phone's recording. The current backend emits at most 2,500 samples per chunk
+ring. The status line reports replacement. This buffer limits display memory,
+not the phone's recording. The current backend emits at most 2,500 samples per chunk
 at 4 Hz, using confidence 2 and depths from 0.05 to 5 meters.
 
-## Solid walls and point allocation
+Walls, doors, and decorations all remain colored points. ARKit plane metadata
+continues to be captured, but does not replace surfaces with rectangles or remove
+nearby samples. Scan previously simplified areas again to refill their points.
 
-The phone's full geometry capture identifies classified vertical wall planes.
-The viewport polls the compact `/capture/walls` snapshot once per second and
-draws each confirmed wall as a solid gray rectangle (two triangles). It applies
-the plane center, iOS 16 extent rotation, and anchor-to-world transform; it does
-not classify every vertical surface as a wall. ARKit refinements resize and move
-rectangles, and complete snapshots remove anchors that disappear. Rebuild the
-iPhone app to include the explicit `is_wall` classification field; older packets
-whose classification is `wall` are also supported.
-
-Samples within **2 cm** of a wall's measured interior are removed from the point
-buffer and skipped on arrival. Border samples and objects farther from the wall
-stay as colored points. The backend also filters walls **before** selecting its
-2,500-point output, allocating that per-frame budget to non-wall detail. A view
-containing only wall surfaces needs no redundant point chunk. Full sensor recordings
-remain untouched. Rectangles do not consume the two-million-point budget.
-
-Point removal runs in small time-limited batches; new geometry updates coalesce
-without restarting unfinished work. GPU uploads cover changed ranges instead of
-the entire 48 MB position/color buffer every frame. CPU spatial indexing and GPU
-copies use additional memory. Wall snapshots are capped at 128 rectangles.
-
-This is a display simplification: thin features within 2 cm of a wall can disappear,
-and rectangles can fill openings inside their bounds. Removed point samples return
-when rescanned if a wall is later removed or corrected. Walls are not a collision
-map or proof that an entire rectangular area was observed.
+GPU uploads cover changed ranges instead of the entire 48 MB position/color
+buffer every frame. CPU spatial indexing and GPU copies use additional memory.
 
 Map/session changes clear old geometry before new points arrive. Duplicate,
 delayed, malformed, and oversized chunks are ignored. A disconnected or stale
@@ -105,9 +83,8 @@ object removal, and calibration between the phone and rover remain future work.
 
 `src/Scene.tsx` owns the freely navigable camera, grid, and geometry slot.
 `src/PointCloudLayer.tsx` uploads a bounded point buffer to Three.js.
-`src/pointCloud.ts` validates, accumulates, and compacts chunks; `src/usePointCloud.ts`
-handles the live connection, wall polling, reconnects, and status. `src/walls.ts`
-handles rectangle validation and point filtering; `src/WallLayer.tsx` renders walls.
+`src/pointCloud.ts` validates and accumulates chunks; `src/usePointCloud.ts`
+handles the live connection, reconnects, and status.
 
 ```sh
 npm run build
@@ -124,6 +101,7 @@ camera independence, window resizing, and absence of rover commands. Test
 fixtures never feed the real phone backend. The pipeline test launches an isolated
 backend on an ephemeral local port with an in-memory database and no recording,
 sends calibrated binary RGB/depth frames behind newer poses, and checks rendered
-geometry in the browser. It uses `python3` by default; set `GODSEYE_PYTHON` to the
+geometry in the browser, including retaining points when classified wall planes
+arrive. It uses `python3` by default; set `GODSEYE_PYTHON` to the
 Python executable containing your backend dependencies if needed. Physical-device
 visual validation is still needed for a particular phone's calibration and tracking quality.

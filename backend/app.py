@@ -24,7 +24,7 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
-from backend.mapping import MappingError, WallOnlyFrame, build_point_chunk, points_message
+from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
 
 logger = logging.getLogger(__name__)
@@ -269,19 +269,6 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
                                       app.state.changes.watching)
         return locate
 
-    def map_frame(payload, session_id, map_epoch):
-        if build_points is not build_point_chunk:
-            return build_points(payload, session_id, map_epoch)
-        capture = app.state.rich_capture
-        packet = capture.latest.get('geometry')
-        cache = capture.wall_cache
-        walls = ()
-        if (packet is not None and cache is not None and cache[0] == packet.token and
-                (packet.header['session_id'], packet.header['map_epoch']) == (session_id, map_epoch) and
-                packet.header['t_capture'] > app.state.tracking_lost_capture):
-            walls = cache[1]
-        return build_point_chunk(payload, session_id, map_epoch, walls=walls)
-
     async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
         """Run `compute` on the newest bundle, one at a time, off the event loop.
 
@@ -296,9 +283,6 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
-            except WallOnlyFrame:
-                stats['wall_only'] += 1
-                continue
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
@@ -486,7 +470,7 @@ def create_app(db_path: str | None = None, build_points=build_point_chunk,
             session = (hello.session_id, hello.map_epoch)
             mailbox = LatestFrame()
             workers.append(asyncio.create_task(frame_worker(
-                owner, session, mailbox, map_frame, accept_points, app.state.map_stats,
+                owner, session, mailbox, build_points, accept_points, app.state.map_stats,
                 MAP_INTERVAL_S, MAP_MAX_AGE_S)))
             detections = LatestFrame()
             if app.state.detector is not None:

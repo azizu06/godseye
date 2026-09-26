@@ -106,17 +106,6 @@ Older v1 archives are unchanged and are not migrated.
 Open `/capture` for sensor previews and metadata. Downloads:
 
 - `/capture/rich/{frame|telemetry|geometry|still}.bin`: exact latest v2 packet.
-- `/capture/walls`: compact v2 snapshot of up to 128 classified vertical wall rectangles.
-  When available, returns `version: 2`, `type: walls`, `available: true`,
-  `session_id`, `map_epoch`, `t_capture`, and `walls: [{id, corners: [12 floats]}]`.
-  Corners run around the rectangle in ARKit world meters; each four-corner rectangle
-  renders as two triangles. Missing geometry or invalid tracking returns
-  `available: false`; a valid empty snapshot has `available: true, walls: []`.
-  New snapshots replace the full anchor set. The phone exports `is_wall` alongside
-  its descriptive classification. Only classified vertical walls with valid rigid
-  transforms and finite extents contribute; tables, doors, windows and unknown
-  planes are excluded. The route applies the anchor-local center and extent rotation
-  before the anchor-to-world transform. See [ARKit plane extents](https://developer.apple.com/documentation/arkit/arplaneanchor/planeextent).
 - `/capture/sensor/{rgb|raw_depth|raw_confidence|smoothed_depth|smoothed_confidence|person_mask|person_depth}`:
   native JPEG or rendered PNG; 204 when unavailable. ETags avoid redundant transfer.
 - `/capture/status`: v1 preview/health plus `rich` packet descriptions, receipt ages,

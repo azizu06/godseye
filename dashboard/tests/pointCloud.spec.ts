@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  MAX_POINTS,
   linearColor,
   parsePointChunk,
   PointCloudStore,
@@ -143,4 +144,32 @@ test("feed URLs follow the viewing laptop and allow an explicit source", () => {
   expect(() =>
     liveEndpoint("http://localhost:5173/?live=https://example.test/live"),
   ).toThrow();
+});
+
+test("point buffer retains two million distinct samples and uploads appended ranges only", () => {
+  const cloud = new PointCloudStore();
+  expect(MAX_POINTS).toBe(2_000_000);
+  const colors = Array(7500).fill(0.5);
+  for (let offset = 0; offset < MAX_POINTS; offset += 2500) {
+    const positions = [];
+    for (let i = offset; i < offset + 2500; i++)
+      positions.push((i % 2000) * 0.02, Math.floor(i / 2000) * 0.02, 0);
+    cloud.ingest({
+      version: 1,
+      type: "points",
+      session_id: "phone-a",
+      map_epoch: 1,
+      chunk_id: offset + 1,
+      positions,
+      colors,
+    });
+    expect(cloud.takeUpdateRanges()).toEqual([
+      { start: offset * 3, count: 7500 },
+    ]);
+  }
+  expect(cloud.count).toBe(2_000_000);
+  expect(cloud.evicted).toBe(0);
+  cloud.ingest(chunk(MAX_POINTS + 1, [90, 90, 90]));
+  expect(cloud.count).toBe(2_000_000);
+  expect(cloud.evicted).toBe(1);
 });

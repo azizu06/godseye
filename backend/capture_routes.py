@@ -6,7 +6,6 @@ from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
 from backend.rich_capture import KINDS, MAX_PACKET, RichPacket, decode_rich, render_sensor
-from backend.walls import wall_rectangles
 
 IMAGE_SENSORS = {'rgb', 'raw_depth', 'raw_confidence', 'smoothed_depth',
                  'smoothed_confidence', 'person_mask', 'person_depth'}
@@ -29,28 +28,6 @@ def legacy_packet(frame):
 
 
 def register_capture_routes(app):
-    @app.get('/capture/walls')
-    async def walls(response: Response):
-        response.headers.update(HEADERS)
-        session = app.state.session
-        capture = app.state.rich_capture
-        packet = capture.latest.get('geometry')
-        empty = dict(version=2, type='walls', available=False, walls=[])
-        if (packet is None or session is None or app.state.pose is None or
-                app.state.pose.tracking != 'normal' or
-                packet.header['t_capture'] <= app.state.tracking_lost_capture or
-                (packet.header['session_id'], packet.header['map_epoch']) != session):
-            return empty
-        if capture.wall_cache is None or capture.wall_cache[0] != packet.token:
-            rectangles = await asyncio.to_thread(wall_rectangles, packet.header['metadata'])
-            if (capture.latest.get('geometry') is not packet or app.state.session != session or
-                    app.state.pose is None or app.state.pose.tracking != 'normal' or
-                    packet.header['t_capture'] <= app.state.tracking_lost_capture):
-                return empty
-            capture.wall_cache = (packet.token, rectangles)
-        return dict(version=2, type='walls', available=True, session_id=session[0], map_epoch=session[1],
-                    t_capture=packet.header['t_capture'], walls=capture.wall_cache[1])
-
     @app.post('/capture/ingest')
     async def ingest(request: Request):
         owner, session = app.state.phone, app.state.session
@@ -76,17 +53,10 @@ def register_capture_routes(app):
             if abs(time.time() * 1000 - packet.header['t_wall_ms']) > 15_000:
                 raise HTTPException(409, 'Capture upload is more than 15 seconds old or clocks disagree')
             capture = app.state.rich_capture
-            rectangles = None
-            if packet.header['kind'] == 'geometry':
-                rectangles = await asyncio.to_thread(wall_rectangles, packet.header['metadata'])
-                if app.state.phone is not owner or app.state.session != session:
-                    raise HTTPException(409, 'Session changed while decoding geometry')
             try:
                 capture.accept(packet)
             except ValueError as error:
                 raise HTTPException(409, str(error)) from error
-            if rectangles is not None:
-                capture.wall_cache = (packet.token, rectangles)
             used, folder, error = await asyncio.to_thread(capture.record, packet)
             if app.state.phone is not owner or app.state.session != session:
                 raise HTTPException(409, 'Session changed during recording')
