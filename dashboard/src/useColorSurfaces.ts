@@ -206,7 +206,7 @@ export function useColorSurfaces(
           if (!context || !bucket.client)
             throw Error("Map integration unavailable");
           clearTimeout(timeout);
-          fusionTimeout = setTimeout(() => request?.abort(), 15000);
+          fusionTimeout = setTimeout(() => request?.abort(), 30000);
           const pixels = context.getImageData(
             0,
             0,

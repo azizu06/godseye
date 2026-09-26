@@ -60,7 +60,7 @@ Use React, TypeScript, Vite, and Three.js with React Three Fiber and Drei.
 ARKit coordinates are meters, right-handed, Y up; the floor is X–Z.
 Never apply the preliminary base-frame conversion.
 The scene renders the actual seven v1 message families: health, pose, points, occupancy, path, objects, and event.
-Point chunks are deduplicated by chunk ID and bounded to 60,000 points and 120 chunks.
+Point chunks are deduplicated by chunk ID and bounded to 500,000 points and 1,000 chunks.
 Trajectory is bounded to 600 samples; event history to 200 entries.
 Occupancy decodes base64 uint8 cells, validates dimensions, and distinguishes unknown/free/occupied.
 Top-down view shares the same spatial data and supports explicit goal placement in Navigate mode.

@@ -518,8 +518,8 @@ export class PersistentSurfaceMap {
   private readonly maxVertices: number;
   private readonly initialCellM: number;
   constructor(options: PersistentSurfaceMapOptions = {}) {
-    this.maxTriangles = options.maxTriangles ?? 100000;
-    this.maxVertices = options.maxVertices ?? 100000;
+    this.maxTriangles = options.maxTriangles ?? 1000000;
+    this.maxVertices = options.maxVertices ?? 500000;
     this.initialCellM = options.initialCellM ?? 0.02;
     if (
       !Number.isSafeInteger(this.maxTriangles) ||
@@ -571,7 +571,7 @@ export class PersistentSurfaceMap {
       visits += combined.triangles.length;
       // Bound a single fusion job as well as the retained geometry. A complex
       // fragmented input must not keep a worker busy indefinitely.
-      if (step >= 12 || visits > 600000 || !Number.isFinite(spacing * 2))
+      if (step >= 12 || visits > 6000000 || !Number.isFinite(spacing * 2))
         throw Error(
           "Surface map capacity reached: preserving this geometry exceeds the bounded coarsening budget.",
         );
