@@ -8,6 +8,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`.
 
+- Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
