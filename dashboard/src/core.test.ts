@@ -70,14 +70,14 @@ describe("bounded mission memory", () => {
     state = reduceMessage(state, msg, 1);
     state = reduceMessage(state, msg, 2);
     expect(state.chunks).toHaveLength(1);
-    for (let i = 2; i <= 130; i++)
+    for (let i = 2; i <= 1010; i++)
       state = reduceMessage(state, { ...msg, chunk_id: i }, i);
-    expect(state.chunks).toHaveLength(120);
+    expect(state.chunks).toHaveLength(1000);
     expect(state.chunks[0].chunk_id).toBe(11);
   });
   it("caps total retained points even for large chunks", () => {
     let state = emptyMission();
-    for (let i = 0; i < 4; i++)
+    for (let i = 0; i < 26; i++)
       state = reduceMessage(
         state,
         {
@@ -90,7 +90,7 @@ describe("bounded mission memory", () => {
         i,
       );
     expect(state.chunks.reduce((n, c) => n + c.positions.length / 3, 0)).toBe(
-      60000,
+      500000,
     );
   });
   it("deduplicates events and preserves history through object snapshots", () => {

@@ -69,9 +69,9 @@ export function reduceMessage(
     case "points": {
       if (state.chunks.some((c) => c.chunk_id === message.chunk_id))
         return next;
-      const chunks = [...state.chunks, message].slice(-120);
+      const chunks = [...state.chunks, message].slice(-1000);
       let count = chunks.reduce((n, c) => n + c.positions.length / 3, 0);
-      while (count > 60000 && chunks.length > 1)
+      while (count > 500000 && chunks.length > 1)
         count -= chunks.shift()!.positions.length / 3;
       return { ...next, chunks };
     }
