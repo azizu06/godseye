@@ -1,3 +1,4 @@
+import { mapKey } from "./protocol";
 import type {
   ChangeEvent,
   Health,
@@ -9,6 +10,7 @@ import type {
   WorldObject,
 } from "./protocol";
 export interface Mission {
+  mapKey: string | null;
   health: Health | null;
   healthAt: number;
   pose: Pose | null;
@@ -21,6 +23,7 @@ export interface Mission {
   received: number;
 }
 export const emptyMission = (): Mission => ({
+  mapKey: null,
   health: null,
   healthAt: 0,
   pose: null,
@@ -37,6 +40,15 @@ export function reduceMessage(
   message: Message,
   now = Date.now(),
 ): Mission {
+  const key = mapKey(message);
+  if (key !== undefined && key !== state.mapKey)
+    state = {
+      ...emptyMission(),
+      mapKey: key,
+      health: state.health,
+      healthAt: state.healthAt,
+      received: state.received,
+    };
   const next = { ...state, received: state.received + 1 };
   switch (message.type) {
     case "health":
@@ -70,13 +82,21 @@ export function reduceMessage(
     case "objects":
       return { ...next, objects: message.objects };
     case "event":
-      return state.events.some(
-        (e) =>
-          e.t === message.t &&
-          e.object_id === message.object_id &&
-          e.kind === message.kind,
+      return state.events.some((e) =>
+        message.id !== undefined && e.id !== undefined
+          ? e.id === message.id
+          : e.t === message.t &&
+            e.object_id === message.object_id &&
+            e.kind === message.kind,
       )
         ? next
-        : { ...next, events: [...state.events, message].slice(-200) };
+        : {
+            ...next,
+            events: [...state.events, message]
+              .sort(
+                (a, b) => a.t - b.t || (a.id ?? "").localeCompare(b.id ?? ""),
+              )
+              .slice(-200),
+          };
   }
 }

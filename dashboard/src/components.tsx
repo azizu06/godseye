@@ -357,7 +357,9 @@ export function Inspector({
         </p>
       </div>
     );
-  const history = events.filter((e) => e.object_id === object.id),
+  const history = events.filter(
+      (e) => e.object_id === object.id || e.new_object_id === object.id,
+    ),
     move = history
       .filter((e) => e.kind === "moved" || e.kind === "possible_move")
       .at(-1);
@@ -442,6 +444,10 @@ export function Inspector({
               ? "This object was observed in a new position."
               : "Identity is uncertain. Review the spatial evidence."}
           </p>
+          {move.new_object_id && (
+            <p>Candidate identity: {move.new_object_id}</p>
+          )}
+          {move.rescan_id && <p>Rescan #{move.rescan_id}</p>}
           <div className="displacement">
             <strong>
               {move.displacement_m?.toFixed(2) ?? "—"}
@@ -476,7 +482,7 @@ export function Inspector({
               </span>
             </div>
           ))}
-        <p>History received during this connection.</p>
+        <p>Bounded saved and live observations.</p>
       </div>
     </div>
   );
