@@ -63,7 +63,7 @@ GODSEYE_VOICE_ENABLED=1
 ELEVENLABS_API_KEY=...          # key restricted to Text to Speech, Speech to Text, Voices read
 GODSEYE_ELEVENLABS_VOICE_ID=... # e.g. premade "Sarah" EXAVITQu4vr4xnSDxMaL
 GEMINI_API_KEY=...
-GODSEYE_GEMINI_MODEL=gemini-2.5-flash-lite
+GODSEYE_GEMINI_MODEL=gemini-3.5-flash-lite  # 2.5-flash-lite is closed to new projects
 ```
 
 ```sh
@@ -81,6 +81,8 @@ Live smoke (2026-09-26, one synthetic `say`-generated question against a
 synthetic moved-backpack map, `scribe_v2` / `gemini-2.5-flash-lite` / Sarah on
 `eleven_flash_v2_5`): HTTP 200 in 1.4 s, transcript correct, answer "The backpack
 was last seen 20 seconds ago. It has moved 2 meters.", 3.9 s 16 kHz WAV that played.
+A follow-up Gemini-only call with a dedicated free-tier "GodsEye Scout" AI Studio
+project key and `gemini-3.5-flash-lite` returned a grounded answer in 0.9 s.
 Real rooms, microphones and noisy speech are still untested.
 
 ```sh
