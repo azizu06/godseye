@@ -103,8 +103,7 @@ one in-flight bundle per phone.
   per world voxel of `GODSEYE_POINT_VOXEL_M`, drops voxels already sent in this
   map, and publishes up to `GODSEYE_POINTS_PER_CHUNK` of the rest, evenly spread
   over the image. A frame with nothing new publishes no chunk (`map_stats`
-  counts it as `no_new_points` if it is still current, else as discarded); a
-  chunk dropped as stale is not remembered.
+  counts it as `no_new_points`); a chunk dropped as stale is not remembered.
   A voxel may be sent again once it is `GODSEYE_POINT_REFRESH_S` old by
   capture time, so a moved object or drifted surface is not frozen forever.
   The memory is shared by all viewers and resets only when the session/epoch
@@ -154,10 +153,12 @@ exercised in this slice; the shared checkpoint passes only when both are.
 ## Occupancy
 
 The same back-projected candidates (up to `GODSEYE_POINT_SAMPLES`, default
-10000, per mapped frame, before voxel dedupe, in the mapping worker thread) also
-feed a 2D grid (`backend/occupancy.py`, pure and
-hardware-free). A separate task snapshots it in a worker thread at most once per
-second and publishes only when the picture changed:
+10000, per mapped frame, before voxel dedupe) also feed a 2D grid
+(`backend/occupancy.py`, pure and hardware-free). The mapping worker thread only
+voxelizes them; the event loop commits that evidence under the same checks as the
+frame's points chunk, including frames whose chunk had no new points. A separate
+task snapshots the grid in a worker thread at most once per second and publishes
+only when the picture changed:
 
 ```json
 { "version": 1, "type": "occupancy", "session_id": "uuid", "map_epoch": 1,
@@ -186,9 +187,16 @@ second and publishes only when the picture changed:
   voxels (about 6 MB) per map; new voxels beyond that are dropped.
 - The grid belongs to one session/epoch: a map reset starts an empty one, a
   phone rejoining the same map keeps it, and a grid finished after the session or
-  phone changed is counted and dropped. New `/live` viewers and map resets get
-  the current grid, if any, after the objects and path snapshot. A slow viewer
-  holds only the newest pending grid.
+  phone changed is counted and dropped. A frame still mapping when its phone left
+  or its map reset, or finished more than 1 s after it arrived, adds nothing to
+  any grid, so a resumed map holds only accepted frames. New `/live` viewers and
+  map resets get the current grid, if any, after the objects and path snapshot. A
+  slow viewer holds only the newest pending grid.
+- `OccupancyGrid.revision` bumps whenever an accepted frame adds evidence
+  (navigation's blocked-path check keys on it). `accepted_at` is the event loop's
+  monotonic time of the newest accepted frame, even one that adds nothing, so a
+  planner can tell fresh sensing from a stale map without waiting for a new
+  `occupancy` message.
 - **Limitations:** without a motion-ready rover calibration (below) the 8 cm to
   1.5 m band is a generic guess, not its clearance; the handheld floor estimate
   can shift by a slice as evidence grows; there is no free-space ray carving (cells are only
@@ -230,22 +238,27 @@ keys).
   plus the margin, so no heading or rover base frame is needed. `camera_yaw_rad`
   is recorded for a future follower and not applied by the backend.
 
-Navigation reads `app.state.map_snapshot()`, which classifies the active map's
-evidence (blocking; call it from a worker thread). It returns None without an
-active map. It returns an immutable `OccupancySnapshot` for the current
-session/epoch only: `cells` in the `/live` layout with `origin`, `floor_y`,
-`blockers` (empty exactly when `ready`), `inflation_m`, `revision` and
-`sensed_at`. `revision` changes when the picture or floor does. `sensed_at` is
-the monotonic time of the newest accepted mapping frame, so repeated views
-keep it fresh even when `/live` sends no new grid. It is stamped with the frame's
-arrival time only after the mapping worker's phone, session, tracking-loss and
-1 s age checks pass, so dropped frames never refresh it. The staleness limit is the navigation
-owner's policy. `traversable(x, z)` is False unless the map is ready and every
-cell with any part within `inflation_m` of the point is known free; unknown,
-occupied and off-grid cells block. A map reset starts an empty snapshot (revision 0, no
-`sensed_at`) and keeps the calibration. Calibration never arms or drives.
+`app.state.map_snapshot()` is the navigation map handle: it classifies the active
+map's evidence (blocking; call it from a worker thread) and returns None without
+an active map. Otherwise it returns an immutable `OccupancySnapshot` for the
+current session/epoch only: `cells` in the `/live` layout with `origin`,
+`floor_y`, `blockers` (empty exactly when `ready`), `inflation_m`, and the grid's
+own `revision` and `accepted_at` (above), read together with the evidence. There
+is no separate counter: repeated views keep `accepted_at` fresh even when `/live`
+sends no new grid, and dropped frames never refresh it. The staleness limit is the
+navigation owner's policy. `traversable(x, z)` is False unless the map is ready
+and every cell with any part within `inflation_m` of the point is known free;
+unknown, occupied, off-grid and nonfinite queries block. A map reset starts an
+empty snapshot (revision 0, no `accepted_at`) and keeps the calibration.
+Calibration never arms or drives.
 Tested on synthetic floors and boxes only (`backend/tests/test_calibration.py`),
 with TEST values that describe no real car.
+
+Navigation (below) does not consume this yet. Its planner reads the grid's
+`snapshot()`, which uses the same calibrated threshold. It still uses its
+placeholder radius and margin, plans through unknown cells, and does not check
+`blockers`. Wiring `/goal` and explore to refuse unless ready and to inflate by
+`inflation_m` belongs to the navigation owner.
 
 ## Live objects
 
@@ -386,6 +399,60 @@ observations come from the spec), tested only on synthetic scenes
 (`backend/tests/test_changes.py`); real-scene accuracy, depth noise and ARKit
 drift are unmeasured.
 
+## Navigation
+
+`POST /goal` and explore mode plan on the active session's occupancy grid
+(`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
+(`backend/navigator.py`). Commands reach only the logging-only `drive()`, and
+`/arm` still refuses while the car reports down, so runs are exercised only by
+tests that set the armed flag directly.
+
+- **Starting:** `/goal {x, z}` needs the backend armed in `navigate` mode (409
+  otherwise; there is no disarmed preview). It plans from the current pose (at
+  most 250 ms old), answers `{version, goal, points}`, publishes `path` and starts
+  following; a new goal replaces the current run. Explore starts by itself
+  whenever the backend is armed in `explore` mode and drives to the nearest
+  reachable frontier (a known-free cell next to unknown or the edge of the cropped
+  grid), then the next, until none is left. Before any floor is mapped, goals plan
+  straight through unknown and explore waits in place with zero drive.
+- **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, occupied
+  cells inflated by a 0.15 m radius plus 0.03 m margin, line-of-sight shortcuts,
+  waypoints at most 0.25 m apart, at most 200,000 expansions. Unknown cells are
+  traversable at 3x the cost of free ones (depth sees only a few meters ahead)
+  and the grid is padded with unknown so goals beyond the mapped area still plan
+  (up to 1,000,000 cells).
+- **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `drive()` call per
+  tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
+  the contract's 0.20 m/s and 0.5 rad/s. Heading errors above 0.6 rad turn in
+  place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
+- **Replanning:** a full replan from the current pose about once per second; a
+  new map revision also triggers a blocked-path check (at most 4 Hz) that halts
+  and replans at once when the rest of the path now passes within the inflation
+  radius of an occupied cell. `path` is published only when its points change,
+  and new `/live` viewers get the current path.
+- **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
+  zero drive, health event) and publishes an empty `path`; health reports the
+  reason. `arrived`, `explore_complete`; `no_path`, `search_limit`,
+  `destination_blocked` (goal occupied or inside the inflation), `destination_unknown`,
+  `out_of_bounds`, `start_blocked`; `pose_stale` (no pose within 250 ms),
+  `tracking_lost`; `no_progress` (motion commanded while the pose moved under
+  5 cm and 0.15 rad for 5 s); `nav_error` (planner or loop failure); `disarmed`
+  (defensive: the armed mode changed without a stop). Operator stop, mode change,
+  map reset, phone loss, tracking loss, the pose watchdog and shutdown end the
+  run through `stop` as well. A `/goal` that cannot be planned answers 409 with
+  the reason and disarms.
+- **Unverified interface dependencies** (rover issue #6): positive
+  `yaw_rate_rps` means increasing `yaw_rad`, a left (counterclockwise from above)
+  turn with +Y up, and the car adapter must confirm that sign; heading is the
+  camera forward, so the phone must face the rover's direction of travel (no
+  mount calibration); turning in place assumes a skid- or differential-steer
+  base; radius, margin, speeds and tolerances are placeholders, not measured car
+  parameters. Because the logging-only car never moves, a live run ends with
+  `no_progress` after 5 s.
+- **Tests:** `backend/tests/test_navigation.py` (planner, follower, 400 x 400
+  timing) and `backend/tests/test_navigator.py` (runs against a kinematic
+  stand-in rover, `/goal` and app-level stops).
+
 ## REST
 
 All successful responses carry `version: 1`. Errors use FastAPI's standard
@@ -395,10 +462,10 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 |---|---|
 | POST `/session` | Create map identity, revoke phone, clear current pose and disarm |
 | POST `/arm` | 409 while any health component is not ok; car is always down here |
-| POST `/stop` | Always accepted; latch operator stop and log zero drive |
+| POST `/stop` | Always accepted; latch operator stop, end any navigation run and log zero drive |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
-| POST `/goal` | Validate x/z; 501 navigation unimplemented |
+| POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
@@ -407,6 +474,12 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
 serial, vendor, motor or credential integration. Startup is disarmed. Manual
-leases, 20 Hz commands, navigation, detector and hardware watchdogs must be
-implemented and independently verified before anyone enables arming. The
-skeleton cannot arm or drive the rover.
+leases, 20 Hz commands, detector and hardware watchdogs must be implemented and
+independently verified before anyone enables arming; navigation only reaches the
+logging stub. The skeleton cannot arm or drive the rover.
+
+## Spoken change events
+
+See [AUDIO.md](AUDIO.md) for offline-by-default synthesis, bounded audio playback,
+restart-safe deduplication, deterministic tone demo, and the separate live-provider
+spend/privacy/credential gate. No live ElevenLabs coverage is claimed.

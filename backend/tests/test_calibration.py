@@ -44,7 +44,7 @@ class UncalibratedTests(unittest.TestCase):
     def test_uncalibrated_map_never_claims_traversability(self):
         grid = OccupancyGrid(SESSION)
         feed(grid, low_box_scene(.05))
-        snapshot = grid.snapshot()
+        snapshot = grid.map_snapshot()
         self.assertFalse(snapshot.ready)
         self.assertIn('calibration_missing', snapshot.blockers)
         # The generic band still calls the 5 cm box free, which is why the
@@ -58,14 +58,14 @@ class CalibratedTests(unittest.TestCase):
     def test_measured_threshold_marks_a_low_box_occupied_and_inflates_by_the_footprint(self):
         generic = OccupancyGrid(SESSION)
         feed(generic, low_box_scene(.07))
-        self.assertEqual(generic.snapshot().cell(.7, -.6), 1)  # the generic band misses 7 cm
+        self.assertEqual(generic.map_snapshot().cell(.7, -.6), 1)  # the generic band misses 7 cm
         calibration = RoverCalibration.model_validate(TEST_CALIBRATION)
         # Disc around the camera floor point that covers the footprint, plus the margin:
         # hypot(0.26 / 2 + 0.08, 0.18 / 2) + 0.05.
         self.assertAlmostEqual(calibration.inflation_m, .2785, delta=1e-4)
         grid = OccupancyGrid(SESSION, calibration=calibration)
         feed(grid, low_box_scene(.07))
-        snapshot = grid.snapshot()
+        snapshot = grid.map_snapshot()
         self.assertEqual(snapshot.blockers, ())
         for x, z in [(.6, -.6), (.7, -.6), (.79, -.6), (.7, -.51)]:  # faces and top
             self.assertEqual(snapshot.cell(x, z), OCCUPIED, (x, z))
@@ -80,6 +80,16 @@ class CalibratedTests(unittest.TestCase):
         self.assertFalse(snapshot.traversable(3, 3))
         self.assertFalse(snapshot.traversable(.9, .9))
 
+    def test_the_planner_grid_uses_the_same_calibrated_threshold(self):
+        # backend.navigator plans on OccupancyGrid.snapshot(); it must see the low box too.
+        grid = OccupancyGrid(SESSION, calibration=RoverCalibration.model_validate(TEST_CALIBRATION))
+        feed(grid, low_box_scene(.07))
+        _, origin, cells = grid.snapshot()
+        mine = grid.map_snapshot()
+        self.assertEqual(origin, mine.origin)
+        np.testing.assert_array_equal(cells, mine.cells)
+        self.assertEqual(mine.cell(.7, -.6), OCCUPIED)
+
     def test_narrow_passage_counts_the_whole_occupied_cell_not_just_its_center(self):
         calibration = RoverCalibration.model_validate(TEST_CALIBRATION)  # inflation 0.2785 m
 
@@ -88,7 +98,7 @@ class CalibratedTests(unittest.TestCase):
             feed(grid, np.concatenate([plane(-1, 1, -1, 1, FLOOR_Y),
                                        box(-.9, left_face, -.1, .1, FLOOR_Y, FLOOR_Y + .3),
                                        box(right_face, .9, -.1, .1, FLOOR_Y, FLOOR_Y + .3)]))
-            return grid.snapshot()
+            return grid.map_snapshot()
 
         # Wall cells end at x = -0.25 and start at x = 0.30: 0.55 m of free floor. From the
         # middle cell (x = 0.025) the wall cell centers are 0.30 m away but their edges
@@ -113,7 +123,7 @@ class CalibratedTests(unittest.TestCase):
         self.assertEqual(calibration.blockers, ('obstacle_min_unsupported',))
         grid = OccupancyGrid(SESSION, calibration=calibration)
         feed(grid, low_box_scene(.05))
-        snapshot = grid.snapshot()
+        snapshot = grid.map_snapshot()
         self.assertFalse(snapshot.ready)
         for x, z in [(.7, -.6), (0, .3), (-.5, .5)]:
             self.assertFalse(snapshot.traversable(x, z), (x, z))
@@ -135,7 +145,7 @@ class InputTests(unittest.TestCase):
         self.assertIsNone(calibration.inflation_m)
         grid = OccupancyGrid(SESSION, calibration=calibration)
         feed(grid, low_box_scene(.07))
-        snapshot = grid.snapshot()
+        snapshot = grid.map_snapshot()
         self.assertEqual(snapshot.blockers, calibration.blockers)
         self.assertEqual(snapshot.cell(.7, -.6), 1)  # generic 8 cm band, unchanged
         self.assertFalse(snapshot.traversable(0, .3))
@@ -184,39 +194,36 @@ class FreshnessTests(unittest.TestCase):
     def setUp(self):
         self.grid = OccupancyGrid(SESSION, calibration=RoverCalibration.model_validate(TEST_CALIBRATION))
 
-    def test_unchanged_observations_advance_freshness_without_a_new_picture(self):
-        empty = self.grid.snapshot()
-        self.assertEqual((empty.revision, empty.sensed_at, empty.cells), (0, None, None))
+    def test_snapshot_carries_the_grids_accepted_revision_and_time(self):
+        empty = self.grid.map_snapshot()
+        self.assertEqual((empty.revision, empty.accepted_at, empty.cells), (0, None, None))
         self.assertIn('no_floor', empty.blockers)
-        feed(self.grid, low_box_scene(.07))
-        self.assertIsNone(self.grid.snapshot().sensed_at)  # evidence alone is not an accepted frame
-        self.grid.mark_sensed(100.)
-        first = self.grid.snapshot()
-        self.assertEqual((first.revision, first.sensed_at, first.session), (1, 100., SESSION))
+        for now in (100., 100.25, 100.5):
+            self.grid.add(low_box_scene(.07), now)
+        first = self.grid.map_snapshot()
+        self.assertEqual((first.revision, first.accepted_at, first.session), (3, 100.5, SESSION))
+        self.assertEqual(self.grid.map_snapshot().revision, 3)  # reading is not sensing
         self.assertIsNotNone(self.grid.message_if_due(0.))
-        self.grid.add(low_box_scene(.07))  # the same view again
-        self.grid.mark_sensed(107.5)
+        self.grid.add(low_box_scene(.07), 107.5)  # the same view again
         self.assertIsNone(self.grid.message_if_due(5.))  # no new /live picture
-        again = self.grid.snapshot()
-        self.assertEqual((again.revision, again.sensed_at), (1, 107.5))
-        self.assertEqual(first.sensed_at, 100.)  # snapshots are immutable
-        self.grid.mark_sensed(90.)  # an older arrival never moves freshness back
-        self.assertEqual(self.grid.snapshot().sensed_at, 107.5)
+        again = self.grid.map_snapshot()
+        self.assertEqual((again.revision, again.accepted_at), (4, 107.5))
+        np.testing.assert_array_equal(again.cells, first.cells)
+        self.assertEqual((first.revision, first.accepted_at), (3, 100.5))  # snapshots are immutable
 
-    def test_revision_advances_when_the_picture_or_floor_changes(self):
+    def test_new_obstacles_and_a_shifted_floor_reach_the_next_snapshot(self):
         feed(self.grid, plane(-1, 1, -1, 1, FLOOR_Y))
-        floor_only = self.grid.snapshot()
+        floor_only = self.grid.map_snapshot()
         self.assertTrue(floor_only.traversable(.4, -.6))
         feed(self.grid, box(.6, .8, -.7, -.5, FLOOR_Y, FLOOR_Y + .07))  # an obstacle appears
-        with_box = self.grid.snapshot()
-        self.assertEqual(with_box.revision, floor_only.revision + 1)
+        with_box = self.grid.map_snapshot()
+        self.assertGreater(with_box.revision, floor_only.revision)
         self.assertFalse(with_box.traversable(.4, -.6))
-        self.assertEqual(self.grid.snapshot().revision, with_box.revision)  # recomputing is not a change
         # A lower floor, seen more often, shifts the floor estimate and every height with it.
         feed(self.grid, plane(-2, 2, -2, 2, FLOOR_Y - .3), frames=6)
-        lower = self.grid.snapshot()
+        lower = self.grid.map_snapshot()
         self.assertNotAlmostEqual(lower.floor_y, with_box.floor_y, delta=.1)
-        self.assertEqual(lower.revision, with_box.revision + 1)
+        self.assertGreater(lower.revision, with_box.revision)
 
 
 class LiveSnapshotTests(unittest.TestCase):
@@ -237,16 +244,17 @@ class LiveSnapshotTests(unittest.TestCase):
                 send_frames(client, phone, 'cal-live', count=2, first=4)
                 again = state.map_snapshot()
                 self.assertEqual(state.map_stats['no_new_points'], 4)
-                self.assertEqual(again.revision, first.revision)
-                self.assertGreater(again.sensed_at, first.sensed_at)
-                self.assertIsNone(state.occupancy.message_if_due(again.sensed_at + 60))
+                self.assertEqual(again.revision, first.revision + 2)
+                self.assertGreater(again.accepted_at, first.accepted_at)
+                np.testing.assert_array_equal(again.cells, first.cells)
+                self.assertIsNone(state.occupancy.message_if_due(again.accepted_at + 60))
                 self.assertIs(state.occupancy.last_message, published)
             wait_for(lambda: state.phone is None)
             # A map reset keeps the calibration and starts an empty, unsensed map.
             session = client.post('/session').json()
             reset = state.map_snapshot()
             self.assertEqual(reset.session, (session['session_id'], 1))
-            self.assertEqual((reset.revision, reset.sensed_at, reset.blockers), (0, None, ('no_floor',)))
+            self.assertEqual((reset.revision, reset.accepted_at, reset.blockers), (0, None, ('no_floor',)))
             self.assertEqual(first.session, ('cal-live', 1))  # the old snapshot is untouched
 
     def test_frames_dropped_as_stale_do_not_refresh_the_map(self):
@@ -265,11 +273,12 @@ class LiveSnapshotTests(unittest.TestCase):
                 phone.send_json(hello('cal-stale'))
                 send_frames(client, phone, 'cal-stale')
                 fresh_map = state.map_snapshot()
-                self.assertIsNotNone(fresh_map.sensed_at)
+                self.assertIsNotNone(fresh_map.accepted_at)
                 slow.set()
                 phone.send_bytes(floor_frame('cal-stale', 4, 4.))  # same view: no new points either
                 wait_for(lambda: state.map_stats['discarded_stale'] == 1)
-                self.assertEqual(state.map_snapshot().sensed_at, fresh_map.sensed_at)
+                stale = state.map_snapshot()
+                self.assertEqual((stale.revision, stale.accepted_at), (fresh_map.revision, fresh_map.accepted_at))
                 self.assertEqual(state.map_stats['no_new_points'], 2)  # the stale one is not counted
 
     def test_a_repeat_captured_before_tracking_loss_does_not_refresh_the_map(self):
@@ -286,7 +295,7 @@ class LiveSnapshotTests(unittest.TestCase):
             with client.websocket_connect('/phone') as phone:
                 phone.send_json(hello())  # 'map-session', as the pose helper expects
                 send_frames(client, phone, 'map-session')
-                before = state.map_snapshot().sensed_at
+                before = state.map_snapshot()
                 gate.set()
                 phone.send_bytes(floor_frame('map-session', 4, 4.))  # same view: no new points
                 self.assertTrue(started.wait(5))
@@ -294,7 +303,8 @@ class LiveSnapshotTests(unittest.TestCase):
                 wait_for(lambda: state.tracking_lost_capture == 4.1)
                 release.set()
                 wait_for(lambda: state.map_stats['discarded_tracking'] == 1)
-                self.assertEqual(state.map_snapshot().sensed_at, before)
+                after = state.map_snapshot()
+                self.assertEqual((after.revision, after.accepted_at), (before.revision, before.accepted_at))
                 self.assertEqual(state.map_stats['no_new_points'], 2)
 
     def test_calibration_never_arms_or_drives(self):

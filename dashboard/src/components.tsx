@@ -19,7 +19,6 @@ import {
   ExternalLink,
   Laptop,
   Leaf,
-  LoaderCircle,
   Navigation,
   Power,
   Radio,
@@ -577,6 +576,7 @@ export function OperatorControls({
     simulation = config.source === "simulator",
     available = simulation || config.commands;
   const armed = !!health?.armed;
+  const canStop = controller.requiresStop;
   const allHealthy =
     !stale &&
     health?.phone === "ok" &&
@@ -635,6 +635,11 @@ export function OperatorControls({
             {(["standard", "explore"] as const).map((mode) => (
               <button
                 key={mode}
+                aria-pressed={
+                  mode === "explore"
+                    ? health?.mode === "explore"
+                    : health?.mode !== "explore"
+                }
                 disabled={!available || !!pending || stale}
                 className={
                   (
@@ -677,22 +682,38 @@ export function OperatorControls({
         </div>
         <div className="arm-control">
           <button
-            className={`button ${armed ? "subtle" : "primary"}`}
-            disabled={!available || !!pending || (!armed && !allHealthy)}
-            onClick={() => void command(armed ? "/stop" : "/arm")}
+            className={`button ${canStop ? "stop-button" : "primary"}`}
+            aria-label={
+              canStop
+                ? "STOP ROVER"
+                : simulation
+                  ? "Arm simulator"
+                  : "Arm rover"
+            }
+            title={
+              canStop
+                ? simulation
+                  ? "Stop simulator"
+                  : "Stop rover"
+                : simulation
+                  ? "Arm simulator · virtual motion only"
+                  : "Arm rover"
+            }
+            disabled={!canStop && (!available || !!pending || !allHealthy)}
+            onClick={() => void command(canStop ? "/stop" : "/arm")}
           >
-            {pending === "/arm" ? (
-              <LoaderCircle size={15} className="spin" />
-            ) : armed ? (
-              <Square size={14} />
+            {canStop ? (
+              <Square size={12} fill="currentColor" />
             ) : (
-              <Power size={15} />
-            )}{" "}
-            {armed
-              ? "Disarm rover"
-              : simulation
-                ? "Arm simulator"
-                : "Arm rover"}
+              <Power size={13} />
+            )}
+            {canStop
+              ? "Stop"
+              : compact
+                ? "Arm"
+                : simulation
+                  ? "Arm simulator"
+                  : "Arm rover"}
           </button>
           <span>
             {simulation

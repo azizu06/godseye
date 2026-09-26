@@ -9,10 +9,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke` (see Car-ready smoke there).
 
 - Live `points`, `objects` and `event` payloads, limits, object memory and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Rescan and change events).
+- `/goal`/explore planning, follow loop, stop reasons and the unverified yaw-sign/mount/turn-in-place car dependencies: `backend/README.md` (Navigation).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
-- Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); navigation reads `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
+- Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
+
+- Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
 
 ## Maintaining this file
 

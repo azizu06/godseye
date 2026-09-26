@@ -1,4 +1,4 @@
-import { panel } from "./helpers";
+import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
 import { test, expect } from "@playwright/test";
 test("scoped history, live overlap, map reset and rescan acknowledgement", async ({
   page,
@@ -67,16 +67,16 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
       json: { version: 1, ...scope, rescan_id: "scan-3", baseline_objects: 1 },
     });
   });
-  await page.goto("/");
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await simulator(page);
+  await workspaceAction(page, "Connection settings");
   await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await closeWorkspace(page);
   await panel(page, "Recent activity");
   await expect(
     page.getByRole("heading", { name: "Recent activity" }),
@@ -118,6 +118,7 @@ test("scoped history, live overlap, map reset and rescan acknowledgement", async
   await expect(
     page.getByText("Baseline saved · 1 objects · watching observations"),
   ).toHaveCount(0);
+  await panel(page, "Scene settings");
   await expect(page.locator(".scene-stat>strong")).toHaveText("0");
   await panel(page, "Recent activity");
   await expect(page.locator(".activity-panel .count-badge")).toHaveText("0");

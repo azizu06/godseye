@@ -24,6 +24,11 @@ flip a cell. Evidence never decays: a removed object stays occupied.
 Bounds: cells cover x, z in [-HALF_EXTENT_M, HALF_EXTENT_M) around the AR origin
 (at most 400 x 400 cells) and Y in [-4, 4) m; other points are dropped. The voxel
 store holds at most MAX_VOXELS entries; new voxels beyond that are dropped.
+
+A frame reaches the grid in two steps: `frame_evidence` does the per-point work
+anywhere (a worker thread) without touching any grid, and `OccupancyGrid.commit`
+folds it in once the frame has been accepted. The live app commits on its event
+loop, after checking that the frame's phone, map and age are still current.
 """
 import base64
 from dataclasses import dataclass
@@ -59,19 +64,38 @@ UNKNOWN, FREE, OCCUPIED = 0, 1, 2
 
 
 @dataclass(frozen=True)
+class Evidence:
+    """One frame's voxel hits, not yet part of any grid."""
+    keys: np.ndarray  # sorted unique voxel keys, read-only
+    outside: int  # points outside the grid bounds
+
+
+def frame_evidence(positions) -> Evidence:
+    """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
+    p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    with np.errstate(invalid='ignore'):
+        ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
+        iz = np.floor(p[:, 2] * _PER_M) + _SIDE // 2
+        iy = np.floor((p[:, 1] - Y_MIN_M) * _SLICES_PER_M)
+        inside = ((ix >= 0) & (ix < _SIDE) & (iz >= 0) & (iz < _SIDE)
+                  & (iy >= 0) & (iy < _LEVELS))  # NaN and inf compare false
+    keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
+                     + iy[inside].astype(np.int64))
+    keys.setflags(write=False)
+    return Evidence(keys, int(len(p) - inside.sum()))
+
+
+@dataclass(frozen=True)
 class OccupancySnapshot:
-    """One session's classified evidence, for the navigation owner.
+    """One session's classified evidence with the rover's readiness, for navigation.
 
     `cells[row, col]` is laid out like the `/live` message: row along +z from
     origin[1], column along +x from origin[0]. `cells` is None before a floor is found.
-    `revision` changes only when the classified picture or floor does; `sensed_at`
-    (monotonic seconds, the arrival of the newest accepted frame) advances with every
-    accepted frame, even one that changes nothing. How stale is too stale is the
-    consumer's policy.
+    `revision` and `accepted_at` are the grid's, read with the same evidence.
     """
     session: tuple
     revision: int
-    sensed_at: float | None  # last accepted frame, None before the first
+    accepted_at: float | None
     blockers: tuple  # empty only when the map may be used for motion
     inflation_m: float | None  # rover footprint disc plus margin, from the calibration
     origin: tuple | None
@@ -118,11 +142,17 @@ class OccupancySnapshot:
 
 
 class OccupancyGrid:
-    """Evidence for one session/epoch. `add`, `message_if_due` and `snapshot` are thread-safe.
+    """Evidence for one session/epoch. `add`, `commit`, `snapshot` and `message_if_due` are thread-safe.
+
+    `revision` bumps whenever a commit adds evidence (navigation rechecks its path on
+    it). `accepted_at` is the caller's monotonic time of the newest committed frame and
+    advances even when that frame adds nothing, so readers can tell a still-watched
+    map from a stale one.
 
     `calibration` is a backend.calibration.RoverCalibration or None. Only a complete,
     verified, supported one replaces the generic OBSTACLE_MIN_M, with the rover's
-    measured threshold less HEIGHT_MARGIN_M, for `/live` and the snapshot alike.
+    measured threshold less HEIGHT_MARGIN_M, for `/live`, the planner and the map
+    snapshot alike.
     """
 
     def __init__(self, session, max_voxels: int = MAX_VOXELS, calibration=None):
@@ -132,35 +162,33 @@ class OccupancyGrid:
         usable = calibration is not None and not calibration.blockers
         self.obstacle_from_m = calibration.obstacle_min_m - HEIGHT_MARGIN_M if usable else OBSTACLE_MIN_M
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
+        self.accepted_at = None
         self.last_message = None
+        self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
         self._hits = np.empty(0, np.int32)
         self._dirty = False
         self._last_at = None
         self._last_picture = None
-        self._sensed_at = None
-        self._revision = 0
-        self._snapshot_picture = None
         self._lock = threading.Lock()
-        self._snapshot_lock = threading.Lock()  # revisions follow the evidence they describe
 
     @property
     def voxels(self) -> int:
         return len(self._keys)
 
-    def add(self, positions) -> None:
+    def add(self, positions, now: float = 0.) -> None:
         """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
-        p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
-        with np.errstate(invalid='ignore'):
-            ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
-            iz = np.floor(p[:, 2] * _PER_M) + _SIDE // 2
-            iy = np.floor((p[:, 1] - Y_MIN_M) * _SLICES_PER_M)
-            inside = ((ix >= 0) & (ix < _SIDE) & (iz >= 0) & (iz < _SIDE)
-                      & (iy >= 0) & (iy < _LEVELS))  # NaN and inf compare false
-        keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
-                         + iy[inside].astype(np.int64))
+        self.commit(frame_evidence(positions), now)
+
+    def commit(self, evidence: Evidence, now: float) -> None:
+        """Fold one accepted frame in; `now` is a monotonic time in seconds.
+
+        Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
+        """
+        keys = evidence.keys
         with self._lock:
-            self.dropped += int(len(p) - inside.sum())
+            self.dropped += evidence.outside
+            self.accepted_at = now
             if not len(keys):
                 return
             at = np.searchsorted(self._keys, keys)
@@ -175,6 +203,21 @@ class OccupancyGrid:
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
             self._dirty = True
+            self.revision += 1
+
+    def snapshot(self):
+        """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
+
+        The same classification as the published grid, for the planner. Blocking like
+        `message_if_due`; it never touches the publish rate limit or change detection.
+        """
+        with self._lock:
+            revision, keys, hits = self.revision, self._keys.copy(), self._hits.copy()
+        picture = classify(keys, hits, self.obstacle_from_m)
+        if picture is None:
+            return revision, None, None
+        col0, row0, cells, _ = picture
+        return revision, ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M), cells
 
     def message_if_due(self, now: float):
         """The `/live` `occupancy` message, or None when rate-limited, unchanged, or empty.
@@ -206,40 +249,22 @@ class OccupancyGrid:
             self._last_picture, self._last_at, self.last_message = fingerprint, now, message
             return message
 
-    def mark_sensed(self, at: float) -> None:
-        """Record that a frame which arrived at monotonic time `at` was accepted for this map.
-
-        Called for every accepted frame, including ones that add nothing new, and never
-        for frames dropped as stale or from a previous phone or map.
-        """
+    def map_snapshot(self) -> OccupancySnapshot:
+        """Classified picture of all accepted evidence, with readiness; blocking like `snapshot`."""
         with self._lock:
-            self._sensed_at = at if self._sensed_at is None else max(self._sensed_at, at)
-
-    def snapshot(self) -> OccupancySnapshot:
-        """Classified picture of all evidence so far; blocking like `message_if_due`."""
-        with self._snapshot_lock:
-            return self._snapshot()
-
-    def _snapshot(self):
-        with self._lock:
-            keys, hits, sensed_at = self._keys.copy(), self._hits.copy(), self._sensed_at
+            revision, accepted_at = self.revision, self.accepted_at
+            keys, hits = self._keys.copy(), self._hits.copy()
         picture = classify(keys, hits, self.obstacle_from_m)
-        origin = cells = floor_y = fingerprint = None
+        origin = cells = floor_y = None
         if picture is not None:
             col0, row0, cells, floor_y = picture
             origin = ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M)
             cells.setflags(write=False)
-            fingerprint = (col0, row0, cells.shape, cells.tobytes(), round(floor_y, 2))
-        with self._lock:
-            if fingerprint != self._snapshot_picture:
-                self._snapshot_picture = fingerprint
-                self._revision += 1
-            revision = self._revision
         calibration = self.calibration
         blockers = ('calibration_missing',) if calibration is None else calibration.blockers
         if picture is None:
             blockers += ('no_floor',)
-        return OccupancySnapshot(self.session, revision, sensed_at, blockers,
+        return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
                                  origin, CELL_M, cells, floor_y)
 

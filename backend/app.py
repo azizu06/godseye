@@ -2,6 +2,7 @@
 import asyncio
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from functools import partial
 import json
 import logging
@@ -19,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
 from backend.drive import drive
@@ -26,9 +28,11 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform
-from backend.mapping import MappingError, build_point_chunk, points_message
+from backend.mapping import MappingError, PointChunk, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
-from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
+from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.navigation import path_message
+from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
 logger = logging.getLogger(__name__)
@@ -148,6 +152,14 @@ class Listener:
         self.wake = asyncio.Event()
 
 
+@dataclass(frozen=True)
+class MapUpdate:
+    """One frame's mapping, computed off the event loop and applied only once accepted."""
+    t_capture: float
+    evidence: Evidence | None  # None when the occupancy computation failed
+    chunk: PointChunk | None  # None when every point was sent recently
+
+
 class LatestFrame:
     """Single-slot mailbox: a newer bundle replaces one still waiting."""
 
@@ -169,7 +181,8 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None, calibration=None) -> FastAPI:
+               point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
+               audio_provider=None, calibration=None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -219,6 +232,10 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.map_stats = Counter()
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
+        app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
+                                  occupancy=lambda: app.state.occupancy, drive=lambda v, w: drive(v, w),
+                                  stop=nav_stop, publish=publish,
+                                  armed_mode=lambda: app.state.mode if app.state.armed else None)
         task = asyncio.create_task(watchdog())
         try:
             yield
@@ -226,23 +243,38 @@ def create_app(db_path: str | None = None, build_points=None,
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            await app.state.nav.aclose()
             stop('shutdown')
             db.close()
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
+    register_audio_routes(app, audio_provider)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
     def stop(reason):
         app.state.armed = False
         app.state.stop_reason = reason
+        if getattr(app.state, 'nav', None) is not None:
+            app.state.nav.halt()  # end any goal/explore run and clear its path first
         drive(0.0, 0.0)
         session = app.state.session or (None, None)
         app.state.db.execute(
             'INSERT INTO health_events(t_wall_ms,session_id,map_epoch,component,reason,mode,armed) VALUES(?,?,?,?,?,?,?)',
             (int(time.time()*1000), *session, 'backend', reason, app.state.mode, 0))
         app.state.db.commit()
+
+    def nav_stop(reason):
+        stop(reason)
+        publish(health())
+
+    def rover_pose():
+        pose = app.state.pose
+        if pose is None or app.state.pose_at is None:
+            return None
+        x, z, yaw = pose_from_transform(pose.transform)
+        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
 
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
@@ -295,11 +327,14 @@ def create_app(db_path: str | None = None, build_points=None,
                                       app.state.changes.watching)
         return locate
 
-    async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age, sensed=None):
+    async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
         """Run `compute` on the newest bundle, one at a time, off the event loop.
 
-        `accept` runs on the event loop only for results that are still current.
-        `sensed(received)` also runs then, and for a current frame with no new points.
+        `compute` must not change map state: its thread keeps running after the worker
+        is cancelled.
+        `accept` runs on the event loop only for results that are still current, in the
+        same step as the checks, so no reset or disconnect can come between them. It may
+        return the stats key to count instead of 'published'.
         """
         last_start = -interval
         last_capture = -1.0
@@ -310,8 +345,6 @@ def create_app(db_path: str | None = None, build_points=None,
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
-            except NoNewPoints as nothing_new:
-                result = nothing_new  # mapped, but nothing to publish: still gated like a result
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
@@ -327,40 +360,56 @@ def create_app(db_path: str | None = None, build_points=None,
             elif result.t_capture <= last_capture or time.monotonic() - received > max_age:
                 stats['discarded_stale'] += 1
             else:
-                if sensed is not None:
-                    sensed(received)
-                if isinstance(result, NoNewPoints):
-                    stats['no_new_points'] += 1
-                    continue
                 last_capture = result.t_capture
                 try:
-                    accept(result)
+                    outcome = accept(result) or 'published'
                 except Exception:
                     stats['failed'] += 1
                     logger.exception('frame result could not be applied')
                     continue
-                stats['published'] += 1
+                stats[outcome] += 1
 
     def accept_points(chunk):
         app.state.chunk_id += 1
         publish(points_message(chunk, app.state.chunk_id))
         app.state.point_memory.commit(chunk.voxel_keys, chunk.t_capture)
 
-    def map_into(grid):
-        """Point computation that also folds its world points into the session's grid.
+    def map_update(payload, session_id, map_epoch):
+        """Worker-thread half of mapping: the frame's occupancy evidence and deduped chunk.
 
         The grid gets every candidate point; only the published chunk is deduped,
         so occupancy evidence keeps accumulating when nothing new is published.
         """
-        def compute(payload, session_id, map_epoch):
-            chunk = build_points(payload, session_id, map_epoch)
-            try:
-                grid.add(chunk.positions)
-            except Exception:  # an occupancy bug must not cost the live points
-                app.state.occupancy_stats['failed'] += 1
-                logger.exception('occupancy update failed')
-            return app.state.point_memory.select(chunk)
-        return compute
+        candidates = build_points(payload, session_id, map_epoch)
+        evidence = None
+        try:
+            evidence = frame_evidence(candidates.positions)
+        except Exception:  # an occupancy bug must not cost the live points
+            app.state.occupancy_stats['failed'] += 1
+            logger.exception('occupancy evidence failed')
+        try:
+            chunk = app.state.point_memory.select(candidates)
+        except NoNewPoints:
+            chunk = None
+        return MapUpdate(candidates.t_capture, evidence, chunk)
+
+    def accept_map(grid):
+        """Event-loop half: commit a current frame to its map's grid, then publish its points.
+
+        A phone rejoining the same map resumes this grid, so evidence from a frame
+        that did not pass the worker's checks must never reach it.
+        """
+        def accept(update):
+            if update.evidence is not None:
+                try:
+                    grid.commit(update.evidence, time.monotonic())
+                except Exception:  # an occupancy bug must not cost the live points
+                    app.state.occupancy_stats['failed'] += 1
+                    logger.exception('occupancy update failed')
+            if update.chunk is None:
+                return 'no_new_points'
+            accept_points(update.chunk)
+        return accept
 
     async def occupancy_worker(owner, session, grid):
         """Publish the grid at most once per interval, when it changed, off the event loop."""
@@ -396,7 +445,7 @@ def create_app(db_path: str | None = None, build_points=None,
         Blocking (it classifies all evidence), so async callers use a worker thread.
         """
         grid = active_grid()
-        return None if grid is None else grid.snapshot()
+        return None if grid is None else grid.map_snapshot()
 
     app.state.map_snapshot = map_snapshot
 
@@ -418,6 +467,9 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
                 if app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
+            # Explore runs whenever the rover is armed in explore mode; arming is unchanged.
+            if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
+                app.state.nav.start_explore()
             ticks += 1
             if ticks % 10 == 0:
                 publish(health())
@@ -523,7 +575,22 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/goal')
     async def goal(body: Goal):
-        raise HTTPException(501, 'Navigation is not implemented')
+        # No disarmed preview: a drawn path must mean the rover is about to follow it.
+        if not app.state.armed or app.state.mode != 'navigate':
+            raise HTTPException(409, 'Arm in navigate mode before choosing a goal')
+        session = app.state.session
+        result = await app.state.nav.plan_once((body.x, body.z))
+        if not app.state.armed or app.state.mode != 'navigate' or app.state.session != session:
+            raise HTTPException(409, 'Stopped while planning')
+        if result is None:
+            nav_stop('pose_stale')
+            raise HTTPException(409, 'No current rover pose')
+        if not result.ok:
+            reason = PLAN_STOP_REASONS.get(result.reason, 'no_path')
+            nav_stop(reason)
+            raise HTTPException(409, reason)
+        app.state.nav.start_goal((body.x, body.z), result)
+        return dict(version=1, goal=[body.x, body.z], points=result.points)
 
     @app.post('/rescan')
     async def rescan():
@@ -570,8 +637,8 @@ def create_app(db_path: str | None = None, build_points=None,
             mailbox = LatestFrame()
             grid = app.state.occupancy
             workers.append(asyncio.create_task(frame_worker(
-                owner, session, mailbox, map_into(grid), accept_points, app.state.map_stats,
-                MAP_INTERVAL_S, MAP_MAX_AGE_S, grid.mark_sensed)))
+                owner, session, mailbox, map_update, accept_map(grid), app.state.map_stats,
+                MAP_INTERVAL_S, MAP_MAX_AGE_S)))
             workers.append(asyncio.create_task(occupancy_worker(owner, session, grid)))
             detections = LatestFrame()
             if app.state.detector is not None:
@@ -678,7 +745,7 @@ def create_app(db_path: str | None = None, build_points=None,
         async def send():
             await ws.send_json(health())
             await ws.send_json(objects_message(shown_session()))
-            await ws.send_json(dict(version=1, type='path', points=[]))
+            await ws.send_json(path_message(app.state.nav.path))
             if (grid_message := occupancy_snapshot()) is not None:
                 await ws.send_json(grid_message)
             while True:
