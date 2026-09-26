@@ -27,6 +27,7 @@ from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError
 from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
+from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
@@ -161,7 +162,8 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None) -> FastAPI:
+               point_settings: PointSettings | None = None, label_provider=None,
+               label_timeout_s: float = 6.) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -207,10 +209,17 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.map_stats = Counter()
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
+        app.state.labels = ObjectLabels(db, label_provider,
+            lambda session: publish(objects_message(session)) if session == shown_session() else None,
+            timeout_s=label_timeout_s)
+        label_task = asyncio.create_task(app.state.labels.run())
         task = asyncio.create_task(watchdog())
         try:
             yield
         finally:
+            label_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await label_task
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -373,6 +382,7 @@ def create_app(db_path: str | None = None, build_points=None,
         session = (result.session_id, result.map_epoch)
         seen_at = result.t_wall_ms / 1000
         sightings = app.state.objects.record(session, result.frame_id, seen_at, result.found)
+        app.state.labels.enqueue(session, sightings, result.crops)
         app.state.detected_at = time.monotonic()
         events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
         if sightings or changed:
@@ -507,7 +517,8 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/ask')
     async def ask(body: Ask):
-        raise HTTPException(501, 'Object queries are not implemented')
+        session = shown_session()
+        return answer_from_objects(body.question, app.state.objects.snapshot(session, limit=None), session)
 
     @app.get('/objects')
     async def objects():
@@ -642,4 +653,4 @@ def create_app(db_path: str | None = None, build_points=None,
     return app
 
 
-app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'))
+app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), label_provider=provider_from_env())

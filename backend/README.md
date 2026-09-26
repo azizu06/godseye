@@ -339,7 +339,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
 | POST `/goal` | Validate x/z; 501 navigation unimplemented |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
-| POST `/ask` | Validate question; 501 query unimplemented |
+| POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
 | GET `/health` | Phone freshness, car down, detector status, mode, armed, stop_reason |
@@ -349,3 +349,70 @@ serial, vendor, motor or credential integration. Startup is disarmed. Manual
 leases, 20 Hz commands, navigation, detector and hardware watchdogs must be
 implemented and independently verified before anyone enables arming. The
 skeleton cannot arm or drive the rover.
+
+## Gemini crop labels and saved-object search
+
+`backend/labels.py` owns the injectable async `LabelProvider.identify(jpeg,
+class_name)` seam. `create_app(label_provider=fake)` enables offline acceptance
+checks. No provider is installed by default. A newly localized object gets one
+tight, edge-clipped JPEG crop (no surrounding padding), resized to at most
+256 pixels per side. At most the first 32 detections in a frame get crops.
+Crops exist only in memory; they are never added to the capture archive.
+Labels do not change detector classes, association, movement evidence or
+confidence scores, and are model descriptions rather than verified identities.
+
+The SQLite `object_labels` table caches the result per stable object ID across
+repeat sightings and restarts. One async worker has at most one call in flight
+and 16 queued crops, with a six-second deadline (the HTTP adapter also has a
+five-second network timeout). A persisted budget allows at most 64 queued
+attempts per session/epoch, including failures and objects later merged away.
+Overflow, budget exhaustion and missing configuration do not retry. A pending
+attempt interrupted by restart becomes `error` with reason `interrupted`.
+
+`GET /objects` and live object snapshots add an `identity` field without
+changing the existing v1 facts:
+
+```json
+{"label":"red ceramic coffee mug","status":"labeled","reason":null,"source":"gemini"}
+```
+
+Statuses are `pending`, `labeled`, `unknown` (inconclusive), `unavailable`
+(`disabled`, `invalid_crop`, `queue_full`, `limit`, or `not_requested` for older
+objects), and `error` (`timeout`, `provider_error`, `interrupted`). Error text,
+keys and raw provider responses are never stored or returned. Existing objects
+are not automatically uploaded when the provider is enabled later.
+
+`POST /ask` accepts the frozen `{ "question": "where's my red mug?" }` body.
+It searches the complete persisted shown map (active map, otherwise newest),
+including objects outside the 256-object live snapshot. It returns
+`{ version, session_id, map_epoch, status, answer, matches }`. `status` is
+`ok`, `no_match`, or `empty`; up to 20 newest matching object facts include
+position in ARKit meters, state, phone-wall-clock `last_seen`, detector score
+and identity status. Search is conservative lexical matching: all non-filler
+question words must occur in the saved class/label, ignoring case and a trailing
+plural `s`. It does not support semantic synonyms, arbitrary questions, scene
+narration or claims that a last-seen object is still there. Questions are never
+sent to Gemini. Empty and unmatched queries report no saved evidence.
+
+### Live provider opt-in (separate approval required)
+
+Do not enable this until spend, image-sharing privacy, credentials and model
+selection have separately been approved. The server process must receive
+`GODSEYE_GEMINI_ENABLED=1`, `GEMINI_API_KEY`, and an explicit
+`GODSEYE_GEMINI_MODEL` through local environment configuration. A key alone
+does not enable calls; enabled configuration missing a key/model fails startup.
+Do not commit keys or print them. The REST adapter sends only the selected crop
+and detector class to Google's `generateContent` endpoint using the
+`x-goog-api-key` header, not a credential in the URL. No phone permission,
+recording, car arming or drive default changes are needed.
+
+REST request/response reference: [Gemini generateContent](https://ai.google.dev/api/generate-content).
+Offline verification:
+
+```sh
+$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_labels -v
+```
+
+These tests use synthetic phone imagery and fake label/HTTP responses only.
+They do not establish live Gemini accuracy, paid API availability, physical
+phone integration or dashboard rendering.
