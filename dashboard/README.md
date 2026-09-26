@@ -21,7 +21,7 @@ The real car adapter remains logging-only and cannot arm hardware.
 
 ## Workspace
 
-The map fills the screen with only 2D/3D, Standard/Explore and compact Arm/Stop controls.
+The map fills the screen with 2D/3D, Frame scan, Standard/Explore and compact Arm/Stop controls. Visible diagnostics show the feed address, connection, received point count, displayed triangle count, layer visibility and capture reason.
 Press Escape, Shift+F10 or the context-menu key, right-click without dragging, or touch and hold the canvas to open the workspace.
 Spatial Memory, Object Intelligence, Recent Activity, Rover Controls, Scene settings, connection, export and session actions remain there.
 Keyboard navigation also reveals an Open workspace launcher on focus.
@@ -29,7 +29,7 @@ Objects and surfaces appear only when received from the backend and remain in sp
 Select an object to inspect its position, confidence, observation history, and state.
 Open Rover Controls to save a rescan baseline; subsequent backend observations provide change evidence.
 Left-drag pans, right-drag rotates, and the wheel zooms.
-Middle-drag also orbits; Shift + middle-drag pans, and Home resets the view.
+Middle-drag also orbits; Shift + middle-drag pans, Home resets the view, and F or Frame scan fits received geometry. The first geometry in a map is framed automatically.
 A stationary left-click still navigates; a stationary right-click opens the workspace.
 The 2D tab provides a top-down map when inspecting occupancy or selecting a navigation goal.
 Arm explicitly before moving.
@@ -60,14 +60,14 @@ Unknown message types are ignored and malformed known messages are rejected.
 A reconnect preserves the accumulated colored map and spatial history while pausing capture until the backend confirms the same session/epoch. Live pose and health are cleared so retained geometry cannot imply current tracking.
 Backend map identity changes also clear spatial data; enabled API connections hydrate matching saved events and merge them with live events.
 Rescan saves a baseline and watches new observations; it does not command a physical revisit.
-Exports include the accumulated observed colored geometry and bounded received state, not a complete backend session recording. Export before browser reload; reload recovery and archive replay are not implemented.
+Exports include the accumulated observed colored geometry and bounded received state, not a complete backend session recording. Export before browser reload; geometry recovery and archive replay are not implemented. Feed addresses survive reload through the page URL; command permission always resets off.
 Live camera calibration, hardware drive behavior, and session lifecycle extensions require coordination with their owning components.
 
 ### Color surface reconstruction
 
-3D now defaults to solid observed surfaces. Scene layers keeps Point cloud available as an independent overlay. Live rendering prefers native JPEG and raw RGB-D from `/capture/rich/frame.bin`, falling back to the calibrated v1 `/capture/frame.bin` bundle. Set Backend API base even if drive commands are disabled.
+3D defaults to observed surfaces plus received `/live` points. Scene layers keeps Point cloud available as an independent overlay. Live rendering prefers native JPEG and raw RGB-D from `/capture/rich/frame.bin`, falling back to the calibrated v1 `/capture/frame.bin` bundle. Set Backend API base even if drive commands are disabled. See [VIEWER.md](VIEWER.md) for display freshness, URL selection and rendering limits.
 
-Only valid, medium- or high-confidence, observed surfaces are drawn. Holes and incomplete scans remain visible; point-only feeds cannot provide textured surfaces. Native camera color is baked into an accumulated map, with recent textures (up to 24 views / 48 MiB, at most 1280 pixels on their longest side) supplying fine detail. The map coarsens spatially at its 1,000,000-triangle / 500,000-vertex budget instead of expiring old views. If disconnected geometry cannot fit, capture reports capacity and retains the existing map. Point-cloud mode uses accumulated colored vertices when available. This is live RGB-D reconstruction, not a watertight or photogrammetry-quality model. See [SURFACES.md](SURFACES.md) and [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md) for calibration, limits and lifecycle.
+Only valid, medium- or high-confidence, observed surfaces are drawn. Holes and incomplete scans remain visible; point-only feeds cannot provide textured surfaces. Native camera color is baked into an accumulated map, with recent textures (up to 24 views / 48 MiB, at most 1280 pixels on their longest side) supplying fine detail. The map coarsens spatially at its 1,000,000-triangle / 500,000-vertex budget instead of expiring old views. If disconnected geometry cannot fit, capture reports capacity and retains the existing map. Point-cloud mode always shows received `/live` points independently of textured surfaces. This is live RGB-D reconstruction, not a watertight or photogrammetry-quality model. See [SURFACES.md](SURFACES.md) and [PERSISTENT_SCAN.md](PERSISTENT_SCAN.md) for calibration, limits and lifecycle.
 
 Dense observed planar regions are simplified before accumulation using normal agreement, an 8 mm plane-fit residual limit, preserved polygon boundaries/holes, and a 0.04 total linear-color error budget.
 Uniform regions and smooth color gradients can release interior vertices; uncertain geometry and sharp color detail retain their observed mesh.

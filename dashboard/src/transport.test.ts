@@ -4,6 +4,7 @@ import {
   ManualController,
   sendCommand,
   validateConfig,
+  initialConfig,
 } from "./transport";
 afterEach(() => vi.useRealTimers());
 describe("held controls", () => {
@@ -39,6 +40,29 @@ describe("held controls", () => {
     expect(sent).toHaveLength(1);
     controller.stop();
     expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0 });
+  });
+});
+describe("feed selection", () => {
+  it("starts telemetry-only and recovers a URL-selected backend without command permission", () => {
+    expect(initialConfig("")).toMatchObject({
+      source: "external",
+      commands: false,
+    });
+    expect(
+      initialConfig(
+        "?live=wss%3A%2F%2Fscan.example%3A9876%2Flive&commands=true",
+      ),
+    ).toEqual({
+      source: "external",
+      commands: false,
+      wsUrl: "wss://scan.example:9876/live",
+      apiUrl: "https://scan.example:9876",
+    });
+    expect(initialConfig("?live=javascript:alert(1)")).toMatchObject({
+      source: "external",
+      commands: false,
+      wsUrl: "ws://localhost:8765/live",
+    });
   });
 });
 describe("REST boundary", () => {

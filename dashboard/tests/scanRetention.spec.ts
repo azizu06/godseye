@@ -67,7 +67,7 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
       return route.fulfill({
         json: {
           tracking: phone === "ok" ? "normal" : null,
-          frame: { capture_id: `${frame}`, age_ms: enabled ? 10 : 5000 },
+          frame: { capture_id: `${frame}`, age_ms: enabled ? 10 : 16000 },
         },
       });
     if (route.request().url().endsWith("/capture/frame.bin")) {

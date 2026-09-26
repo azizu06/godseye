@@ -5,6 +5,7 @@ import {
   Component,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -33,6 +34,8 @@ export const objectName = (o: WorldObject) =>
     : o.class.charAt(0).toUpperCase() + o.class.slice(1);
 export interface SceneProps {
   toolsHost?: HTMLElement | null;
+  feedLabel: string;
+  surfaceReason: string;
   surfaces: SurfacePatch[];
   surfaceStatus: SurfaceStatus;
   persistentSurface: SurfacePatch | null;
@@ -51,21 +54,65 @@ interface Layers {
   occupancy: boolean;
 }
 
-function Controls({ reset }: { reset: number }) {
+function Controls({
+  reset,
+  frame,
+  bounds,
+  map,
+}: {
+  reset: number;
+  frame: number;
+  bounds: THREE.Sphere | null;
+  map: string | null;
+}) {
   const ref = useRef<OrbitControlsImpl>(null);
-  const { camera } = useThree();
+  const { camera, size, invalidate } = useThree();
+  const framed = useRef<string | null>(null);
+  const fit = () => {
+    const controls = ref.current;
+    if (!bounds || !controls || !(camera instanceof THREE.PerspectiveCamera))
+      return;
+    // Drain damping before moving target; framing is visualization only.
+    controls.enableDamping = false;
+    controls.update();
+    const direction = camera.position.clone().sub(controls.target).normalize();
+    const vertical = THREE.MathUtils.degToRad(camera.fov / 2);
+    const angle = Math.min(
+      vertical,
+      Math.atan((Math.tan(vertical) * size.width) / size.height),
+    );
+    const distance = Math.max(0.25, (bounds.radius / Math.sin(angle)) * 1.15);
+    controls.target.copy(bounds.center);
+    camera.position.copy(bounds.center).addScaledVector(direction, distance);
+    camera.far = Math.max(100, distance + bounds.radius * 3);
+    camera.updateProjectionMatrix();
+    controls.update();
+    controls.enableDamping = true;
+    invalidate();
+  };
+  const latestFit = useRef(fit);
+  latestFit.current = fit;
   useEffect(() => {
     camera.position.set(7.3, 6.5, 8.2);
     ref.current?.target.set(0, 0.2, 0);
     ref.current?.update();
-  }, [camera, reset]);
+    invalidate();
+  }, [camera, reset, invalidate]);
+  useEffect(() => {
+    if (frame) latestFit.current();
+  }, [frame]);
+  useEffect(() => {
+    if (bounds && map && framed.current !== map) {
+      latestFit.current();
+      framed.current = map;
+    }
+  }, [bounds, map]);
   return (
     <OrbitControls
       ref={ref}
       makeDefault
-      minDistance={2}
-      maxDistance={28}
-      maxPolarAngle={Math.PI / 2 - 0.04}
+      minDistance={0.1}
+      maxDistance={2000}
       enableDamping
       dampingFactor={0.12}
       mouseButtons={{
@@ -77,37 +124,52 @@ function Controls({ reset }: { reset: number }) {
     />
   );
 }
-function Cloud({
-  mission,
-  persistentSurface,
-}: {
-  mission: Mission;
-  persistentSurface: SurfacePatch | null;
-}) {
-  const buffers = useMemo(
-    () =>
-      persistentSurface?.colors
-        ? {
-            positions: persistentSurface.positions,
-            colors: persistentSurface.colors,
-          }
-        : {
-            positions: new Float32Array(
-              mission.chunks.flatMap((c) => c.positions),
-            ),
-            colors: new Float32Array(mission.chunks.flatMap((c) => c.colors)),
-          },
-    [mission.chunks, persistentSurface],
-  );
+/** Fixed GPU storage; append only changed ranges, compact only on bounded eviction. */
+function Cloud({ mission }: { mission: Mission }) {
+  const { invalidate } = useThree();
+  const previous = useRef<Mission["chunks"]>([]);
+  const geometry = useMemo(() => {
+    const value = new THREE.BufferGeometry();
+    for (const name of ["position", "color"])
+      value.setAttribute(
+        name,
+        new THREE.BufferAttribute(new Float32Array(500000 * 3), 3).setUsage(
+          THREE.DynamicDrawUsage,
+        ),
+      );
+    value.setDrawRange(0, 0);
+    return value;
+  }, []);
+  useLayoutEffect(() => {
+    const chunks = mission.chunks;
+    const appended = previous.current.every((chunk, i) => chunks[i] === chunk);
+    const start = appended ? previous.current.length : 0;
+    let offset = appended
+      ? previous.current.reduce((n, c) => n + c.positions.length, 0)
+      : 0;
+    const first = offset;
+    const positions = geometry.getAttribute(
+      "position",
+    ) as THREE.BufferAttribute;
+    const colors = geometry.getAttribute("color") as THREE.BufferAttribute;
+    for (let i = start; i < chunks.length; i++) {
+      (positions.array as Float32Array).set(chunks[i].positions, offset);
+      (colors.array as Float32Array).set(chunks[i].colors, offset);
+      offset += chunks[i].positions.length;
+    }
+    if (offset > first) {
+      for (const attribute of [positions, colors]) {
+        attribute.addUpdateRange(first, offset - first);
+        attribute.needsUpdate = true;
+      }
+    }
+    geometry.setDrawRange(0, offset / 3);
+    previous.current = chunks;
+    invalidate();
+  }, [mission.chunks, geometry, invalidate]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
   return (
-    <points>
-      <bufferGeometry>
-        <bufferAttribute
-          attach="attributes-position"
-          args={[buffers.positions, 3]}
-        />
-        <bufferAttribute attach="attributes-color" args={[buffers.colors, 3]} />
-      </bufferGeometry>
+    <points name="live-point-cloud" geometry={geometry} frustumCulled={false}>
       <pointsMaterial
         size={0.023}
         toneMapped={false}
@@ -116,6 +178,7 @@ function Cloud({
         opacity={0.8}
         sizeAttenuation
         depthWrite={false}
+        fog={false}
       />
     </points>
   );
@@ -299,9 +362,7 @@ function World({
         <ColorSurfaces patches={[persistentSurface]} retained />
       )}
       {layers.surfaces && <ColorSurfaces patches={surfaces} />}
-      {layers.points && (
-        <Cloud mission={mission} persistentSurface={persistentSurface} />
-      )}
+      {layers.points && <Cloud mission={mission} />}
       {layers.occupancy && <OccupancyMesh mission={mission} />}
       {layers.trajectory && <Trajectory mission={mission} />}
       {mission.path.length > 1 && (
@@ -639,15 +700,38 @@ class RenderBoundary extends Component<
 export default function Scene(props: SceneProps) {
   const [view, setView] = useState<"3d" | "2d">("3d"),
     [reset, setReset] = useState(0),
+    [frame, setFrame] = useState(0),
     [layerMenu, setLayerMenu] = useState(false),
     [help, setHelp] = useState(false);
   const [layers, setLayers] = useState<Layers>({
     surfaces: true,
-    points: false,
+    points: true,
     objects: true,
     trajectory: true,
     occupancy: false,
   });
+  const bounds = useMemo(() => {
+    const box = new THREE.Box3();
+    const point = new THREE.Vector3();
+    const arrays = [
+      ...props.mission.chunks.map((chunk) => chunk.positions),
+      ...props.surfaces.map((patch) => patch.positions),
+      ...(props.persistentSurface ? [props.persistentSurface.positions] : []),
+    ];
+    for (const positions of arrays)
+      for (let i = 0; i < positions.length; i += 3)
+        box.expandByPoint(
+          point.set(positions[i], positions[i + 1], positions[i + 2]),
+        );
+    return box.isEmpty() ? null : box.getBoundingSphere(new THREE.Sphere());
+  }, [props.mission.chunks, props.surfaces, props.persistentSurface]);
+  const liveCount = props.mission.chunks.reduce(
+    (n, c) => n + c.positions.length / 3,
+    0,
+  );
+  const triangleCount =
+    (props.persistentSurface?.indices.length ?? 0) / 3 +
+    props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0);
   const container = useRef<HTMLDivElement>(null);
   const labelElements = useRef(new Map<string, HTMLDivElement>());
   const labels = useSceneLabels(
@@ -659,12 +743,20 @@ export default function Scene(props: SceneProps) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (
-        e.key === "Home" &&
+        (e.key === "Home" || e.key.toLowerCase() === "f") &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
         !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLTextAreaElement)
+        !(e.target instanceof HTMLTextAreaElement) &&
+        !(
+          e.target instanceof HTMLElement &&
+          e.target.closest("select, [contenteditable], dialog")
+        )
       ) {
         e.preventDefault();
-        setReset((x) => x + 1);
+        if (e.key === "Home") setReset((x) => x + 1);
+        else setFrame((x) => x + 1);
       }
     };
     window.addEventListener("keydown", handler);
@@ -696,6 +788,25 @@ export default function Scene(props: SceneProps) {
             2D
           </button>
         </div>
+        <button
+          aria-label="Frame scan"
+          title="Frame scan · F"
+          disabled={view !== "3d" || !bounds}
+          onClick={() => setFrame((x) => x + 1)}
+        >
+          <Maximize size={14} />{" "}
+          <span className="frame-scan-label">Frame scan</span>
+        </button>
+      </div>
+      <div className="viewport-status" data-testid="viewport-status">
+        <span>{props.feedLabel}</span>
+        <span>
+          {liveCount.toLocaleString()} live points ·{" "}
+          {triangleCount.toLocaleString()} surface triangles ·{" "}
+          {layers.points ? "points visible" : "points hidden"} ·{" "}
+          {layers.surfaces ? "surfaces visible" : "surfaces hidden"}
+        </span>
+        <span>{props.surfaceReason}</span>
       </div>
       <div className="scene-canvas">
         {view === "3d" ? (
@@ -710,6 +821,7 @@ export default function Scene(props: SceneProps) {
             }
           >
             <Canvas
+              frameloop="demand"
               camera={{
                 position: [7.3, 6.5, 8.2],
                 fov: 42,
@@ -726,7 +838,12 @@ export default function Scene(props: SceneProps) {
               <Suspense fallback={null}>
                 <World {...props} layers={layers} />
               </Suspense>
-              <Controls reset={reset} />
+              <Controls
+                reset={reset}
+                frame={frame}
+                bounds={bounds}
+                map={props.mission.mapKey}
+              />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>
@@ -791,10 +908,7 @@ export default function Scene(props: SceneProps) {
                   ? "Map capacity reached · prior scan retained · export before reset"
                   : props.persistentSurface || props.surfaces.length
                     ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · retained grid ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
-                    : props.surfaceStatus === "error" ||
-                        props.surfaceStatus === "unavailable"
-                      ? "Color capture unavailable · point cloud is in Layers"
-                      : "Waiting for color + depth · point cloud is in Layers"}
+                    : props.surfaceReason}
               </div>
             )}
             <div className="scene-stat">

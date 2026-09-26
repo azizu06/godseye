@@ -10,10 +10,14 @@ import type {
 import { decodeCaptureSurface } from "./captureSurface";
 import { retainSurface, surfaceMapKey } from "./surfaceStore";
 
+// Sai viewer policy: display age is separate from motion freshness.
+const SURFACE_MAX_AGE_MS = 15000;
+
 type SurfaceState = {
   key: string;
   patches: CapturedSurface[];
   status: SurfaceStatus;
+  reason: string;
   persistent: SurfacePatch | null;
   cellM: number;
 };
@@ -38,6 +42,7 @@ export function useColorSurfaces(
     key,
     patches: [],
     status: "waiting",
+    reason: "Waiting for map identity",
     persistent: null,
     cellM: 0.02,
   });
@@ -47,6 +52,7 @@ export function useColorSurfaces(
       key,
       patches: [],
       status: "waiting",
+      reason: "Waiting for map identity",
       persistent: null,
       cellM: 0.02,
       client: null,
@@ -66,6 +72,7 @@ export function useColorSurfaces(
       key,
       patches: [],
       status: bucket.status,
+      reason: bucket.reason,
       persistent: null,
       cellM: 0.02,
     });
@@ -77,25 +84,34 @@ export function useColorSurfaces(
     let request: AbortController | undefined;
     const bucket = retained.current;
     if (!bucket || bucket.key !== key) return;
-    const publish = (status: SurfaceStatus) => {
+    const publish = (status: SurfaceStatus, reason = "Live RGB + depth") => {
       if (!disposed) {
         bucket.status = bucket.capacity ? "capacity" : status;
+        bucket.reason = bucket.capacity
+          ? "Map capacity reached; prior scan retained"
+          : reason;
         setState({
           key,
           patches: bucket.patches,
           persistent: bucket.persistent,
           cellM: bucket.cellM,
           status: bucket.status,
+          reason: bucket.reason,
         });
       }
     };
-    publish(bucket.persistent ? "paused" : "waiting");
+    publish(
+      bucket.persistent ? "paused" : "waiting",
+      !map
+        ? "Waiting for map identity"
+        : "Feed disconnected or map identity unconfirmed; scan retained",
+    );
     if (config.source !== "external" || !map || !connected) return;
     try {
       if (!["http:", "https:"].includes(new URL(config.apiUrl).protocol))
         throw Error();
     } catch {
-      publish("unavailable");
+      publish("unavailable", "Capture API unavailable; check Backend API base");
       return;
     }
     const base = config.apiUrl.replace(/\/$/, "");
@@ -104,9 +120,10 @@ export function useColorSurfaces(
       const signal = request.signal;
       const timeout = setTimeout(() => request?.abort(), 4000);
       let fusionTimeout: ReturnType<typeof setTimeout> | undefined;
+      const started = performance.now();
       try {
         if (bucket.client?.busy) {
-          publish("paused");
+          publish("paused", "Integrating RGB-D; prior scan retained");
           return;
         }
         const response = await fetch(`${base}/capture/status`, {
@@ -114,7 +131,10 @@ export function useColorSurfaces(
           cache: "no-store",
         });
         if (!response.ok) {
-          publish("unavailable");
+          publish(
+            "unavailable",
+            "Capture API unavailable; check Backend API base",
+          );
           return;
         }
         const status = record(await response.json());
@@ -126,40 +146,59 @@ export function useColorSurfaces(
         const richUsable = ["rgb", "raw_depth", "raw_confidence"].every(
           (name) => sections.includes(name),
         );
-        const richFresh =
+        const freshAge = (frame: Record<string, unknown>) =>
+          typeof frame.age_ms === "number" &&
+          Number.isFinite(frame.age_ms) &&
+          frame.age_ms >= 0 &&
+          frame.age_ms <= SURFACE_MAX_AGE_MS;
+        const richTime = rich.t_capture;
+        const legacyTime = record(legacy.metadata).t_capture;
+        const useRich =
           richUsable &&
           typeof rich.token === "string" &&
-          typeof rich.age_ms === "number" &&
-          rich.age_ms <= 3000;
-        const frame = richFresh ? rich : legacy;
+          freshAge(rich) &&
+          !(
+            typeof richTime === "number" &&
+            typeof legacyTime === "number" &&
+            richTime < legacyTime - 0.035
+          );
+        // Keep rich diagnostics when no v1 fallback exists, including its expiry.
+        const frame = useRich || !legacy.capture_id ? rich : legacy;
         const token = String(
-          richFresh ? rich.token : (legacy.capture_id ?? ""),
+          useRich ? rich.token : (frame.capture_id ?? frame.token ?? ""),
         );
-        if (
-          !token ||
-          typeof frame.age_ms !== "number" ||
-          frame.age_ms > 3000 ||
-          status.tracking !== "normal"
-        ) {
+        if (!token || !freshAge(frame)) {
           publish(
             bucket.persistent || bucket.patches.length ? "paused" : "waiting",
+            !token
+              ? "No RGB-D capture received"
+              : "RGB-D capture too old or invalid; scan retained",
           );
           return;
         }
+        const expiresAt = started + SURFACE_MAX_AGE_MS - Number(frame.age_ms);
+        const observationReason =
+          Number(frame.age_ms) > 3000
+            ? `Rendering delayed RGB + depth (${(Number(frame.age_ms) / 1000).toFixed(1)} s)`
+            : "Live RGB + depth";
         if (token === bucket.lastToken) {
           publish(
             bucket.persistent || bucket.patches.length
               ? "receiving"
               : "waiting",
+            observationReason,
           );
           return;
         }
         const packet = await fetch(
-          `${base}/capture/${richFresh ? "rich/frame" : "frame"}.bin`,
+          `${base}/capture/${useRich ? "rich/frame" : "frame"}.bin`,
           { signal, cache: "no-store" },
         );
         if (!packet.ok) {
-          publish("unavailable");
+          publish(
+            "unavailable",
+            "Capture API unavailable; check Backend API base",
+          );
           return;
         }
         const size = Number(packet.headers.get("Content-Length"));
@@ -187,14 +226,23 @@ export function useColorSurfaces(
           offset += chunk.length;
         }
         if (disposed || signal.aborted) return;
+        if (performance.now() > expiresAt) {
+          publish(
+            "paused",
+            "RGB-D expired during transfer; prior scan retained",
+          );
+          return;
+        }
+        // Decoder requires the capture's own normal tracking, rigid transform,
+        // calibration, confidence and map identity, regardless of latest pose.
         const surface = decodeCaptureSurface(data.buffer);
         if (surfaceMapKey(surface) !== map) {
-          publish("waiting");
+          publish("waiting", "Capture map identity does not match live feed");
           return;
         }
         if (surface.capturedAt <= bucket.latest) {
           bucket.lastToken = token;
-          publish("receiving");
+          publish("receiving", observationReason);
           return;
         }
         if (surface.jpeg && surface.indices.length)
@@ -204,7 +252,7 @@ export function useColorSurfaces(
         // can be much slower. Do not mark the capture fused until it finishes:
         // a cancelled/failed job must remain eligible for a later retry.
         bucket.patches = retainSurface(bucket.patches, surface, map);
-        publish("receiving");
+        publish("receiving", observationReason);
         if (surface.image && surface.indices.length && !bucket.capacity) {
           const context = surface.image.getContext("2d");
           if (!context || !bucket.client)
@@ -248,10 +296,14 @@ export function useColorSurfaces(
         bucket.lastToken = token;
         publish(
           bucket.persistent || bucket.patches.length ? "receiving" : "waiting",
+          observationReason,
         );
-      } catch {
+      } catch (error) {
         publish(
           bucket.persistent || bucket.patches.length ? "paused" : "error",
+          signal.aborted
+            ? "Capture request timed out; prior scan retained"
+            : `Capture rejected: ${error instanceof Error ? error.message : "fetch failed"}`,
         );
       } finally {
         clearTimeout(timeout);
@@ -274,5 +326,6 @@ export function useColorSurfaces(
         persistent: null,
         cellM: 0.02,
         status: "waiting" as const,
+        reason: "Waiting for map identity",
       };
 }
