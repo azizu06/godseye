@@ -144,3 +144,27 @@ Until coordinated, the dashboard labels history as received during this connecti
 3. Build the visual shell, spatial scene, inspector, inventory, activity, settings, and controls.
 4. Exercise local simulation and the actual Python fake-live source in a browser; fix visual and behavioral defects.
 5. Document setup, evidence, limitations, and deferred coordination; commit the complete dashboard.
+
+## Confirmed navigation refinement
+
+The user explicitly requested Blender-like navigation while implementation was in progress.
+Middle-mouse drag orbits; Shift + middle-mouse drag pans; the wheel zooms toward the scene.
+Offer visible Orbit and Pan tools that also work with left-drag for trackpads, with tooltips explaining the gestures.
+A View controls help popover documents the shortcuts; Home resets the perspective when focus is outside editable fields.
+Top-down remains a deliberate view toggle rather than constraining free perspective exploration.
+
+## Confirmed rover viewpoint refinement
+
+Show the rover/phone's tracked location and heading together with a sleek translucent cyan view scope in 3D and 2D.
+The v1 pose describes the camera position and heading; ground projection is a rover-position proxy until mount calibration exists.
+Use the Apple-documented 5.0 m LiDAR depth limit for the iPhone 17 Pro profile, with a curved radial boundary so corner rays do not overstate distance.
+Because /live carries no camera intrinsics or field-of-view value, the angular extent is explicitly uncalibrated, not observed coverage or free space.
+See [sensor profile and primary sources](SENSOR_PROFILE.md) before changing these values.
+Keep the scope visually distinct from occupancy and planned paths.
+Coordinate a calibrated view-frustum payload later with the backend owner.
+
+## Confirmed trail refinement
+
+A subtle trace follows the rover/phone's received positions in 3D and 2D.
+Older segments fade in intensity and recent segments remain more visible.
+The trace is bounded to 600 meaningful position samples, clears with a session/source reset, and remains distinct from the brighter planned path.

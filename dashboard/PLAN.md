@@ -16,13 +16,18 @@ A bounded state store supplies a Three.js scene and semantic inspection panels.
 
 ## Tasks
 
-- [ ] Protocol and state: tests first for invalid coordinates, occupancy decode, duplicate/bounded chunks, and bounded event/trajectory retention; implement src/protocol.ts and src/state.ts.
-- [ ] Simulator and transport: tests first for explicit arm, stop/fault, mode change, held command expiry, relocation, and source isolation; implement src/simulator.ts, src/transport.ts, and src/useMission.ts.
-- [ ] Desktop UI: implement src/App.tsx, src/Scene.tsx, supporting components, and src/styles.css; write browser coverage of the user-facing demo and controls before completion.
-- [ ] Integration: run the actual tools/fake_live.py feed, verify all v1 types and absence of simulator geometry in external mode, and exercise reconnect and telemetry-only mode.
-- [ ] Polish and delivery: inspect desktop/narrow screenshots, run unit tests/typecheck/build/browser suite and existing Python tests where available, document verified behavior and remaining API coordination, then commit.
+- [x] Protocol and state: tests first for invalid coordinates, occupancy decode, duplicate/bounded chunks, and bounded event/trajectory retention; implement src/protocol.ts and src/state.ts.
+- [x] Simulator and transport: tests first for explicit arm, stop/fault, mode change, held command expiry, relocation, and source isolation; implement src/simulator.ts, src/transport.ts, and src/useMission.ts.
+- [x] Desktop UI: implement src/App.tsx, src/Scene.tsx, supporting components, and src/styles.css; write browser coverage of the user-facing demo and controls before completion.
+- [x] Integration: run the actual tools/fake_live.py feed, verify all v1 types and absence of simulator geometry in external mode, and exercise reconnect and telemetry-only mode.
+- [x] Polish and delivery: inspect desktop/narrow screenshots, run unit tests/typecheck/build/browser suite and existing Python tests where available, document verified behavior and remaining API coordination, then commit.
 
 ## Execution notes
 
 The user explicitly requested spec creation followed immediately by implementation.
 Work proceeds on codex/dashboard-mission-control in the existing clean checkout, scoped to dashboard/.
+
+## Incremental delivery
+
+The initial dashboard PR implements the simulator and frozen v1 transport.
+A subsequent PR pulls current main and integrates additive backend session identity, event history, and rescan responses with explicit tests.
