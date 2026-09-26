@@ -3229,3 +3229,123 @@ input[type="checkbox"] {
     display: none;
   }
 }
+
+/* Received detector output over its own phone frame. */
+.detection-panel {
+  position: absolute;
+  z-index: 18;
+  top: 20px;
+  right: 20px;
+  width: 340px;
+  max-width: calc(100% - 40px);
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  box-shadow: 0 4px 18px #0003;
+  font-size: 11px;
+}
+.detection-panel header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detection-panel header .eyebrow {
+  flex: 1;
+}
+.detection-status {
+  font: 10px/1.4 var(--mono);
+  color: var(--mint);
+}
+.detection-panel.stale .detection-status {
+  color: var(--amber);
+}
+.detection-source {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font: 10px/1.5 var(--mono);
+}
+.detection-image {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-input, #060a0e);
+}
+.detection-panel.stale .detection-image {
+  opacity: 0.45;
+  filter: grayscale(0.7);
+}
+.detection-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.detection-image-empty {
+  margin: 0;
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--dim);
+  font: 10px var(--mono);
+}
+.detection-box {
+  position: absolute;
+  border: 2px solid #f2d27a;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.detection-box.person {
+  border-color: #ff7a66;
+}
+.detection-box span {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  padding: 1px 4px;
+  white-space: nowrap;
+  background: #f2d27a;
+  color: #10161c;
+  font: 600 9px/1.3 var(--mono);
+}
+.detection-box.person span {
+  background: #ff7a66;
+}
+.detection-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.detection-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.detection-placement {
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+.live-detection-label {
+  white-space: nowrap;
+  padding: 4px 7px;
+  border: 1px solid #f2d27a;
+  border-radius: 4px;
+  background: #2a2412e8;
+  color: #f7e3a8;
+  font: 600 9px/1 var(--mono);
+}
+.live-detection-label.person {
+  border-color: #ff7a66;
+  background: #2e1511e8;
+  color: #ffc2b7;
+}
+@media (max-width: 760px) {
+  .detection-panel {
+    top: 74px; /* below the toolbar */
+    right: 12px;
+    width: calc(100% - 24px);
+    max-width: none;
+  }
+}

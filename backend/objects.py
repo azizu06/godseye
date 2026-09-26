@@ -11,7 +11,7 @@ from typing import NamedTuple
 from uuid import uuid4
 
 from .frame_bundle import parse_frame_bundle
-from .localization import LocalizedDetection, view_status
+from .localization import Detection, LocalizedDetection, localize_all, view_status
 from .labels import crop_jpeg
 
 MATCH_RADIUS_M = .5  # same-class sightings closer than this are the same object
@@ -28,6 +28,9 @@ class FrameObjects:
     found: tuple[LocalizedDetection, ...]
     views: tuple | None = None  # (rescan_id, ((object_id, view_status), ...)) for watched points
     crops: tuple[bytes, ...] = ()
+    boxes: tuple[Detection, ...] = ()  # every 2D detection, localized or not
+    image_size: tuple[int, int] = (0, 0)
+    jpeg: bytes = b''  # this frame's own JPEG, for the live overlay
 
 
 class Sighting(NamedTuple):
@@ -40,7 +43,10 @@ class Sighting(NamedTuple):
 
 
 def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int, watch=None) -> FrameObjects:
-    """Decode a v1 bundle against the active session/epoch, then run `detector.localize`.
+    """Decode a v1 bundle against the active session/epoch, then detect and localize.
+
+    A detector with `detect(frame)` and `confidence` (MPSDetector) yields every 2D box;
+    only those with reliable same-frame depth are localized. Otherwise `localize(frame)`.
 
     `watch` is `(rescan_id, ((object_id, position), ...))`; each position is probed
     with `view_status` against this frame's depth. Raises FrameValidationError for
@@ -50,11 +56,20 @@ def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int, wa
     frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
     views = None if watch is None else (
         watch[0], tuple((object_id, view_status(frame, position)) for object_id, position in watch[1]))
-    found = tuple(detector.localize(frame))
+    detect = getattr(detector, 'detect', None)
+    if detect is None:  # a localize-only adapter reports just the boxes it could place
+        found = tuple(detector.localize(frame))
+        boxes = tuple(item.detection for item in found)
+    else:
+        boxes = tuple(detect(frame))
+        found = tuple(localize_all(frame, boxes, min_detection_confidence=detector.confidence))
     crops = tuple(crop_jpeg(frame.image, item.detection.box) if i < 32 else b''
                   for i, item in enumerate(found))
+    start = 4 + int.from_bytes(payload[:4], 'little')
+    jpeg_len = json.loads(payload[4:start])['image']['jpeg_len']  # validated by the parse above
     return FrameObjects(frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture,
-                        frame.t_wall_ms, found, views=views, crops=crops)
+                        frame.t_wall_ms, found, views=views, crops=crops, boxes=boxes,
+                        image_size=frame.image.size, jpeg=payload[start:start + jpeg_len])
 
 
 def associate(tracks, found, radius_m=MATCH_RADIUS_M):

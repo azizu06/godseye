@@ -1,6 +1,8 @@
 import { mapKey } from "./protocol";
 import type {
   ChangeEvent,
+  DetectionFrame,
+  MapScope,
   Health,
   Message,
   Occupancy,
@@ -9,6 +11,11 @@ import type {
   Vec3,
   WorldObject,
 } from "./protocol";
+/** The newest received detector output and when this viewer received it. */
+export interface ReceivedDetections {
+  frame: DetectionFrame & MapScope;
+  receivedAt: number;
+}
 export interface Mission {
   mapKey: string | null;
   health: Health | null;
@@ -20,6 +27,7 @@ export interface Mission {
   path: [number, number][];
   objects: WorldObject[];
   events: ChangeEvent[];
+  detections: ReceivedDetections | null;
   trajectory: Vec3[];
   received: number;
 }
@@ -34,6 +42,7 @@ export const emptyMission = (): Mission => ({
   path: [],
   objects: [],
   events: [],
+  detections: null,
   trajectory: [],
   received: 0,
 });
@@ -86,6 +95,8 @@ export function reduceMessage(
       return { ...next, path: message.points };
     case "objects":
       return { ...next, objects: message.objects };
+    case "detections":
+      return { ...next, detections: { frame: message, receivedAt: now } };
     case "event":
       return state.events.some((e) =>
         message.id !== undefined && e.id !== undefined

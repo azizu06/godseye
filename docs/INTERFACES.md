@@ -94,6 +94,7 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 | `path` | on change | `{ points: [[x,z], ...] }` |
 | `objects` | on change | `{ objects: [{ id, class, position: [x,y,z], confidence, first_seen, last_seen, observations, state }] }` |
 | `event` | on change | `{ kind: "new"/"moved"/"possible_move"/"not_found", object_id, old_position, new_position, displacement_m, t }` |
+| `detections` | 2 Hz | `{ frame_id, t_capture, t_wall_ms, image: {width, height}, source: "backend_detector", classes, detections: [{ class, confidence, box: [x1,y1,x2,y2], position: [x,y,z] or null, depth_m, object_id }] }`, additive; box in that frame's JPEG pixels, `position` only with same-frame depth. Frame JPEG: `GET /capture/detections.jpg` (see `backend/README.md`) |
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 

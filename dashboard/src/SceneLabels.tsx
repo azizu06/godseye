@@ -4,6 +4,7 @@ import { Vector3 } from "three";
 import { LIDAR_RANGE_M } from "./sensorProfile";
 import type { Mission } from "./state";
 import type { Vec3 } from "./protocol";
+import { className, type LiveMarker } from "./detections";
 export interface SceneLabel {
   id: string;
   position: Vec3;
@@ -15,6 +16,7 @@ export function useSceneLabels(
   selected: string | null,
   onSelect: (id: string) => void,
   objectsVisible: boolean,
+  live: LiveMarker[] = [],
 ): SceneLabel[] {
   return useMemo(() => {
     const labels: SceneLabel[] = objectsVisible
@@ -37,6 +39,24 @@ export function useSceneLabels(
           ),
         }))
       : [];
+    for (const marker of live)
+      labels.push({
+        id: `__live-${marker.key}`,
+        position: [
+          marker.position[0],
+          marker.position[1] + 0.35,
+          marker.position[2],
+        ],
+        content: (
+          <span
+            className={`live-detection-label ${marker.class === "person" ? "person" : ""}`}
+            data-testid="live-detection-label"
+          >
+            LIVE · {className(marker.class)}{" "}
+            {Math.round(marker.confidence * 100)}%
+          </span>
+        ),
+      });
     if (mission.pose) {
       const p = mission.pose;
       labels.push(
@@ -78,6 +98,7 @@ export function useSceneLabels(
     selected,
     onSelect,
     objectsVisible,
+    live,
   ]);
 }
 // DOM nodes belong exclusively to the outer React root. Projection only updates
