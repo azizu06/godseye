@@ -11,6 +11,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Live `points` and `objects` payloads, limits, object memory rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 
+- iPhone capture setup, archive format, Xcode project generation, and Swift/backend contract validation: `ios/README.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
