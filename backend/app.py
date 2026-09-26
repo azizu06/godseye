@@ -36,6 +36,8 @@ from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
+from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
+                           scout_position)
 from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
@@ -200,7 +202,8 @@ def create_app(db_path: str | None = None, build_points=None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
                car: CarAdapter | None = None, motion_limits: MotionLimits | None = None,
                audio_provider=None, calibration=None, label_provider=None,
-               label_timeout_s: float = 6., overlay: tuple[str, ...] | None = None) -> FastAPI:
+               label_timeout_s: float = 6., overlay: tuple[str, ...] | None = None,
+               voice_providers=None, voice_budget: int = DEFAULT_BUDGET) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -295,6 +298,14 @@ def create_app(db_path: str | None = None, build_points=None,
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
     register_audio_routes(app, audio_provider)
+    # Live extras come from app.state.detection_view (newest detection frame) and
+    # app.state.approach_view (last /route response); each is absent until its producer sets it.
+    register_voice_routes(app, voice_providers, voice_budget, lambda: dict(
+        session=shown_session(), objects=app.state.objects.snapshot(shown_session(), limit=None),
+        events=app.state.changes.events(shown_session()),
+        live=app.state.phone is not None and app.state.session is not None,
+        scout=scout_position(rover_pose()), route=app.state.nav.path,
+        extras=lambda: scene_extras(app.state, shown_session(), time.time())))
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match"],
                        expose_headers=["ETag", "X-Capture-Age-Ms"])
@@ -955,4 +966,4 @@ def create_app(db_path: str | None = None, build_points=None,
 
 
 app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env(),
-                 label_provider=provider_from_env())
+                 label_provider=provider_from_env(), voice_providers=voice_from_env())

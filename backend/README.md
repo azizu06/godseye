@@ -551,6 +551,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |
+| GET `/voice`, POST `/voice/ask` | Push-to-talk Q&A: availability, then clip -> transcript -> grounded answer -> speech (see [VOICE.md](VOICE.md); off by default) |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
 | GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason |
@@ -704,8 +705,8 @@ position in ARKit meters, state, phone-wall-clock `last_seen`, detector score
 and identity status. Search is conservative lexical matching: all non-filler
 question words must occur in the saved class/label, ignoring case and a trailing
 plural `s`. It does not support semantic synonyms, arbitrary questions, scene
-narration or claims that a last-seen object is still there. Questions are never
-sent to Gemini. Empty and unmatched queries report no saved evidence.
+narration or claims that a last-seen object is still there. `/ask` questions are
+never sent to Gemini (voice questions are; see [VOICE.md](VOICE.md)). Empty and unmatched queries report no saved evidence.
 
 ### Live provider opt-in (separate approval required)
 

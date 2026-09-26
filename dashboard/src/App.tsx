@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import Scene from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
+import { VoiceAsk } from "./VoiceAsk";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
 import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
@@ -514,6 +515,7 @@ export default function App() {
           )}
         </aside>
       )}
+      <VoiceAsk config={config} />
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>

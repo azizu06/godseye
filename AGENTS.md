@@ -19,6 +19,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 
 - Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
+- Push-to-talk voice Q&A (ElevenLabs STT -> grounded Gemini -> ElevenLabs TTS), grounding bounds, `voice_extras` seam and live opt-in: `backend/VOICE.md`.
 
 ## Maintaining this file
 
