@@ -112,6 +112,7 @@ enum FullFrameEncoder {
                 item["type"] = "plane"; item["center"] = vector(plane.center)
                 item["alignment"] = plane.alignment.rawValue
                 item["classification"] = String(describing: plane.classification)
+                item["is_wall"] = plane.classification == .wall
                 item["extent"] = ["width": plane.planeExtent.width, "height": plane.planeExtent.height,
                                    "rotation_y_rad": plane.planeExtent.rotationOnYAxis]
                 item["boundary"] = plane.geometry.boundaryVertices.map(vector)

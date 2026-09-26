@@ -33,6 +33,23 @@ export function usePointCloud() {
   });
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (timer !== undefined || !cloud.wallPrunePending) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        cloud.pruneWallPoints();
+        schedule();
+      }, 16);
+    };
+    const unsubscribe = cloud.subscribe(schedule);
+    schedule();
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [cloud]);
+  useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
   }, []);
@@ -52,6 +69,53 @@ export function usePointCloud() {
       attempt = 0,
       socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let wallTimer: ReturnType<typeof setTimeout> | undefined;
+    let wallRequest: AbortController | undefined;
+    const wallURL = new URL(endpoint);
+    wallURL.protocol = wallURL.protocol === "wss:" ? "https:" : "http:";
+    wallURL.pathname = "/capture/walls";
+    wallURL.search = "";
+    const stopWalls = () => {
+      clearTimeout(wallTimer);
+      wallRequest?.abort();
+    };
+    const pollWalls = async (current: WebSocket) => {
+      if (
+        disposed ||
+        current !== socket ||
+        current.readyState !== WebSocket.OPEN
+      )
+        return;
+      const request = new AbortController();
+      wallRequest = request;
+      const timeout = setTimeout(() => request.abort(), 2000);
+      try {
+        const response = await fetch(wallURL, {
+          signal: request.signal,
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const snapshot = await response.json();
+          if (
+            !disposed &&
+            current === socket &&
+            current.readyState === WebSocket.OPEN &&
+            cloud.updateWalls(snapshot)
+          )
+            setFeed((s) => ({ ...s, lastPoint: Date.now() }));
+        }
+      } catch {
+        /* Points keep working when geometry or the wall endpoint is unavailable. */
+      } finally {
+        clearTimeout(timeout);
+        if (
+          !disposed &&
+          current === socket &&
+          current.readyState === WebSocket.OPEN
+        )
+          wallTimer = setTimeout(() => void pollWalls(current), 1000);
+      }
+    };
     const connect = () => {
       if (disposed) return;
       setFeed((s) => ({ ...s, connection: "connecting" }));
@@ -66,6 +130,7 @@ export function usePointCloud() {
         if (disposed || current !== socket) return;
         attempt = 0;
         cloud.clear();
+        void pollWalls(current);
         setFeed({
           connection: "connected",
           phone: "unknown",
@@ -112,6 +177,7 @@ export function usePointCloud() {
       current.onerror = () => current.close();
       current.onclose = () => {
         if (disposed || current !== socket) return;
+        stopWalls();
         setFeed((s) => ({ ...s, connection: "offline" }));
         retry = setTimeout(connect, Math.min(8000, 1000 * 2 ** attempt++));
       };
@@ -120,6 +186,7 @@ export function usePointCloud() {
     return () => {
       disposed = true;
       clearTimeout(retry);
+      stopWalls();
       if (socket) {
         socket.onclose = null;
         socket.onmessage = null;

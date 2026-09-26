@@ -4,10 +4,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from .frame_bundle import FrameBundle, parse_frame_bundle
+from .walls import non_wall_mask
 
 
 class MappingError(ValueError):
     """A frame carries too little reliable depth to contribute map points."""
+
+
+class WallOnlyFrame(MappingError):
+    """The measured surface is already represented by wall rectangles."""
 
 
 @dataclass(frozen=True)
@@ -21,7 +26,7 @@ class PointChunk:
 
 
 def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: int = 16,
-                    min_depth_m: float = .05, max_depth_m: float = 5.) -> PointChunk:
+                    min_depth_m: float = .05, max_depth_m: float = 5., walls=()) -> PointChunk:
     """Back-project high-confidence depth pixels to ARKit world meters.
 
     Keeps finite depth in [min_depth_m, max_depth_m] whose confidence is 2, then
@@ -42,8 +47,11 @@ def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: i
     indices = np.flatnonzero(valid)
     if indices.size < min_points:
         raise MappingError('insufficient valid high-confidence depth')
-    if indices.size > max_points:
-        indices = indices[np.linspace(0, indices.size - 1, max_points).astype(np.int64)]
+    # Native 256x192 depth fits entirely in this bounded candidate set. Filter
+    # walls before spending the output budget so foreground detail gets the slots.
+    candidate_limit = max(max_points, 65536) if walls else max_points
+    if indices.size > candidate_limit:
+        indices = indices[np.linspace(0, indices.size - 1, candidate_limit).astype(np.int64)]
     rows, cols = np.divmod(indices, dw)
     z = depth.ravel()[indices].astype(np.float64)
     iw, ih = frame.image.size
@@ -55,6 +63,14 @@ def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: i
     world = (frame.transform @ camera)[:3].T
     if not np.all(np.isfinite(world)):
         raise MappingError('projection produced nonfinite world points')
+    if walls:
+        keep = non_wall_mask(world, walls)
+        world, u, v = world[keep], u[keep], v[keep]
+        if not len(world):
+            raise WallOnlyFrame('all valid samples are represented by classified walls')
+        if len(world) > max_points:
+            selected = np.linspace(0, len(world) - 1, max_points).astype(np.int64)
+            world, u, v = world[selected], u[selected], v[selected]
     pixels = np.asarray(frame.image)
     colors = pixels[np.minimum(v.astype(np.int64), ih - 1),
                     np.minimum(u.astype(np.int64), iw - 1)].astype(np.float64) / 255

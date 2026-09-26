@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 
 test("binary phone RGB + depth travels through the real backend into rendered world points", async ({
   page,
-}) => {
+}, testInfo) => {
   const backend = spawn(
     process.env.GODSEYE_PYTHON || "python3",
     ["tests/support/phone_backend.py"],
@@ -99,12 +99,13 @@ test("binary phone RGB + depth travels through the real backend into rendered wo
       );
     pose();
     poses = setInterval(pose, 33);
-    function frame(id: number) {
+    function frame(id: number, transform = originalHeader.transform) {
       // An encoded frame arrives 80 ms behind poses, as on the physical phone.
       const header = Buffer.from(
         JSON.stringify({
           ...originalHeader,
           frame_id: id,
+          transform,
           t_capture: captureTime() - 0.08,
           t_wall_ms: Date.now(),
         }),
@@ -132,11 +133,70 @@ test("binary phone RGB + depth travels through the real backend into rendered wo
             .published,
       )
       .toBe(2);
+    async function geometry(anchors: unknown[]) {
+      const header = Buffer.from(
+        JSON.stringify({
+          version: 2,
+          type: "capture",
+          kind: "geometry",
+          session_id: "browser-pipeline",
+          map_epoch: 1,
+          frame_id: 100,
+          t_capture: captureTime(),
+          t_wall_ms: Date.now(),
+          metadata: { anchors },
+          sections: [],
+        }),
+      );
+      const prefix = Buffer.alloc(4);
+      prefix.writeUInt32LE(header.length);
+      const result = await fetch(`${http}/capture/ingest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: Buffer.concat([prefix, header]),
+      });
+      expect(result.ok).toBe(true);
+    }
+    await geometry([
+      {
+        id: "classified-wall",
+        type: "plane",
+        is_wall: true,
+        alignment: 1,
+        center: [0, 0, 0],
+        extent: { width: 4, height: 3, rotation_y_rad: 0 },
+        transform: [0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 2, 3, 1],
+      },
+    ]);
+    await expect(status).toContainText("1 walls");
+    await expect(status).toContainText("0 points");
+    await expect.poll(async () => (await render()).equals(framed)).toBe(false);
+    const solidWall = await render();
+    frame(3);
+    await expect
+      .poll(
+        async () =>
+          (await (await fetch(`${http}/capture/status`)).json()).mapping
+            .wall_only,
+      )
+      .toBe(1);
+    await expect(status).toContainText("0 points"); // Incoming wall samples consume no point capacity.
+    const foreground = [...originalHeader.transform];
+    foreground[12] += 0.3;
+    frame(4, foreground);
+    await expect(status).toContainText("300 points"); // Object detail 30 cm in front of the wall survives.
+    await expect
+      .poll(async () => (await render()).equals(solidWall))
+      .toBe(false);
+    const wallAndObject = await render();
+    await page.screenshot({
+      path: testInfo.outputPath("wall-and-foreground.png"),
+    });
     clearInterval(poses);
     phone.close();
     await expect(status).toContainText("Phone offline");
     await expect(status).toContainText("300 points");
-    expect((await render()).equals(framed)).toBe(true);
+    expect((await render()).equals(wallAndObject)).toBe(true);
   } finally {
     clearInterval(poses);
     phone?.close();

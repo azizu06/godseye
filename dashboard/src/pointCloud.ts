@@ -1,4 +1,6 @@
-export const MAX_POINTS = 250_000;
+import { onWall, parseWalls, wallRegions, type WallRectangle } from "./walls";
+
+export const MAX_POINTS = 2_000_000;
 export const VOXEL_SIZE = 0.01;
 export const MAX_CHUNK_POINTS = 2500;
 
@@ -85,6 +87,12 @@ export class PointCloudStore {
   readonly colors: Float32Array;
   count = 0;
   evicted = 0;
+  walls: WallRectangle[] = [];
+  private lastWallsCapture = -1;
+  private dirty = new Set<number>();
+  private regions: ReturnType<typeof wallRegions> = [];
+  private pruneCursor = 0;
+  private pruneAgain = false;
   private cursor = 0;
   private revision = 0;
   private mapKey: string | null = null;
@@ -129,6 +137,12 @@ export class PointCloudStore {
     this.evicted = 0;
     this.lastChunk = -1;
     this.lastCapture = -1;
+    this.lastWallsCapture = -1;
+    this.walls = [];
+    this.regions = [];
+    this.pruneCursor = 0;
+    this.pruneAgain = false;
+    this.dirty.clear();
     this.slots.clear();
     this.keys.fill(undefined);
   }
@@ -137,6 +151,85 @@ export class PointCloudStore {
     this.mapKey = null;
     this.retired.clear();
     this.changed();
+  }
+  updateWalls(value: unknown) {
+    const snapshot = parseWalls(value);
+    if (
+      !snapshot ||
+      keyFor(snapshot) !== this.mapKey ||
+      snapshot.t_capture <= this.lastWallsCapture
+    )
+      return false;
+    this.lastWallsCapture = snapshot.t_capture;
+    if (JSON.stringify(this.walls) === JSON.stringify(snapshot.walls))
+      return true;
+    const alreadyPruning = this.wallPrunePending;
+    this.walls = snapshot.walls;
+    this.regions = wallRegions(this.walls);
+    if (alreadyPruning && this.regions.length) this.pruneAgain = true;
+    else {
+      this.pruneCursor = 0;
+      this.pruneAgain = false;
+    }
+    this.changed();
+    return true;
+  }
+  get wallPrunePending() {
+    return this.regions.length > 0 && this.pruneCursor < this.count;
+  }
+  /** Compact in bounded batches so wall discovery never scans 2M points in one UI task. */
+  pruneWallPoints(limit = 20_000) {
+    let removed = 0;
+    const deadline = performance.now() + 8;
+    for (let checked = 0; checked < limit && this.wallPrunePending; checked++) {
+      if (checked > 0 && checked % 256 === 0 && performance.now() >= deadline)
+        break;
+      const slot = this.pruneCursor,
+        i = slot * 3;
+      if (
+        !onWall(
+          this.positions[i],
+          this.positions[i + 1],
+          this.positions[i + 2],
+          this.regions,
+        )
+      ) {
+        this.pruneCursor++;
+        continue;
+      }
+      this.slots.delete(this.keys[slot]!);
+      const last = --this.count;
+      if (slot !== last) {
+        this.positions.copyWithin(i, last * 3, last * 3 + 3);
+        this.colors.copyWithin(i, last * 3, last * 3 + 3);
+        this.keys[slot] = this.keys[last];
+        this.slots.set(this.keys[slot]!, slot);
+        this.dirty.add(slot);
+      }
+      this.keys[last] = undefined;
+      this.cursor = this.count;
+      removed++;
+    }
+    if (!this.wallPrunePending && this.pruneAgain) {
+      this.pruneCursor = 0;
+      this.pruneAgain = false;
+    }
+    if (removed) this.changed();
+    return this.wallPrunePending;
+  }
+  /** GPU uploads only touched ranges. Merge nearby slots to avoid tiny writes. */
+  takeUpdateRanges() {
+    const slots = [...this.dirty].sort((a, b) => a - b);
+    this.dirty.clear();
+    const ranges: { start: number; count: number }[] = [];
+    for (const slot of slots) {
+      const last = ranges.at(-1);
+      if (last && slot * 3 <= last.start + last.count + 96)
+        last.count = slot * 3 + 3 - last.start;
+      else ranges.push({ start: slot * 3, count: 3 });
+    }
+    // Scattered revisits can cost more in GPU calls than one active-buffer upload.
+    return ranges.length > 256 ? [{ start: 0, count: this.count * 3 }] : ranges;
   }
   private selectMap(next: string) {
     if (this.mapKey === next) return;
@@ -182,6 +275,7 @@ export class PointCloudStore {
       const x = chunk.positions[i];
       const y = chunk.positions[i + 1];
       const z = chunk.positions[i + 2];
+      if (onWall(x, y, z, this.regions)) continue;
       const voxel = `${Math.floor(x / this.voxelSize)},${Math.floor(y / this.voxelSize)},${Math.floor(z / this.voxelSize)}`;
       let slot = this.slots.get(voxel);
       if (slot === undefined) {
@@ -199,6 +293,7 @@ export class PointCloudStore {
       this.positions[slot * 3] = x;
       this.positions[slot * 3 + 1] = y;
       this.positions[slot * 3 + 2] = z;
+      this.dirty.add(slot);
       for (let channel = 0; channel < 3; channel++)
         this.colors[slot * 3 + channel] = linearColor(
           chunk.colors[i + channel],
@@ -210,7 +305,7 @@ export class PointCloudStore {
     return "accepted";
   }
   bounds(): CloudBounds | null {
-    if (!this.count) return null;
+    if (!this.count && !this.walls.length) return null;
     const min = [Infinity, Infinity, Infinity],
       max = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < this.count * 3; i++) {
@@ -218,6 +313,12 @@ export class PointCloudStore {
       min[axis] = Math.min(min[axis], this.positions[i]);
       max[axis] = Math.max(max[axis], this.positions[i]);
     }
+    for (const wall of this.walls)
+      wall.corners.forEach((value, i) => {
+        const axis = i % 3;
+        min[axis] = Math.min(min[axis], value);
+        max[axis] = Math.max(max[axis], value);
+      });
     return {
       center: [
         (min[0] + max[0]) / 2,

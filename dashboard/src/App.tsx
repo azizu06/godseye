@@ -1,5 +1,6 @@
 import Scene from "./Scene";
 import PointCloudLayer from "./PointCloudLayer";
+import WallLayer from "./WallLayer";
 import { usePointCloud } from "./usePointCloud";
 
 export default function App() {
@@ -8,6 +9,7 @@ export default function App() {
     <main className="viewport" aria-label="God's Eye 3D viewport">
       <Scene frameCloud={() => cloud.bounds()}>
         <PointCloudLayer cloud={cloud} />
+        <WallLayer cloud={cloud} />
       </Scene>
       <div className="view-label" aria-hidden="true">
         User Perspective
@@ -20,7 +22,8 @@ export default function App() {
         data-live={live}
       >
         {label} · {cloud.count.toLocaleString()} points
-        {cloud.evicted > 0 ? " · buffer full; oldest points replaced" : ""}
+        {cloud.walls.length > 0 ? ` · ${cloud.walls.length} walls` : ""}
+        {cloud.evicted > 0 ? " · buffer full; older points replaced" : ""}
         {rejected > 0 ? ` · ${rejected} invalid packets skipped` : ""}
       </div>
       <p className="navigation-hint" id="navigation-help">

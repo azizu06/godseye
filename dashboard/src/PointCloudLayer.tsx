@@ -1,6 +1,11 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { useThree } from "@react-three/fiber";
-import { BufferGeometry, DynamicDrawUsage, type PointsMaterial } from "three";
+import {
+  BufferAttribute,
+  BufferGeometry,
+  DynamicDrawUsage,
+  type PointsMaterial,
+} from "three";
 import { PointCloudStore } from "./pointCloud";
 
 const roundSplats: PointsMaterial["onBeforeCompile"] = (shader) => {
@@ -22,8 +27,16 @@ export default function PointCloud({ cloud }: { cloud: PointCloudStore }) {
     const buffer = geometry.current;
     if (!buffer) return;
     buffer.setDrawRange(0, cloud.count);
-    buffer.attributes.position.needsUpdate = true;
-    buffer.attributes.color.needsUpdate = true;
+    const ranges = cloud.takeUpdateRanges();
+    for (const attribute of [
+      buffer.attributes.position,
+      buffer.attributes.color,
+    ]) {
+      if (!(attribute instanceof BufferAttribute)) continue;
+      for (const range of ranges)
+        attribute.addUpdateRange(range.start, range.count);
+      if (ranges.length) attribute.needsUpdate = true;
+    }
     invalidate();
   }, [cloud, version, invalidate]);
   return (

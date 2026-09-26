@@ -95,6 +95,16 @@ one in-flight bundle per phone.
 - Depth is optical-axis meters. Nothing here is object detection, occupancy, or
   navigation, and the synthetic phone's gradient is only a transport check.
 
+Classified wall rectangles from full geometry uploads are exposed through
+`GET /capture/walls` (v2; see [CAPTURE.md](../docs/CAPTURE.md)). The mapping worker
+filters samples within 2 cm of their measured interiors before choosing its 2,500
+points, preserving borders and foreground detail. With walls present it projects
+at most 65,536 candidate depth pixels (covering the native 256×192 depth image),
+then samples the non-wall remainder. All-wall frames emit no redundant chunk
+and increment `mapping.wall_only`. The dashboard reclaims existing wall points
+as rectangles arrive, keeping its two-million-point capacity for other surfaces.
+This changes only the display stream; full capture remains recorded as received.
+
 Live check without a phone, car, or dashboard (each in its own terminal):
 
 ```sh

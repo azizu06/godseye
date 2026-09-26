@@ -113,6 +113,7 @@ class RichCapture:
 
     def reset(self):
         self.latest = {}
+        self.wall_cache = None
         self.received = 0
         self.bytes_received = 0
         self.png_cache = {}
