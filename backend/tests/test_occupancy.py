@@ -10,7 +10,8 @@ from unittest import mock
 import numpy as np
 from fastapi.testclient import TestClient
 
-from backend.app import create_app
+from backend.app import MAP_MAX_AGE_S, create_app
+from backend.mapping import build_point_chunk
 from backend.occupancy import (CELL_M, FLOOR_TOL_M, HALF_EXTENT_M, OBSTACLE_MAX_M, OBSTACLE_MIN_M,
                                PUBLISH_INTERVAL_S, OccupancyGrid)
 from backend.tests.test_map_transport import fresh, hello, next_of, wait_for
@@ -264,6 +265,8 @@ class LiveOccupancyTests(unittest.TestCase):
             stats = client.app.state.map_stats
             self.assertEqual((stats['published'], stats['no_new_points']), (1, 2))
             self.assertGreater(int((decode(message) == 1).sum()), 50)
+            # Every accepted capture counts as fresh sensing, published points or not.
+            self.assertEqual(client.app.state.occupancy.revision, 3)
 
     def test_map_reset_clears_the_grid_and_never_republishes_the_old_one(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
@@ -331,6 +334,133 @@ class LiveOccupancyTests(unittest.TestCase):
                 wait_for(lambda: client.app.state.occupancy_stats['published'] >= 1)
             self.assertEqual(stalled.occupancy['type'], 'occupancy')
             self.assertFalse(any(m['type'] == 'occupancy' for m in stalled.queue._queue))
+
+
+class GatedMapping:
+    """`build_points` whose first call waits for `release`, so a test can change the map meanwhile."""
+
+    def __init__(self):
+        self.started, self.release, self.finished = threading.Event(), threading.Event(), threading.Event()
+
+    def __call__(self, payload, session_id, map_epoch):
+        first = not self.started.is_set()
+        self.started.set()
+        if first:
+            self.release.wait(5)
+        try:
+            return build_point_chunk(payload, session_id, map_epoch)
+        finally:
+            if first:
+                self.finished.set()
+
+    def finish(self):
+        """Release the held frame and give its worker thread time to run to the end."""
+        self.release.set()
+        assert self.finished.wait(5)
+        time.sleep(.3)
+
+
+def join(client, phone, session, epoch=1):
+    """Say hello and wait until the backend owns this phone; returns its map's grid."""
+    phone.send_json(hello(session, epoch))
+    wait_for(lambda: client.app.state.phone is not None)
+    return client.app.state.occupancy
+
+
+def read_through_stop(client, live):
+    """Every /live message up to a fresh operator-stop marker, which follows all earlier updates."""
+    client.post('/stop')
+    messages = []
+    while not messages or messages[-1]['type'] != 'health' or messages[-1]['stop_reason'] != 'operator_stop':
+        messages.append(live.receive_json())
+    return messages
+
+
+class LateMappingTests(unittest.TestCase):
+    """A frame still mapping when it stops counting must leave every grid untouched.
+
+    Its worker thread outlives the cancelled connection or the map reset, and a phone
+    rejoining the same map resumes that map's grid, so evidence may only be committed
+    for results accepted as current: same phone, same map, frame at most a second old.
+    """
+
+    def test_frame_finished_after_disconnect_never_reaches_the_resumed_grid(self):
+        gate = GatedMapping()
+        with TestClient(create_app(':memory:', build_points=gate)) as client, \
+                client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                grid = join(client, phone, 'occ-late')
+                phone.send_bytes(floor_frame('occ-late'))
+                self.assertTrue(gate.started.wait(5))
+            wait_for(lambda: client.app.state.phone is None)
+            gate.finish()
+            self.assertEqual(grid.voxels, 0)
+            with client.websocket_connect('/phone') as phone:
+                self.assertIs(join(client, phone, 'occ-late'), grid)  # the same map resumes its grid
+                self.assertEqual(grid.voxels, 0)
+                # The resumed grid still maps new captures; the late frame never publishes.
+                send_frames(client, phone, 'occ-late', first=2)
+                self.assertEqual(next_of(live, 'points')['frame_id'], 2)
+                self.assertGreater(int((decode(next_of(live, 'occupancy', limit=200)) == 1).sum()), 50)
+            self.assertEqual(grid.revision, 3)
+
+    def test_frame_finished_after_reconnecting_to_a_new_epoch_touches_neither_grid(self):
+        gate = GatedMapping()
+        with TestClient(create_app(':memory:', build_points=gate)) as client, \
+                client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                old = join(client, phone, 'occ-epoch')
+                phone.send_bytes(floor_frame('occ-epoch'))
+                self.assertTrue(gate.started.wait(5))
+            wait_for(lambda: client.app.state.phone is None)
+            with client.websocket_connect('/phone') as phone:
+                new = join(client, phone, 'occ-epoch', epoch=2)
+                self.assertIsNot(new, old)
+                gate.finish()
+                self.assertEqual((old.voxels, new.voxels), (0, 0))
+                self.assertEqual((old.revision, new.revision), (0, 0))
+                messages = read_through_stop(client, live)
+            self.assertFalse(any(m['type'] in ('points', 'occupancy') for m in messages))
+            self.assertEqual(client.app.state.map_stats['published'], 0)
+
+    def test_frame_finished_after_a_map_reset_is_discarded_before_touching_either_grid(self):
+        gate = GatedMapping()
+        with TestClient(create_app(':memory:', build_points=gate)) as client, \
+                client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                old = join(client, phone, 'occ-reset')
+                phone.send_bytes(floor_frame('occ-reset'))
+                self.assertTrue(gate.started.wait(5))
+                # Revokes this phone mid-frame, but its mapping worker is still running.
+                self.assertEqual(client.post('/session').status_code, 200)
+                new = client.app.state.occupancy
+                gate.release.set()
+                wait_for(lambda: client.app.state.map_stats['discarded_reset'] == 1)
+            self.assertEqual((old.voxels, new.voxels), (0, 0))
+            self.assertEqual((old.revision, new.revision), (0, 0))
+            messages = read_through_stop(client, live)
+            self.assertFalse(any(m['type'] in ('points', 'occupancy') for m in messages))
+            self.assertEqual(client.app.state.map_stats['published'], 0)
+
+    def test_frame_older_than_a_second_when_mapped_is_discarded_before_touching_the_grid(self):
+        gate = GatedMapping()
+        with TestClient(create_app(':memory:', build_points=gate)) as client, \
+                client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                grid = join(client, phone, 'occ-old-frame')
+                phone.send_bytes(floor_frame('occ-old-frame'))
+                self.assertTrue(gate.started.wait(5))
+                time.sleep(MAP_MAX_AGE_S + .1)
+                gate.release.set()
+                wait_for(lambda: client.app.state.map_stats['discarded_stale'] == 1)
+                self.assertEqual(grid.voxels, 0)
+                self.assertEqual(grid.revision, 0)
+                self.assertEqual(client.app.state.map_stats['published'], 0)
+                # The link and the grid stay usable: the next fresh frame maps.
+                phone.send_bytes(floor_frame('occ-old-frame', frame_id=2, t_capture=2.))
+                self.assertEqual(next_of(live, 'points')['frame_id'], 2)
+                self.assertGreater(grid.voxels, 0)
+                self.assertEqual(grid.revision, 1)
 
 
 if __name__ == '__main__':
