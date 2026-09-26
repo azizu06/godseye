@@ -27,6 +27,7 @@ MAX_CONTEXT_CHANGES = 20
 MAX_ROUTE_POINTS = 32
 MAX_EXTRAS = 4096
 MAX_FRAME_DETECTIONS = 16
+MAX_AGE_S = 7 * 24 * 3600  # older, or in the future, means a wrong phone clock
 MAX_APPROACH_POINTS = 16
 TRANSCRIBE_S, ANSWER_S, SPEAK_S = 15, 12, 15
 DEFAULT_BUDGET = 100  # paid questions per backend process (a new map does not reset it); never retried
@@ -69,7 +70,10 @@ def providers_from_env():
 
 
 def _age(now, t):
-    return None if not isinstance(t, (int, float)) else max(0, round(now - t))
+    """Whole seconds since `t`, or None when the clock makes it implausible (never a made-up age)."""
+    if not isinstance(t, (int, float)) or not -5 <= now - t <= MAX_AGE_S:
+        return None
+    return max(0, round(now - t))
 
 
 def _sample(points, limit):

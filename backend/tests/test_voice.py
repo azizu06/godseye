@@ -93,6 +93,10 @@ class GroundingTests(unittest.TestCase):
         self.assertNotIn('label', context['objects'][1])  # only a completed label is a description
         self.assertNotIn('id', first)
         self.assertFalse(context['map']['live'])
+        # A wrong phone clock gives an unknown age, never decades or a negative age.
+        for last_seen in (0., 10_000.):
+            stale = dict(self.objects(1)[0], last_seen=last_seen)
+            self.assertIsNone(grounding(None, [stale], [], now=1e9, live=False)['objects'][0]['last_seen_s_ago'])
         self.assertNotIn('route', context)
         self.assertNotIn('extras', context)
 
@@ -201,7 +205,8 @@ class VoiceRouteTests(unittest.TestCase):
             self.assertEqual(question, 'Where is the backpack?')
             classes = {o['class'] for o in context['objects']}
             self.assertEqual(classes, {'cup', 'chair', 'backpack'})
-            self.assertTrue(all(isinstance(o['last_seen_s_ago'], int) for o in context['objects']))
+            # The synthetic scene's phone clock reads 1970, so its ages are unknown, not decades.
+            self.assertEqual({o['last_seen_s_ago'] for o in context['objects']}, {None})
             self.assertEqual([c['kind'] for c in context['changes']], ['moved'])
             self.assertEqual(context['changes'][0]['class'], 'backpack')
             self.assertEqual(context['map']['session_id'], 's')

@@ -25,7 +25,7 @@ as clear, recognizes people, or invents routes or destinations.
 4. `voice.grounding()` builds the only scene knowledge Gemini receives, from the
    shown map (active, else newest stored): up to 40 newest objects (class, Gemini
    crop label only when `labeled`, position in scan meters, state, observations,
-   confidence, seconds since last seen), the 20 newest change events, whether the
+   confidence, seconds since last seen, or null when the phone clock makes it implausible), the 20 newest change events, whether the
    phone is live, the fresh tracked scout position, the rover's own path (`rover_path`)
    when a navigation run follows one, and the live `extras` below. Stored ids and
    images are not sent.
