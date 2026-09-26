@@ -490,10 +490,12 @@ or drive the rover. See Drive commands for the fake-tested command boundary.
 
 ## Drive commands
 
-`create_app(car=...)` takes a car adapter from `drive.py` with `send(v_mps,
-yaw_rate_rps)`, `zero()` and `health()` (`ok`/`stale`/`down`). `LoggingCar`
-(default) logs through `drive()` and reports down. `FakeCar` records calls and
-reports the health a test sets; it moves nothing. A real adapter may report
+`create_app(car=...)` takes a car adapter from `drive.py` with `send(command)`,
+`zero(envelope)` and `health()` (`ok`/`stale`/`down`); the envelopes are
+described under Command envelopes below. `LoggingCar` (default) logs through
+`drive()` and reports down. `FakeCar` records calls (`('send', v, w)` or
+`('zero',)`) and the full `envelopes`, and reports the health a test sets; it
+moves nothing. A real adapter may report
 `ok` only from verified car feedback, never from a successful write, must
 return promptly (its calls run on the event loop), and does not exist yet: the
 vendor protocol, acknowledgement and health semantics belong to
@@ -527,13 +529,56 @@ before planning, and every 10 Hz follower step calls
 the generation ended, so the run stops (`command_stale`) and publishes an empty
 path. Navigation owns goal and path policy; this boundary owns dispatch safety.
 
+### Command envelopes
+
+The adapter receives `DriveCommand` and `DriveStop` from `motion.py`. They are
+transport-neutral. The bridge endpoint, wire encoding, UART framing,
+acknowledgement and health semantics, PWM speed calibration and phone mount
+transform are not chosen yet. Field names follow the phase-2 draft in
+`docs/INTERFACES.md` section 4, which stays unchanged. `map_epoch`, `mode`,
+`arm_token` and `version` are left out; the per-arm `session_id` does the
+arm token's job.
+
+- `session_id`: a drive session, not the phone map's `session_id`. Each
+  successful `/arm` opens a fresh one (uuid4 hex). The next stop ends it with a
+  `DriveStop`, and no new session opens until that Stop was handed off. A Stop
+  before the first arm carries `None`.
+- `seq`: starts at 1 in each session and rises strictly across its commands
+  and Stops. A failed hand-off may leave a gap.
+- `issued_at_ms`: the backend's `time.monotonic()` in ms when it accepted the
+  velocity (the latest `/manual` or follower submit). Resends of a held command
+  repeat it. Its origin is arbitrary, so it means nothing to phone
+  (`t_capture`), wall, bridge or UNO clocks. `valid_for_ms` is the 250 ms lease.
+  The backend's lease and expiry use only its own monotonic clock.
+- A lease expiry or refused input while armed hands off a zero `DriveCommand`
+  in the open session. The operator stays armed, and a renewed hold continues
+  that session. Every stop hands off a `DriveStop` through `zero()`. A Stop that
+  fails is redelivered unchanged every tick and blocks `/arm`.
+- Nothing is handed off while armed and idle, between a zero and the next held
+  command.
+
+What firmware must do, independently of this backend and unproven here: honor
+every Stop, and never resume a session that a Stop or a lost link ended. Only
+a session it has not seen may move the car, and the backend mints one only on
+`/arm`. It must drop any `seq` at or below the last one in the session and stop
+the motors within 300 ms of the last valid command, by its own clock. It must
+never act on a command more than 500 ms after issue. With unsynchronized clocks
+the car cannot age a command from `issued_at_ms` alone. How the 500 ms limit is
+measured (bridge receipt time, a clock-offset handshake, or another method) is
+still open. Also open: whether the 300 ms command-loss stop latches. If it
+does, any idle pause longer than 300 ms needs a re-arm, or the backend must add
+idle keepalive zeros, which it does not send today.
+
 Proof is `backend/tests/test_motion.py` (fake clock),
-`backend/tests/test_drive_safety.py` (real app, streaming phone, fake detector
-and `FakeCar`) and the navigation cases in `backend/tests/test_navigator.py`.
+`backend/tests/test_command_envelope.py` (envelope sessions, seq, issue time,
+expiry, Stop retry and link loss; its `Receiver` models the proposed car rules
+only to show the fields suffice), `backend/tests/test_drive_safety.py` (real app,
+streaming phone, fake detector and `FakeCar`) and the navigation cases in
+`backend/tests/test_navigator.py`.
 This is backend evidence only. The Mac's lease is not the car's independent
-300 ms stop, and no test here validates a physical protocol, stop distance or
-bench behavior; those need hardware evidence and explicit approval before any
-physical adapter is connected.
+300 ms stop or 500 ms limit, and no test here validates a physical protocol,
+stop distance or bench behavior; those need hardware evidence and explicit
+approval before any physical adapter is connected.
 
 ## Gemini crop labels and saved-object search
 
