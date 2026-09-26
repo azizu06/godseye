@@ -1,3 +1,4 @@
+import { simulator, panel, workspaceAction, closeWorkspace } from "./helpers";
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { capture } from "./captureFixture";
@@ -81,17 +82,18 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
       },
     });
   });
-  await page.goto("/");
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await simulator(page);
+  await workspaceAction(page, "Connection settings");
   await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill("ws://localhost:9876/live");
   await page.getByLabel("Backend API base").fill("http://localhost:9876");
   await page.getByLabel("Enable REST commands").uncheck();
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await closeWorkspace(page);
+  await panel(page, "Scene settings");
   await expect.poll(() => frame, { timeout: 90000 }).toBe(33);
   await expect(page.getByTestId("surface-status")).toContainText(
     "capture paused",
@@ -105,12 +107,11 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
   ).toHaveCount(0);
   await page.screenshot({ path: "/tmp/godseye-persistent-scan.png" });
   const download = page.waitForEvent("download");
-  await page
-    .getByRole("button", { name: "Export snapshot", exact: true })
-    .click();
+  await workspaceAction(page, "Export snapshot");
   const json = JSON.parse(
     await readFile((await (await download).path())!, "utf8"),
   );
+  await panel(page, "Scene settings");
   const map = json.colored_reconstruction;
   expect(map).not.toBeNull();
   expect(map.indices.length).toBeGreaterThan(0);
@@ -156,13 +157,13 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
     "data-map-triangles",
     count!,
   );
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page.getByLabel("Enable REST commands").check();
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await closeWorkspace(page);
+  await panel(page, "Scene settings");
   await expect(page.getByTestId("surface-status")).toHaveAttribute(
     "data-map-triangles",
     count!,

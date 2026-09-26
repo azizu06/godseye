@@ -26,8 +26,8 @@ class FrameObjects:
     t_capture: float
     t_wall_ms: int
     found: tuple[LocalizedDetection, ...]
-    crops: tuple[bytes, ...] = ()
     views: tuple | None = None  # (rescan_id, ((object_id, view_status), ...)) for watched points
+    crops: tuple[bytes, ...] = ()
 
 
 class Sighting(NamedTuple):
@@ -54,7 +54,7 @@ def detect_objects(detector, payload: bytes, session_id: str, map_epoch: int, wa
     crops = tuple(crop_jpeg(frame.image, item.detection.box) if i < 32 else b''
                   for i, item in enumerate(found))
     return FrameObjects(frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture,
-                        frame.t_wall_ms, found, crops, views)
+                        frame.t_wall_ms, found, views=views, crops=crops)
 
 
 def associate(tracks, found, radius_m=MATCH_RADIUS_M):

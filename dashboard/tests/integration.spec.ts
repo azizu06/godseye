@@ -1,10 +1,15 @@
-import { panel } from "./helpers";
+import {
+  simulator,
+  panel,
+  workspace,
+  workspaceAction,
+  closeWorkspace,
+} from "./helpers";
 import { test, expect, type Page } from "@playwright/test";
 async function external(page: Page, wsUrl: string, commands = false) {
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page.getByRole("button", { name: /External feed Connect/ }).click();
+  await page.getByLabel("Enable REST commands").check();
   await page.getByLabel("Telemetry WebSocket").fill(wsUrl);
   if (commands) {
     await page.getByLabel("Backend API base").fill("http://localhost:9876");
@@ -12,24 +17,27 @@ async function external(page: Page, wsUrl: string, commands = false) {
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
+  await closeWorkspace(page);
 }
 test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
-  await page.goto("/");
+  await simulator(page);
   await page.getByRole("button", { name: "Explore", exact: true }).click();
   await page
     .getByRole("button", { name: "Arm simulator", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "Workspace help", exact: true })
-    .click();
+  await workspaceAction(page, "Workspace help");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "STOP", exact: true })
     .click();
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await closeWorkspace(page);
   await expect(
     page.getByRole("button", { name: "Arm simulator", exact: true }),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Arm simulator", exact: true })
+    .click();
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect(
     page.getByRole("button", { name: "STOP ROVER", exact: true }),
@@ -38,18 +46,20 @@ test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
 test("forward moves immediately without turning, leaves a trail, and stops on release and blur", async ({
   page,
 }) => {
-  await page.goto("/");
+  await simulator(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await page
     .getByRole("button", { name: "Arm simulator", exact: true })
     .click();
-  const before = await page.locator(".pose-readout").innerText();
+  const before = await page
+    .locator("svg.map2d g[transform*=rotate]")
+    .getAttribute("transform");
   const rover = page.locator("svg.map2d g[transform*=rotate]");
   const heading = (transform: string | null) =>
     transform?.match(/rotate\(([^)]+)\)/)?.[1];
   const initialHeading = heading(await rover.getAttribute("transform"));
   await page.keyboard.down("ArrowUp");
-  await expect(page.locator(".pose-readout")).not.toHaveText(before, {
+  await expect(rover).not.toHaveAttribute("transform", before!, {
     timeout: 1500,
   });
   expect(heading(await rover.getAttribute("transform"))).toBe(initialHeading);
@@ -58,21 +68,35 @@ test("forward moves immediately without turning, leaves a trail, and stops on re
     .toBeGreaterThan(1);
   await page.keyboard.up("ArrowUp");
   await page.waitForTimeout(200);
-  const after = await page.locator(".pose-readout").innerText();
+  const after = await page
+    .locator("svg.map2d g[transform*=rotate]")
+    .getAttribute("transform");
   await page.waitForTimeout(500);
-  expect(await page.locator(".pose-readout").innerText()).toBe(after);
+  expect(
+    await page
+      .locator("svg.map2d g[transform*=rotate]")
+      .getAttribute("transform"),
+  ).toBe(after);
   await page.keyboard.down("ArrowUp");
   await page.waitForTimeout(400);
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await page.keyboard.up("ArrowUp");
   await page.waitForTimeout(200);
-  const blur = await page.locator(".pose-readout").innerText();
+  const blur = await page
+    .locator("svg.map2d g[transform*=rotate]")
+    .getAttribute("transform");
   await page.waitForTimeout(400);
-  expect(await page.locator(".pose-readout").innerText()).toBe(blur);
+  expect(
+    await page
+      .locator("svg.map2d g[transform*=rotate]")
+      .getAttribute("transform"),
+  ).toBe(blur);
   expect(await page.locator("svg.map2d line").count()).toBeGreaterThan(1);
   await page.keyboard.down("ArrowDown");
   await page.waitForTimeout(400);
-  expect(await page.locator(".pose-readout").innerText()).toBe(blur);
+  expect(
+    (await rover.getAttribute("transform"))?.match(/translate\(([^)]+)\)/)?.[1],
+  ).toBe(blur?.match(/translate\(([^)]+)\)/)?.[1]);
   expect(heading(await rover.getAttribute("transform"))).not.toBe(
     initialHeading,
   );
@@ -127,7 +151,7 @@ test("older arm completion cannot override a newer stop", async ({ page }) => {
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await page.goto("/");
+  await simulator(page);
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;
@@ -190,22 +214,21 @@ test("old source arm completion reasserts stop after switching to simulator", as
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await page.goto("/");
+  await simulator(page);
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;
   await page.getByRole("button", { name: "STOP ROVER", exact: true }).click();
   await expect.poll(() => stopCalls).toBe(1);
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page
     .getByRole("button", { name: /Local simulator A complete/ })
     .click();
   await page
     .getByRole("button", { name: "Start simulator", exact: true })
     .click();
+  await closeWorkspace(page);
   releaseArm();
   await panel(page, "Spatial memory");
   await expect(
@@ -224,9 +247,10 @@ test("Python fake-live source renders relocation without simulator geometry", as
     !process.env.GODSEYE_INTEGRATION,
     "Set GODSEYE_INTEGRATION=1 and start tools/fake_live.py on port 8766.",
   );
-  await page.goto("/");
+  await simulator(page);
   await external(page, "ws://127.0.0.1:8766/live");
-  await expect(page.locator(".source-button")).toContainText("Synthetic feed");
+  await workspace(page);
+  await expect(page.getByText("Synthetic feed", { exact: true })).toBeVisible();
   await panel(page, "Spatial memory");
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(1);
   await page.locator(".objects-panel .object-row").click();
@@ -240,6 +264,7 @@ test("Python fake-live source renders relocation without simulator geometry", as
   await expect(
     page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeDisabled();
+  await panel(page, "Scene settings");
   const points = Number(
     (await page.locator(".scene-stat>strong").innerText()).replaceAll(",", ""),
   );
@@ -257,20 +282,24 @@ test("real backend remains disarmed and rejects a baseline before observations",
     !process.env.GODSEYE_INTEGRATION,
     "Start the real backend on port 8765 for integration checks.",
   );
-  await page.goto("/");
-  await external(page, "ws://127.0.0.1:8765/live");
+  await simulator(page);
+  // Point this check at an isolated empty backend, never a phone's active map:
+  // GODSEYE_INTEGRATION=1 GODSEYE_TEST_BACKEND_URL=http://127.0.0.1:8767 npm run test:e2e
+  const backend =
+    process.env.GODSEYE_TEST_BACKEND_URL ?? "http://127.0.0.1:8765";
+  const socket = new URL("/live", backend);
+  socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
+  await external(page, socket.toString());
   // Configure the real REST endpoint without replacing its health with fixtures.
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page.getByLabel("Enable REST commands").check();
-  await page.getByLabel("Backend API base").fill("http://127.0.0.1:8765");
+  await page.getByLabel("Backend API base").fill(backend);
   await page
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
-  await expect(
-    page.getByText("Receiving telemetry", { exact: true }),
-  ).toBeVisible();
+  await closeWorkspace(page);
+  await workspace(page);
+  await expect(page.getByText(/Receiving telemetry/)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeDisabled();
@@ -281,7 +310,11 @@ test("real backend remains disarmed and rejects a baseline before observations",
   await expect(page.getByRole("status")).toContainText(
     /No active map|Nothing observed/i,
   );
-  await page.getByRole("button", { name: "STOP ROVER", exact: true }).click();
+  await workspaceAction(page, "Workspace help");
+  await page
+    .locator("dialog")
+    .getByRole("button", { name: "STOP", exact: true })
+    .click();
   await expect(page.getByRole("status")).toContainText("Stop acknowledged");
 });
 
@@ -316,29 +349,29 @@ test("late session response cannot clear a newly selected simulator", async ({
     await gate;
     await route.fulfill({ json: { version: 1 } });
   });
-  await page.goto("/");
+  await simulator(page);
   await external(page, "ws://localhost:9876/live", true);
-  await page.getByRole("button", { name: "New session", exact: true }).click();
+  await workspaceAction(page, "New session");
   await page
     .getByRole("button", { name: "Start new session", exact: true })
     .click();
   await requestStarted;
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Connection settings", exact: true })
-    .click();
+  await workspaceAction(page, "Connection settings");
   await page
     .getByRole("button", { name: /Local simulator A complete/ })
     .click();
   await page
     .getByRole("button", { name: "Start simulator", exact: true })
     .click();
+  await closeWorkspace(page);
   await panel(page, "Spatial memory");
   await expect(
     page.locator(".objects-panel .object-row").first(),
   ).toBeVisible();
   release();
   await page.waitForTimeout(400);
+  await panel(page, "Scene settings");
   await expect
     .poll(async () =>
       Number(
@@ -421,7 +454,7 @@ test("older arm completion cannot override a live map reset", async ({
     }
     await route.fulfill({ json: { version: 1, ok: true } });
   });
-  await page.goto("/");
+  await simulator(page);
   await external(page, "ws://localhost:9876/live", true);
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await started;

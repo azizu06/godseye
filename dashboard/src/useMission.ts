@@ -28,6 +28,8 @@ export function useMission() {
   const [rescanBaseline, setRescanBaseline] = useState<string | null>(null);
   const [historyStatus, setHistoryStatus] = useState("Live events only");
   const [pending, setPending] = useState<string | null>(null);
+  const [unconfirmedMotion, setUnconfirmedMotion] = useState(false);
+  const [lastKnownArmed, setLastKnownArmed] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [startedAt, setStartedAt] = useState(Date.now());
   const simulator = useRef<Simulator | null>(null);
@@ -94,6 +96,8 @@ export function useMission() {
     setSimSurface(null);
     setStartedAt(Date.now());
     setPending(null);
+    setUnconfirmedMotion(false);
+    setLastKnownArmed(false);
     latchStop(true);
     if (source === "simulator") {
       const sim = new Simulator();
@@ -268,6 +272,8 @@ export function useMission() {
       body?: Record<string, unknown>,
       signal?: AbortSignal,
     ) => {
+      // Keep Stop actionable across every arming path and acknowledgement gap.
+      if (path === "/arm" || path === "/stop") setUnconfirmedMotion(true);
       if (config.source === "simulator") {
         if (!simulator.current) throw Error("Simulator is starting.");
         const result = simulator.current.command(path, body);
@@ -278,6 +284,10 @@ export function useMission() {
         }
         receive(simulator.current.snapshot(path === "/session"));
         setSimSurface(simulator.current.getSurface());
+        if (path === "/stop") {
+          setUnconfirmedMotion(false);
+          setLastKnownArmed(false);
+        }
         return result;
       }
       if (!config.commands)
@@ -288,6 +298,10 @@ export function useMission() {
       const requestedMap = activeMap.current;
       const result = await sendCommand(config.apiUrl, path, body, signal);
       if (gen !== generation.current) return result;
+      if (path === "/stop") {
+        setUnconfirmedMotion(false);
+        setLastKnownArmed(false);
+      }
       if (path === "/session") {
         const ack = parseMessage({
           ...(result as MapScope),
@@ -359,6 +373,15 @@ export function useMission() {
     !pending &&
     mission.health?.armed === true &&
     (config.source === "simulator" || config.commands);
+  useEffect(() => {
+    if (mission.health) {
+      setLastKnownArmed(mission.health.armed);
+      if (mission.health.armed) setUnconfirmedMotion(false);
+    }
+  }, [mission.health?.armed]);
+  // A reconnect can temporarily clear health. Unknown state is not disarm.
+  const requiresStop =
+    unconfirmedMotion || lastKnownArmed || !!mission.health?.armed || !!pending;
   const unexpectedStop =
     mission.health?.armed === false &&
     mission.health.stop_reason !== null &&
@@ -572,7 +595,7 @@ export function useMission() {
       ArrowRight: "right",
     };
     const ignored = (target: EventTarget | null) =>
-      document.querySelector("dialog[open]") ||
+      document.querySelector("dialog[open], .workspace-drawer") ||
       (target instanceof Element &&
         target.closest(
           "input, textarea, select, [contenteditable]:not([contenteditable='false'])",
@@ -622,6 +645,7 @@ export function useMission() {
     stale,
     trackingNormal,
     canDrive,
+    requiresStop,
     command,
     pending,
     notice,

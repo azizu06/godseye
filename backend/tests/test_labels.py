@@ -37,6 +37,7 @@ class LabelTests(unittest.TestCase):
                 missing = client.post('/ask', json={'question': 'where is my backpack?'}).json()
                 self.assertEqual(missing['status'], 'no_match')
                 self.assertEqual(missing['matches'], [])
+                self.assertEqual(client.post('/ask', json={'question': 'red backpack'}).json()['status'], 'no_match')
 
     def test_restart_search_is_scoped_and_does_not_call_provider(self):
         import tempfile
@@ -118,6 +119,8 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(next(obj for obj in saved if obj['identity']['status'] == 'unavailable')['identity']['reason'], 'queue_full')
         # A fresh worker retains the spent attempt; interrupted calls never retry.
         labels = ObjectLabels(db, FakeLabels(), lambda session: None, max_attempts=2)
+        self.assertEqual(next(obj for obj in memory.snapshot(('s', 1))
+                              if obj['id'] == first[0].object_id)['identity']['reason'], 'interrupted')
         second = memory.record(('s', 1), 2, 2., [located(LEFT_CUP, (4, 0, 0))])
         labels.enqueue(('s', 1), second, (b'crop',))
         with db:
