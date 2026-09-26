@@ -5,12 +5,14 @@ import struct
 import threading
 import time
 import unittest
+import unittest.mock
 
 import numpy as np
 from fastapi.testclient import TestClient
 
 from backend.app import MAP_PENDING_POINTS, Listener, create_app
 from backend.mapping import build_point_chunk
+from backend.point_dedupe import PointSettings
 from backend.tests.test_mapping import TRANSFORM, bundle as raw_bundle, grids
 
 MAX_POINTS = 2500
@@ -57,7 +59,8 @@ class MapTransportTests(unittest.TestCase):
             for frame_id in (1, 2):
                 with client.websocket_connect('/phone') as phone:
                     phone.send_json(hello())
-                    phone.send_bytes(frame(frame_id=frame_id, t_capture=float(frame_id)))
+                    # A different wall each time: identical geometry would carry no new voxels.
+                    phone.send_bytes(frame(frame_id=frame_id, t_capture=float(frame_id), depth=1. + frame_id))
                     chunk = next_of(live, 'points')
                     self.assertEqual(chunk['chunk_id'], frame_id)
                     self.assertEqual(chunk['session_id'], 'map-session')
@@ -150,7 +153,7 @@ class MapTransportTests(unittest.TestCase):
             with client.websocket_connect('/phone') as phone:
                 phone.send_json(hello())
                 for i in range(1, 21):
-                    phone.send_bytes(frame(frame_id=i, t_capture=float(i)))
+                    phone.send_bytes(frame(frame_id=i, t_capture=float(i), depth=1. + i / 10))
                 seen = []
                 while not seen or seen[-1] != 20:
                     seen.append(next_of(live, 'points')['frame_id'])
@@ -166,7 +169,7 @@ class MapTransportTests(unittest.TestCase):
                 client.app.state.listeners.add(stalled)
                 phone.send_json(hello())
                 for i in range(1, 6):
-                    phone.send_bytes(frame(frame_id=i, t_capture=float(i)))
+                    phone.send_bytes(frame(frame_id=i, t_capture=float(i), depth=1. + i / 10))
                     wait_for(lambda: client.app.state.map_stats['published'] == i)
                 pending = list(stalled.points)
                 control = list(stalled.queue._queue)
@@ -244,6 +247,87 @@ class MapTransportTests(unittest.TestCase):
                 self.assertFalse(health['armed'])
                 self.assertEqual((health['car'], health['detector']), ('down', 'down'))
                 self.assertEqual(client.post('/arm').status_code, 409)
+
+
+class PointDedupeTransportTests(unittest.TestCase):
+    """Chunks carry newly observed voxels; map identity changes and new viewers start over."""
+
+    def send_and_settle(self, client, phone, frame_id, depth=2.):
+        stats = client.app.state.map_stats
+        done = stats['published'] + stats['no_new_points']
+        phone.send_bytes(frame(frame_id=frame_id, t_capture=float(frame_id), depth=depth))
+        wait_for(lambda: stats['published'] + stats['no_new_points'] == done + 1)
+
+    def test_repeated_view_sends_nothing_and_a_new_view_continues_the_chunk_ids(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                self.send_and_settle(client, phone, 1)
+                self.send_and_settle(client, phone, 2)
+                stats = client.app.state.map_stats
+                self.assertEqual((stats['published'], stats['no_new_points']), (1, 1))
+                self.send_and_settle(client, phone, 3, depth=3.)
+                chunks = [next_of(live, 'points'), next_of(live, 'points')]
+            self.assertEqual([(c['chunk_id'], c['frame_id']) for c in chunks], [(1, 1), (2, 3)])
+
+    def test_session_reset_forgets_sent_voxels(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('first-map'))
+                phone.send_bytes(frame('first-map'))
+                next_of(live, 'points')
+            wait_for(lambda: client.app.state.phone is None)
+            self.assertEqual(client.post('/session').status_code, 200)
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('second-map'))
+                phone.send_bytes(frame('second-map', frame_id=2, t_capture=2.))  # same wall
+                chunk = next_of(live, 'points')
+            self.assertEqual((chunk['session_id'], chunk['chunk_id']), ('second-map', 1))
+
+    def test_reconnect_to_the_same_map_keeps_sent_voxels(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live'):
+            for frame_id in (1, 2):
+                with client.websocket_connect('/phone') as phone:
+                    phone.send_json(hello())
+                    self.send_and_settle(client, phone, frame_id)
+                wait_for(lambda: client.app.state.phone is None)
+            stats = client.app.state.map_stats
+            self.assertEqual((stats['published'], stats['no_new_points']), (1, 1))
+
+    def test_a_new_viewer_does_not_make_the_map_resend_to_everyone(self):
+        # A dashboard opened later fills in as surfaces are newly seen or pass the refresh age.
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live'):
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                self.send_and_settle(client, phone, 1)
+                with client.websocket_connect('/live') as second:
+                    second.receive_json()  # registered once its first health arrives
+                    self.send_and_settle(client, phone, 2)
+            stats = client.app.state.map_stats
+            self.assertEqual((stats['published'], stats['no_new_points']), (1, 1))
+
+    def test_points_per_chunk_comes_from_the_environment(self):
+        with unittest.mock.patch.dict('os.environ', {'GODSEYE_POINTS_PER_CHUNK': '40'}):
+            app = create_app(':memory:')
+        with TestClient(app) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                phone.send_bytes(frame())
+                self.assertEqual(len(next_of(live, 'points')['positions']), 40 * 3)
+
+    def test_bad_point_settings_stop_startup(self):
+        with unittest.mock.patch.dict('os.environ', {'GODSEYE_POINT_VOXEL_M': 'lots'}):
+            with self.assertRaisesRegex(ValueError, 'GODSEYE_POINT_VOXEL_M'):
+                create_app(':memory:')
+
+    def test_disabled_dedupe_resends_every_frame(self):
+        with TestClient(create_app(':memory:', point_settings=PointSettings(voxel_m=0))) as client, \
+                client.websocket_connect('/live'):
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello())
+                self.send_and_settle(client, phone, 1)
+                self.send_and_settle(client, phone, 2)
+            self.assertEqual(client.app.state.map_stats['published'], 2)
 
 
 if __name__ == '__main__':
