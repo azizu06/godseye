@@ -2425,3 +2425,498 @@ input[type="checkbox"] {
 .scene-popover {
   z-index: 25;
 }
+
+/* One workspace heading owns navigation actions. */
+.page-heading {
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  padding: 16px 0;
+  background: #0b1219f5;
+  backdrop-filter: blur(18px);
+  gap: 24px;
+}
+.heading-actions {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-top: 0;
+}
+@media (max-width: 1100px) {
+  .page-heading {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .heading-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+@media (max-width: 760px) {
+  .page-heading {
+    padding: 10px 0;
+    gap: 10px;
+  }
+  .heading-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .heading-actions .button {
+    font-size: 10px;
+    min-height: 33px;
+  }
+  .heading-actions .stop-button,
+  .heading-actions .source-button {
+    justify-content: center;
+    min-height: 33px;
+  }
+}
+
+/* The map owns the screen; information lives in optional floating panels. */
+.immersive-shell {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  min-height: 480px;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.immersive-shell .scene-panel {
+  height: 100%;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+}
+.immersive-shell .scene-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100% !important;
+}
+.immersive-shell .scene-toolbar {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  z-index: 10;
+  height: 44px;
+  gap: 24px;
+  padding: 0 15px;
+  background: #111e27e8;
+  border: 1px solid #2c404b;
+  border-radius: 9px;
+  backdrop-filter: blur(16px);
+}
+.immersive-shell .scene-caption {
+  top: 118px;
+  left: 26px;
+}
+.immersive-shell .scene-stat {
+  top: 96px;
+  right: 28px;
+}
+.immersive-shell .scene-footer {
+  position: absolute;
+  bottom: 164px;
+  left: 26px;
+  right: auto;
+  background: transparent;
+  border: 0;
+  z-index: 5;
+  gap: 16px;
+  padding: 0;
+}
+.immersive-shell .scene-footer .scene-unit {
+  display: none;
+}
+.immersive-shell .scene-bottom {
+  bottom: 190px;
+  left: 26px;
+  right: 28px;
+}
+.immersive-shell .scene-bottom .scene-hint {
+  display: none;
+}
+.workspace-actions {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  z-index: 20;
+  margin: 0;
+  display: flex;
+  width: auto;
+  gap: 8px;
+}
+.workspace-actions > button {
+  min-height: 39px;
+  backdrop-filter: blur(14px);
+}
+.workspace-state {
+  position: absolute;
+  top: 80px;
+  left: 26px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #809caa;
+  font-size: 10px;
+  pointer-events: none;
+  z-index: 5;
+}
+.workspace-panels {
+  position: absolute;
+  bottom: 66px;
+  left: 24px;
+  display: flex;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid #2b3c46;
+  border-radius: 10px;
+  background: #111d26ed;
+  backdrop-filter: blur(16px);
+  z-index: 20;
+}
+.workspace-panels button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #9eb3be;
+}
+.workspace-panels button.active {
+  background: #25413e;
+  color: #a1ebd9;
+}
+.workspace-panels small {
+  font: 10px var(--mono);
+  color: #75948e;
+}
+.workspace-drawer {
+  position: absolute;
+  z-index: 25;
+  top: 84px;
+  right: 24px;
+  bottom: 162px;
+  width: 355px;
+  overflow-y: auto;
+  border: 1px solid #344650;
+  border-radius: 12px;
+  background: #101c25f5;
+  box-shadow: 0 16px 70px #0006;
+  backdrop-filter: blur(22px);
+}
+.drawer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #15232df7;
+}
+.drawer-heading .eyebrow {
+  font-size: 10px;
+}
+.workspace-drawer .objects-panel,
+.workspace-drawer .activity-panel,
+.workspace-drawer .operator-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.workspace-drawer .inspector {
+  border: 0;
+}
+.workspace-drawer .demo-banner {
+  display: flex;
+  margin: 12px;
+  padding: 16px;
+  gap: 12px;
+  border-radius: 8px;
+}
+.workspace-drawer .demo-banner .button {
+  margin-top: 13px;
+}
+.workspace-drawer .demo-banner p {
+  max-width: none;
+  line-height: 1.6;
+}
+.workspace-drawer .operator-content {
+  flex-wrap: wrap;
+  padding: 16px;
+  gap: 20px;
+}
+.workspace-drawer .arm-control {
+  margin-left: auto;
+}
+.drawer-note {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #7792a3;
+  padding: 12px 16px;
+}
+.drawer-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 18px;
+}
+.flight-controls {
+  position: absolute;
+  right: 24px;
+  bottom: 62px;
+  z-index: 20;
+}
+.operator-panel.compact {
+  background: #111e28ef;
+  backdrop-filter: blur(18px);
+  border: 1px solid #30444c;
+  box-shadow: 0 8px 30px #0003;
+  border-radius: 10px;
+}
+.operator-panel.compact .section-heading,
+.operator-panel.compact .drive-pad,
+.operator-panel.compact .eyebrow,
+.operator-panel.compact .arm-control > span {
+  display: none;
+}
+.operator-panel.compact .operator-content {
+  padding: 13px;
+  gap: 18px;
+  align-items: center;
+}
+.operator-panel.compact .mode-control p {
+  font-size: 9px;
+  margin-top: 7px;
+}
+.operator-panel.compact .mode-tabs button {
+  font-size: 11px;
+  min-width: 76px;
+  padding: 7px;
+}
+.operator-panel.compact .arm-control {
+  min-width: 126px;
+}
+.telemetry-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 38px;
+  padding: 0 26px;
+  border-top: 1px solid #22333d;
+  background: #0b141ded;
+  color: #73909f;
+  font: 9px var(--mono);
+}
+.telemetry-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #8ba9b3;
+  letter-spacing: 1.3px;
+}
+.immersive-shell .toast {
+  bottom: 170px;
+  z-index: 60;
+}
+@media (max-width: 1250px) {
+  .workspace-panels button > span {
+    display: none;
+  }
+  .workspace-actions .button > span {
+    display: none;
+  }
+  .workspace-drawer {
+    width: 330px;
+  }
+  .workspace-actions {
+    gap: 6px;
+  }
+}
+@media (max-width: 760px) {
+  .immersive-shell {
+    min-height: 480px;
+  }
+  .immersive-shell .scene-toolbar {
+    top: 12px;
+    left: 12px;
+    height: 38px;
+    padding: 0 10px;
+    gap: 12px;
+  }
+  .immersive-shell .scene-toolbar .panel-title {
+    display: none;
+  }
+  .workspace-actions {
+    top: 60px;
+    left: 12px;
+    right: 12px;
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .workspace-actions .button {
+    font-size: 0;
+    min-width: 34px;
+    min-height: 34px;
+    padding: 7px;
+  }
+  .workspace-actions .source-button,
+  .workspace-actions .stop-button {
+    min-height: 34px;
+  }
+  .workspace-state {
+    top: 111px;
+    left: 14px;
+    gap: 8px;
+    font-size: 8px;
+  }
+  .workspace-state > span:last-child {
+    display: none;
+  }
+  .immersive-shell .scene-caption {
+    top: 151px;
+    left: 15px;
+  }
+  .immersive-shell .scene-stat {
+    top: 110px;
+    right: 15px;
+  }
+  .immersive-shell .scene-stat > span {
+    font-size: 7px;
+  }
+  .immersive-shell .scene-stat > strong {
+    font-size: 18px;
+  }
+  .immersive-shell .scene-stat > small {
+    display: none;
+  }
+  .immersive-shell .scene-bottom {
+    left: 13px;
+    right: 13px;
+    bottom: 201px;
+  }
+  .immersive-shell .scene-footer {
+    display: none;
+  }
+  .workspace-panels {
+    left: 12px;
+    bottom: 135px;
+    gap: 2px;
+    padding: 4px;
+  }
+  .workspace-panels button {
+    padding: 9px;
+  }
+  .flight-controls {
+    left: 12px;
+    right: 12px;
+    bottom: 45px;
+  }
+  .operator-panel.compact .operator-content {
+    justify-content: space-between;
+    padding: 10px;
+    gap: 10px;
+  }
+  .operator-panel.compact .mode-tabs button {
+    min-width: 64px;
+    font-size: 10px;
+  }
+  .operator-panel.compact .mode-control p {
+    max-width: 150px;
+    font-size: 8px;
+  }
+  .operator-panel.compact .arm-control {
+    min-width: 108px;
+  }
+  .workspace-drawer {
+    left: 12px;
+    right: 12px;
+    top: 107px;
+    bottom: 191px;
+    width: auto;
+  }
+  .telemetry-bar {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 7px;
+    gap: 8px;
+  }
+  .telemetry-bar .footer-note {
+    display: block;
+    font-size: 6px;
+    text-align: right;
+  }
+  .telemetry-bar > span:last-child {
+    display: none;
+  }
+  .immersive-shell .toast {
+    bottom: 196px;
+    max-width: calc(100% - 28px);
+  }
+}
+.immersive-shell .help-popover {
+  left: 26px;
+  right: auto;
+  bottom: 240px;
+  top: auto;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.immersive-shell .layers-popover {
+  top: 76px;
+  left: 24px;
+  right: auto;
+}
+@media (max-width: 760px) {
+  .immersive-shell .help-popover {
+    left: 14px;
+    bottom: 252px;
+    max-width: calc(100% - 28px);
+  }
+  .immersive-shell .layers-popover {
+    top: 106px;
+    left: 12px;
+  }
+}
+.operator-panel.compact .operator-content {
+  display: flex;
+  flex-wrap: nowrap;
+}
+@media (max-width: 760px) {
+  .operator-panel.compact .arm-control {
+    width: auto;
+    margin: 0;
+  }
+  .operator-panel.compact .mode-control {
+    min-width: 0;
+    flex: 1;
+  }
+  .operator-panel.compact .arm-control {
+    flex-shrink: 0;
+  }
+  .workspace-panels {
+    bottom: 144px;
+  }
+  .immersive-shell .scene-stat {
+    display: block;
+  }
+  .workspace-actions .source-button {
+    font-size: 10px;
+  }
+}

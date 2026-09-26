@@ -42,15 +42,16 @@ Use locally bundled fonts, CSS, vector icons, and programmatic geometry so the c
 ## Layout and navigation
 
 Target 1440×900 and larger desktop displays; remain usable at 1024×768 and narrow widths.
-A narrow left navigation rail switches between Overview, Objects, Activity, and connection settings.
-A persistent header contains the brand, session name, source label, connection control, and Stop.
-The main Overview uses a large scene and a right inspector with a compact bottom activity/mission strip.
+The spatial view fills the viewport with a floating panel selector for Spatial Memory, Object Intelligence, Recent Activity, and Rover Controls.
+A floating action row inside the spatial view groups source selection and Stop beside Export Snapshot and New Session, with no separate brand bar.
+Keep these actions accessible while configuring panels.
+Information panels are closed by default and expand over the right side of the scene when requested.
 The scene header contains 3D/2D selection, layer controls, and reset-view control.
 An overlay summarizes actual observed object and point counts and tracking status.
 Object selection is synchronized between scene, object list, and event history.
 The inspector shows the selected object's class, stable ID, state, confidence, estimated coordinates, observation count, last seen, and locally observed event history.
-The bottom area includes session events and a compact operator control panel.
-Objects provides searchable/filterable inventory; Activity provides a full event list.
+The bottom area includes the panel selector and compact operator controls.
+Spatial Memory provides searchable inventory; Recent Activity provides the event list.
 Settings is an accessible dialog with source selection and independently configurable WebSocket and REST addresses.
 
 ## Scene and spatial meaning
@@ -94,7 +95,8 @@ Do not optimistically claim that hardware armed, moved, navigated, or rescanned.
 Manual driving uses held controls, sends every 100 ms while enabled, and sends zero on release, pointer cancellation, blur, visibility loss, mode/source change, or unmount.
 Allow one outstanding manual request so a slow network does not accumulate motion commands.
 Stop bypasses other command pending states, ends manual repeat immediately, and always remains accessible.
-Mode switches stop first; rearming is explicit.
+User-selected Standard/Explore mode switches stop first and require explicit rearming.
+Within an already explicitly armed, healthy Standard session, the same user gesture can hand control between manual and navigation backend modes; a released key, fault, or Stop cancels that authorization.
 New session requires an explicit confirmation because it clears the current displayed session.
 Export downloads a clearly scoped dashboard snapshot of received data; it is not a full backend session export.
 Do not implement any direct car, serial, motor, or vendor command protocol.
@@ -103,7 +105,12 @@ Do not implement any direct car, serial, motor, or vendor command protocol.
 
 The simulator runs in-process behind the same typed command/message interface as an external backend.
 No simulator action performs a network or hardware command.
-Provide a deterministic furnished room with five objects, point-cloud geometry, occupancy, a rover pose, and an initial observation history.
+Provide a deterministic hidden furnished room with five potential objects and a rover pose.
+Start with zero observed points, unknown occupancy, and no observed objects.
+Discover points and objects incrementally within the simulated five-meter view, preserve previously observed geometry, and pause discovery on tracking loss.
+Never render hidden room or furniture geometry before observation.
+Object browsing lives in an expandable Spatial Memory panel; there is no separate inventory page.
+See [progressive discovery](DISCOVERY.md) for behavior and validation.
 Objects include a distinctive backpack, chair, plant, bottle, and laptop.
 Simulated arm, manual motion, mode switches, goal navigation, stop, new session, and rescan update coherent simulated state and emit v1 messages.
 Simulated health may show virtual components healthy but every screen and export identifies the source as simulation.
@@ -172,3 +179,17 @@ Coordinate a calibrated view-frustum payload later with the backend owner.
 A subtle trace follows the rover/phone's received positions in 3D and 2D.
 Older segments fade in intensity and recent segments remain more visible.
 The trace is bounded to 600 meaningful position samples, clears with a session/source reset, and remains distinct from the brighter planned path.
+
+## Full-screen workspace refinement
+
+The spatial view fills the viewport by default.
+Preserve Spatial Memory, Object Intelligence, and Recent Activity in expandable panels over the map.
+Necessary controls stay within the spatial window, with configuration available on demand.
+Standard exposes both keyboard steering and click-to-navigate; Explore is the other UI mode.
+Up advances immediately along the rover’s current heading. Down requests a 180° turn, and Left/Right request a 90° turn before advancing. Capture the rover-relative target once per new direction press; camera orbit and held-key repeat must not retarget motion.
+Read [DISCOVERY.md](DISCOVERY.md) for the accepted behavior, input handoff, and retention requirements.
+
+## Review and delivery
+
+For this work, the user authorizes merging each increment to main after code review, correction of material findings, and successful relevant checks.
+Use the issue-to-PR workflow for each increment and confirm the merged result.

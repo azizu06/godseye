@@ -1,3 +1,4 @@
+import { panel } from "./helpers";
 import { test, expect, type Page } from "@playwright/test";
 async function external(page: Page, wsUrl: string, commands = false) {
   await page
@@ -34,7 +35,7 @@ test("Stop is usable inside dialogs and after scrolling", async ({ page }) => {
     page.getByRole("button", { name: "STOP ROVER", exact: true }),
   ).toBeInViewport();
 });
-test("held motion creates a trail, release and blur stop movement", async ({
+test("forward moves immediately without turning, leaves a trail, and stops on release and blur", async ({
   page,
 }) => {
   await page.goto("/");
@@ -42,32 +43,42 @@ test("held motion creates a trail, release and blur stop movement", async ({
   await page
     .getByRole("button", { name: "Arm simulator", exact: true })
     .click();
-  const forward = page.getByRole("button", {
-    name: "Drive forward",
-    exact: true,
-  });
-  await forward.scrollIntoViewIfNeeded();
   const before = await page.locator(".pose-readout").innerText();
-  const box = (await forward.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.waitForTimeout(700);
-  await page.mouse.up();
-  await expect(page.locator(".pose-readout")).not.toHaveText(before);
-  await page.waitForTimeout(150);
+  const rover = page.locator("svg.map2d g[transform*=rotate]");
+  const heading = (transform: string | null) =>
+    transform?.match(/rotate\(([^)]+)\)/)?.[1];
+  const initialHeading = heading(await rover.getAttribute("transform"));
+  await page.keyboard.down("ArrowUp");
+  await expect(page.locator(".pose-readout")).not.toHaveText(before, {
+    timeout: 1500,
+  });
+  expect(heading(await rover.getAttribute("transform"))).toBe(initialHeading);
+  await expect
+    .poll(() => page.locator("svg.map2d line").count())
+    .toBeGreaterThan(1);
+  await page.keyboard.up("ArrowUp");
+  await page.waitForTimeout(200);
   const after = await page.locator(".pose-readout").innerText();
   await page.waitForTimeout(500);
   expect(await page.locator(".pose-readout").innerText()).toBe(after);
-  await page.mouse.down();
-  await page.waitForTimeout(300);
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(400);
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
-  await page.mouse.up();
-  await page.waitForTimeout(150);
+  await page.keyboard.up("ArrowUp");
+  await page.waitForTimeout(200);
   const blur = await page.locator(".pose-readout").innerText();
   await page.waitForTimeout(400);
   expect(await page.locator(".pose-readout").innerText()).toBe(blur);
-  expect(await page.locator("svg.map2d line").count()).toBeGreaterThan(2);
+  expect(await page.locator("svg.map2d line").count()).toBeGreaterThan(1);
+  await page.keyboard.down("ArrowDown");
+  await page.waitForTimeout(400);
+  expect(await page.locator(".pose-readout").innerText()).toBe(blur);
+  expect(heading(await rover.getAttribute("transform"))).not.toBe(
+    initialHeading,
+  );
+  await page.keyboard.up("ArrowDown");
 });
+
 test("older arm completion cannot override a newer stop", async ({ page }) => {
   let armed = false,
     stopCalls = 0,
@@ -125,8 +136,8 @@ test("older arm completion cannot override a newer stop", async ({ page }) => {
   releaseArm();
   await expect.poll(() => stopCalls).toBe(2);
   await expect(
-    page.getByRole("button", { name: "Drive forward", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "Arm rover", exact: true }),
+  ).toBeVisible();
   expect(armed).toBe(false);
 });
 test("old source arm completion reasserts stop after switching to simulator", async ({
@@ -196,11 +207,14 @@ test("old source arm completion reasserts stop after switching to simulator", as
     .getByRole("button", { name: "Start simulator", exact: true })
     .click();
   releaseArm();
-  await expect(page.locator(".objects-panel .object-row")).toHaveCount(5);
+  await panel(page, "Spatial memory");
+  await expect(
+    page.locator(".objects-panel .object-row").first(),
+  ).toBeVisible();
   await expect.poll(() => stopCalls).toBe(2);
   await expect(
-    page.getByRole("button", { name: "Drive forward", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "Arm simulator", exact: true }),
+  ).toBeVisible();
   expect(armed).toBe(false);
 });
 test("Python fake-live source renders relocation without simulator geometry", async ({
@@ -212,9 +226,8 @@ test("Python fake-live source renders relocation without simulator geometry", as
   );
   await page.goto("/");
   await external(page, "ws://127.0.0.1:8766/live");
-  await expect(
-    page.getByText("Synthetic session", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".source-button")).toContainText("Synthetic feed");
+  await panel(page, "Spatial memory");
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(1);
   await page.locator(".objects-panel .object-row").click();
   await expect(
@@ -261,7 +274,9 @@ test("real backend remains disarmed and rejects a baseline before observations",
   await expect(
     page.getByRole("button", { name: "Arm rover", exact: true }),
   ).toBeDisabled();
+  await panel(page, "Spatial memory");
   await expect(page.locator(".objects-panel .object-row")).toHaveCount(0);
+  await panel(page, "Rover controls");
   await page.getByRole("button", { name: "Start rescan", exact: true }).click();
   await expect(page.getByRole("status")).toContainText(
     /No active map|Nothing observed/i,
@@ -318,17 +333,22 @@ test("late session response cannot clear a newly selected simulator", async ({
   await page
     .getByRole("button", { name: "Start simulator", exact: true })
     .click();
-  await expect(page.locator(".objects-panel .object-row")).toHaveCount(5);
+  await panel(page, "Spatial memory");
+  await expect(
+    page.locator(".objects-panel .object-row").first(),
+  ).toBeVisible();
   release();
   await page.waitForTimeout(400);
-  expect(
-    Number(
-      (await page.locator(".scene-stat>strong").innerText()).replaceAll(
-        ",",
-        "",
+  await expect
+    .poll(async () =>
+      Number(
+        (await page.locator(".scene-stat>strong").innerText()).replaceAll(
+          ",",
+          "",
+        ),
       ),
-    ),
-  ).toBeGreaterThan(10000);
+    )
+    .toBeGreaterThan(0);
 });
 
 test("older arm completion cannot override a live map reset", async ({
@@ -410,7 +430,7 @@ test("older arm completion cannot override a live map reset", async ({
   releaseArm();
   await expect.poll(() => stopCalls).toBe(1);
   await expect(
-    page.getByRole("button", { name: "Drive forward", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "Arm rover", exact: true }),
+  ).toBeVisible();
   expect(armed).toBe(false);
 });

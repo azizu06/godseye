@@ -8,6 +8,7 @@ import {
 } from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
 import { Simulator } from "./simulator";
+import { DirectionalSteering, type SteeringDirection } from "./steering";
 import {
   defaultConfig,
   ManualController,
@@ -30,6 +31,28 @@ export function useMission() {
   const manual = useRef<ManualController | null>(null);
   const generation = useRef(0);
   const stopEpoch = useRef(0);
+  const stopLatchRef = useRef(true);
+  const controlEpoch = useRef(0);
+  const controlBusy = useRef<number | null>(null);
+  const heldDirection = useRef<SteeringDirection | null>(null);
+  const [steeringDirection, setSteeringDirection] =
+    useState<SteeringDirection | null>(null);
+  const directional = useRef<DirectionalSteering | null>(null);
+  const motionState = useRef({ ready: false, healthy: false, yaw: 0 });
+  const latchStop = useCallback((value: boolean) => {
+    stopLatchRef.current = value;
+    setStopLatched(value);
+  }, []);
+  const cancelControl = useCallback(() => {
+    controlEpoch.current++;
+    heldDirection.current = null;
+    setSteeringDirection(null);
+    directional.current?.stop();
+    manual.current?.stop();
+  }, []);
+  const releaseSteering = useCallback(() => {
+    if (heldDirection.current !== null) cancelControl();
+  }, [cancelControl]);
   const activeMap = useRef<string | null>(null);
   const receive = useCallback(
     (messages: Message[]) =>
@@ -51,6 +74,8 @@ export function useMission() {
   }, [notice]);
   useEffect(() => {
     const gen = ++generation.current;
+    cancelControl();
+    controlBusy.current = null;
     activeMap.current = null;
     stopEpoch.current++;
     let disposed = false,
@@ -61,7 +86,7 @@ export function useMission() {
     setMission(emptyMission());
     setStartedAt(Date.now());
     setPending(null);
-    setStopLatched(true);
+    latchStop(true);
     if (config.source === "simulator") {
       const sim = new Simulator();
       simulator.current = sim;
@@ -93,6 +118,8 @@ export function useMission() {
         attempt = 0;
         activeMap.current = null;
         stopEpoch.current++;
+        cancelControl();
+        latchStop(true);
         setMission(emptyMission());
         setStartedAt(Date.now());
         setConnection("connected");
@@ -106,8 +133,8 @@ export function useMission() {
             activeMap.current = key;
             setStartedAt(Date.now());
             stopEpoch.current++;
-            manual.current?.stop();
-            setStopLatched(true);
+            cancelControl();
+            latchStop(true);
           }
           receive([message]);
         }
@@ -117,7 +144,8 @@ export function useMission() {
       };
       socket.onclose = () => {
         if (disposed) return;
-        manual.current?.stop();
+        cancelControl();
+        latchStop(true);
         setConnection("reconnecting");
         timer = setTimeout(connect, Math.min(8000, 1000 * 2 ** attempt++));
       };
@@ -133,11 +161,11 @@ export function useMission() {
         socket.close();
       }
     };
-  }, [config, receive]);
+  }, [config, receive, cancelControl, latchStop]);
   useEffect(() => {
     setRescanBaseline(null);
-    setStopLatched(true);
-    manual.current?.stop();
+    latchStop(true);
+    cancelControl();
     if (
       config.source !== "external" ||
       !config.commands ||
@@ -179,7 +207,7 @@ export function useMission() {
       clearTimeout(timeout);
       abort.abort();
     };
-  }, [config, connection, mission.mapKey]);
+  }, [config, connection, mission.mapKey, cancelControl, latchStop]);
   const send = useCallback(
     async (
       path: string,
@@ -231,37 +259,77 @@ export function useMission() {
       (e) => notify(e instanceof Error ? e.message : "Manual command failed."),
     );
     manual.current = controller;
-    const stop = () => controller.stop();
+    const steering = new DirectionalSteering(
+      (body, signal) => send("/manual", { ...body }, signal),
+      () => motionState.current,
+      (e) => {
+        cancelControl();
+        notify(e instanceof Error ? e.message : "Steering command failed.");
+      },
+    );
+    directional.current = steering;
+    const stop = () => cancelControl();
     const hidden = () => {
       if (document.hidden) stop();
     };
     window.addEventListener("blur", stop);
     document.addEventListener("visibilitychange", hidden);
     return () => {
+      steering.stop();
       controller.stop();
       window.removeEventListener("blur", stop);
       document.removeEventListener("visibilitychange", hidden);
     };
-  }, [send, notify]);
+  }, [send, notify, cancelControl]);
   const stale =
     connection !== "connected" ||
     !mission.health ||
     now - mission.healthAt > 2000;
-  const canDrive =
+  const healthy =
     !stale &&
+    mission.pose?.tracking === "normal" &&
+    mission.health?.phone === "ok" &&
+    mission.health.car === "ok" &&
+    mission.health.detector === "ok";
+  const canDrive =
+    healthy &&
     !stopLatched &&
     !pending &&
     mission.health?.armed === true &&
     (config.source === "simulator" || config.commands);
+  const unexpectedStop =
+    mission.health?.armed === false &&
+    mission.health.stop_reason !== null &&
+    !["mode_change", "Mode changed; rearm required"].includes(
+      mission.health.stop_reason,
+    );
+  motionState.current = {
+    ready:
+      canDrive && !stopLatchRef.current && mission.health?.mode === "manual",
+    healthy: healthy && !unexpectedStop,
+    yaw: mission.pose?.yaw_rad ?? 0,
+  };
+  useEffect(() => {
+    if (!healthy || unexpectedStop) {
+      stopEpoch.current++;
+      latchStop(true);
+      cancelControl();
+    }
+  }, [healthy, unexpectedStop, cancelControl, latchStop]);
   useEffect(() => {
     if (!canDrive) manual.current?.stop();
-  }, [canDrive]);
+    if (canDrive && mission.health?.mode === "manual" && steeringDirection)
+      directional.current?.start(steeringDirection);
+    else directional.current?.stop();
+  }, [canDrive, mission.health?.mode, steeringDirection]);
   const command = useCallback(
     async (path: string, body?: Record<string, unknown>) => {
-      if (path !== "/arm") manual.current?.stop();
+      cancelControl();
+      controlBusy.current = null;
       const gen = generation.current;
-      if (["/stop", "/mode", "/session"].includes(path)) setStopLatched(true);
-      if (path === "/stop") stopEpoch.current++;
+      if (["/stop", "/mode", "/session"].includes(path)) latchStop(true);
+      if (["/stop", "/mode", "/session"].includes(path)) stopEpoch.current++;
+      if (path === "/stop") setPending(null);
       const commandEpoch = stopEpoch.current;
       const requestMap = activeMap.current;
       if (path !== "/stop") setPending(path);
@@ -308,27 +376,174 @@ export function useMission() {
           return false;
         }
         if (gen !== generation.current) return false;
-        if (path === "/arm") setStopLatched(false);
+        if (path === "/arm") latchStop(false);
         if (path === "/stop") notify("Stop acknowledged. Rover disarmed.");
         return true;
       } catch (e) {
-        if (gen === generation.current)
-          notify(e instanceof Error ? e.message : "Command failed.");
+        let message = e instanceof Error ? e.message : "Command failed.";
+        if (path === "/arm") {
+          if (gen === generation.current) latchStop(true);
+          // An error response does not prove the backend never applied Arm.
+          // Use this operation's captured endpoint even after a source change.
+          try {
+            await send("/stop");
+          } catch {
+            message += " Stop could not be confirmed.";
+          }
+        }
+        if (gen === generation.current) notify(message);
         return false;
       } finally {
         if (gen === generation.current && path !== "/stop") setPending(null);
       }
     },
-    [send, notify, config.source],
+    [send, notify, config.source, cancelControl, latchStop],
   );
   const trackingFault = () => {
     const sim = simulator.current;
     if (sim) {
+      cancelControl();
       sim.setTracking(!sim.tracking);
       manual.current?.stop();
       receive(sim.snapshot());
     }
   };
+  const handoff = useCallback(
+    async (
+      mode: "manual" | "navigate",
+      action: () => Promise<unknown> | void,
+      direction?: SteeringDirection,
+    ) => {
+      // A directional input can continue an already armed Standard session; it
+      // cannot arm a stopped rover, bypass faults, or take over Explore silently.
+      if (
+        !canDrive ||
+        stopLatchRef.current ||
+        mission.health?.mode === "explore" ||
+        controlBusy.current !== null
+      )
+        return false;
+      cancelControl();
+      const token = controlEpoch.current;
+      const gen = generation.current;
+      const epoch = stopEpoch.current;
+      const valid = () =>
+        token === controlEpoch.current &&
+        gen === generation.current &&
+        epoch === stopEpoch.current &&
+        motionState.current.healthy;
+      if (direction) heldDirection.current = direction;
+      controlBusy.current = token;
+      const switching = mission.health?.mode !== mode;
+      setPending(switching ? "/mode" : mode === "navigate" ? "/goal" : null);
+      try {
+        if (switching) {
+          latchStop(true);
+          await send("/mode", { mode });
+          if (!valid()) return false;
+          await send("/arm");
+          if (!valid()) {
+            // The request can complete after release, Stop, or a source switch.
+            // Reassert Stop against the endpoint captured by this operation.
+            await send("/stop");
+            return false;
+          }
+          latchStop(false);
+        }
+        if (!valid()) return false;
+        await action();
+        if (!valid()) {
+          if (mode === "navigate") await send("/stop");
+          return false;
+        }
+        return true;
+      } catch (e) {
+        if (gen === generation.current) {
+          cancelControl();
+          latchStop(true);
+          notify(e instanceof Error ? e.message : "Control handoff failed.");
+        }
+        // A rejected or timed-out command must not leave a hidden navigation
+        // job or a late arm running behind a failed UI operation.
+        await send("/stop").catch(() => {});
+        return false;
+      } finally {
+        if (gen === generation.current && controlBusy.current === token) {
+          controlBusy.current = null;
+          setPending(null);
+        }
+      }
+    },
+    [canDrive, mission.health?.mode, cancelControl, latchStop, send, notify],
+  );
+  const steer = useCallback(
+    (direction: SteeringDirection) => {
+      if (heldDirection.current === direction) return;
+      if (
+        heldDirection.current &&
+        mission.health?.mode === "manual" &&
+        canDrive
+      ) {
+        heldDirection.current = direction;
+        setSteeringDirection(direction);
+        return;
+      }
+      void handoff("manual", () => setSteeringDirection(direction), direction);
+    },
+    [handoff, canDrive, mission.health?.mode],
+  );
+  const navigate = useCallback(
+    (x: number, z: number) => {
+      if (!Number.isFinite(x) || !Number.isFinite(z))
+        return Promise.resolve(false);
+      return handoff("navigate", () => send("/goal", { x, z }));
+    },
+    [handoff, send],
+  );
+  const keyboard = useRef({ steer, releaseSteering });
+  keyboard.current = { steer, releaseSteering };
+  useEffect(() => {
+    const keys: Record<string, SteeringDirection> = {
+      ArrowUp: "up",
+      ArrowDown: "down",
+      ArrowLeft: "left",
+      ArrowRight: "right",
+    };
+    const ignored = (target: EventTarget | null) =>
+      document.querySelector("dialog[open]") ||
+      (target instanceof Element &&
+        target.closest(
+          "input, textarea, select, [contenteditable]:not([contenteditable='false'])",
+        ));
+    const down = (event: KeyboardEvent) => {
+      const direction = keys[event.key];
+      if (
+        !direction ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        ignored(event.target)
+      )
+        return;
+      event.preventDefault();
+      if (!event.repeat) keyboard.current.steer(direction);
+    };
+    const up = (event: KeyboardEvent) => {
+      if (keys[event.key] === heldDirection.current)
+        keyboard.current.releaseSteering();
+    };
+    const focus = () => {
+      if (ignored(document.activeElement)) keyboard.current.releaseSteering();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    document.addEventListener("focusin", focus);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      document.removeEventListener("focusin", focus);
+    };
+  }, []);
   const drive = (v: number, w: number) => {
     if (canDrive && mission.health?.mode === "manual")
       manual.current?.start(v, w);
@@ -349,7 +564,10 @@ export function useMission() {
     now,
     startedAt,
     drive,
-    release: () => manual.current?.stop(),
+    steer,
+    releaseSteering,
+    navigate,
+    release: cancelControl,
     trackingFault,
   };
 }
