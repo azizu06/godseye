@@ -188,13 +188,61 @@ second and publishes only when the picture changed:
   phone changed is counted and dropped. New `/live` viewers and map resets get
   the current grid, if any, after the objects and path snapshot. A slow viewer
   holds only the newest pending grid.
-- **Limitations:** not calibrated to the rover (the 8 cm to 1.5 m band is a
-  generic guess, not its clearance); the handheld floor estimate can shift by a
-  slice as evidence grows; there is no free-space ray carving (cells are only
+- **Limitations:** without a motion-ready rover calibration (below) the 8 cm to
+  1.5 m band is a generic guess, not its clearance; the handheld floor estimate
+  can shift by a slice as evidence grows; there is no free-space ray carving (cells are only
   known where a surface was seen) and no decay, so a removed object stays
   occupied. `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
   produces no grid; tested on synthetic floors and boxes only
   (`backend/tests/test_occupancy.py`).
+
+## Rover calibration and the navigation map
+
+Occupancy is safe to plan motion on only once the rover's own geometry is
+measured. `GODSEYE_ROVER_CALIBRATION` names a JSON file validated at startup by
+`backend/calibration.py` (a malformed or missing file stops the server; unset
+means uncalibrated). There are no defaults: until Tomiwa's measurements exist,
+the file holds nulls and the map stays **not motion-ready**:
+
+```json
+{ "version": 1, "measured_by": null, "obstacle_min_m": null,
+  "footprint_length_m": null, "footprint_width_m": null, "clearance_margin_m": null,
+  "camera_forward_m": null, "camera_left_m": null, "camera_yaw_rad": null }
+```
+
+Pending hardware prerequisites, owned by Tomiwa: the lowest obstacle height the
+car cannot drive over; chassis length and width including bumpers; the clearance
+margin to keep; the phone camera's offset from the chassis center (forward,
+left) and its yaw relative to the chassis; and `measured_by`, naming who measured
+and where the evidence lives. Stopping distance and bench-stop evidence are
+separate, and no backend test stands in for any of them. Meters and radians;
+bounds only reject typos (a footprint side over 1 m, centimeters, NaN, unknown
+keys).
+
+- A complete, verified calibration replaces the generic 8 cm obstacle floor with
+  `obstacle_min_m - 0.02` for both `/live` and the snapshot: a voxel's height
+  can read one 2 cm slice low. A threshold at or below 6 cm is
+  `obstacle_min_unsupported`, since those hazards read as floor noise within
+  4 cm of the floor. Such a car needs better sensing, not a smaller number.
+- The footprint is covered by a disc around the camera's floor point (the v1
+  rover position): radius `hypot(length / 2 + |forward|, width / 2 + |left|)`
+  plus the margin, so no heading or rover base frame is needed. `camera_yaw_rad`
+  is recorded for a future follower and not applied by the backend.
+
+Navigation reads `app.state.map_snapshot()`, which classifies the active map's
+evidence (blocking; call it from a worker thread). It returns None without an
+active map. It returns an immutable `OccupancySnapshot` for the current
+session/epoch only: `cells` in the `/live` layout with `origin`, `floor_y`,
+`blockers` (empty exactly when `ready`), `inflation_m`, `revision` and
+`sensed_at`. `revision` changes when the picture or floor does. `sensed_at` is
+the monotonic time of the last frame folded into the grid, so repeated views
+keep it fresh even when `/live` sends no new grid. The staleness limit is the
+navigation owner's policy. `traversable(x, z)` is False unless the map is ready
+and every cell within `inflation_m` is known free; unknown, occupied and
+off-grid cells block. A map reset starts an empty snapshot (revision 0, no
+`sensed_at`) and keeps the calibration. Calibration never arms or drives.
+Tested on synthetic floors and boxes only (`backend/tests/test_calibration.py`),
+with TEST values that describe no real car.
 
 ## Live objects
 

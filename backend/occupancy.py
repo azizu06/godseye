@@ -14,7 +14,8 @@ is recomputed from all evidence on every snapshot, so it settles as more floor
 appears; until a floor is found nothing is published.
 
 Per cell, relative to that floor: hits within FLOOR_TOL_M are free evidence; hits
-from OBSTACLE_MIN_M to OBSTACLE_MAX_M are obstacle evidence. The gap between the
+from OBSTACLE_MIN_M (or a measured rover threshold less HEIGHT_MARGIN_M, see
+backend/calibration.py) to OBSTACLE_MAX_M are obstacle evidence. The gap between the
 two bands (rugs, depth noise), anything below the floor, and anything above
 OBSTACLE_MAX_M (ceiling, overhangs) are ignored. Occupied wins over free once it has OCCUPIED_MIN_HITS hits
 and at least OCCUPIED_FREE_RATIO of the cell's free hits, so single outliers never
