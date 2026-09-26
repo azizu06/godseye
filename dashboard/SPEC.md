@@ -196,4 +196,6 @@ Use the issue-to-PR workflow for each increment and confirm the merged result.
 
 ## Observed color surfaces (issue #19)
 
-[SURFACES.md](SURFACES.md) specifies the default 3D representation: solid triangles textured from synchronized camera color and depth. Point cloud remains optional. Prefer native v2 capture, use v1 RGB-D fallback, preserve frozen control/live schemas, and retain only a bounded set of observed views. Keep unknown areas empty and capture availability explicit.
+[SURFACES.md](SURFACES.md) specifies the default 3D representation: solid triangles textured from synchronized camera color and depth. Point cloud remains optional. Prefer native v2 capture, use v1 RGB-D fallback, preserve frozen control/live schemas, and retain accumulated observed geometry beneath a bounded set of recent textured views. Keep unknown areas empty and capture availability explicit.
+
+[PERSISTENT_SCAN.md](PERSISTENT_SCAN.md) specifies accumulated color retention, worker integration, spatial coarsening, reconnect identity, and geometry export. Old observed regions do not expire with recent views. Export before browser reload; persistent storage and archive replay remain future work.

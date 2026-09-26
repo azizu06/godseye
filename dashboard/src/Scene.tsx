@@ -36,6 +36,8 @@ export const objectName = (o: WorldObject) =>
 export interface SceneProps {
   surfaces: SurfacePatch[];
   surfaceStatus: SurfaceStatus;
+  persistentSurface: SurfacePatch | null;
+  mapCellM: number;
   mission: Mission;
   selected: string | null;
   onSelect: (id: string) => void;
@@ -77,13 +79,27 @@ function Controls({ tool, reset }: { tool: "orbit" | "pan"; reset: number }) {
     />
   );
 }
-function Cloud({ mission }: { mission: Mission }) {
+function Cloud({
+  mission,
+  persistentSurface,
+}: {
+  mission: Mission;
+  persistentSurface: SurfacePatch | null;
+}) {
   const buffers = useMemo(
-    () => ({
-      positions: new Float32Array(mission.chunks.flatMap((c) => c.positions)),
-      colors: new Float32Array(mission.chunks.flatMap((c) => c.colors)),
-    }),
-    [mission.chunks],
+    () =>
+      persistentSurface?.colors
+        ? {
+            positions: persistentSurface.positions,
+            colors: persistentSurface.colors,
+          }
+        : {
+            positions: new Float32Array(
+              mission.chunks.flatMap((c) => c.positions),
+            ),
+            colors: new Float32Array(mission.chunks.flatMap((c) => c.colors)),
+          },
+    [mission.chunks, persistentSurface],
   );
   return (
     <points>
@@ -96,6 +112,7 @@ function Cloud({ mission }: { mission: Mission }) {
       </bufferGeometry>
       <pointsMaterial
         size={0.023}
+        toneMapped={false}
         vertexColors
         transparent
         opacity={0.8}
@@ -228,6 +245,7 @@ function Trajectory({ mission }: { mission: Mission }) {
   );
 }
 function World({
+  persistentSurface,
   surfaces,
   mission,
   selected,
@@ -235,6 +253,7 @@ function World({
   canGoal,
   onGoal,
 }: {
+  persistentSurface: SurfacePatch | null;
   surfaces: SurfacePatch[];
   mission: Mission;
   selected: string | null;
@@ -278,8 +297,13 @@ function World({
         fadeStrength={1.6}
         infiniteGrid
       />
+      {layers.surfaces && persistentSurface && (
+        <ColorSurfaces patches={[persistentSurface]} retained />
+      )}
       {layers.surfaces && <ColorSurfaces patches={surfaces} />}
-      {layers.points && <Cloud mission={mission} />}
+      {layers.points && (
+        <Cloud mission={mission} persistentSurface={persistentSurface} />
+      )}
       {layers.occupancy && <OccupancyMesh mission={mission} />}
       {layers.trajectory && <Trajectory mission={mission} />}
       {mission.path.length > 1 && (
@@ -767,16 +791,26 @@ export default function Scene(props: SceneProps) {
           )}
         </div>
         {view === "3d" && layers.surfaces && (
-          <div className="surface-status" data-testid="surface-status">
+          <div
+            className="surface-status"
+            data-testid="surface-status"
+            data-map-triangles={
+              props.persistentSurface
+                ? props.persistentSurface.indices.length / 3
+                : 0
+            }
+          >
             <span className="tiny-dot" />
-            {props.surfaces.length
-              ? `${props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0).toLocaleString()} color triangles${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
-              : props.simulated
-                ? "Discovering color surfaces…"
-                : props.surfaceStatus === "error" ||
-                    props.surfaceStatus === "unavailable"
-                  ? "Color capture unavailable · point cloud is in Layers"
-                  : "Waiting for color + depth · point cloud is in Layers"}
+            {props.surfaceStatus === "capacity"
+              ? "Map capacity reached · prior scan retained · export before reset"
+              : props.persistentSurface || props.surfaces.length
+                ? `${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? ` · retained at ${(props.mapCellM * 100).toFixed(0)} cm` : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
+                : props.simulated
+                  ? "Discovering color surfaces…"
+                  : props.surfaceStatus === "error" ||
+                      props.surfaceStatus === "unavailable"
+                    ? "Color capture unavailable · point cloud is in Layers"
+                    : "Waiting for color + depth · point cloud is in Layers"}
           </div>
         )}
         <div className="scene-stat">
@@ -787,15 +821,18 @@ export default function Scene(props: SceneProps) {
             recognized
           </small>
         </div>
-        {!props.mission.pose && !count && (
-          <div className="scene-empty">
-            <ScanLine size={35} />
-            <h3>Waiting for a view of the world</h3>
-            <p>
-              Scene data appears when the connected source starts streaming.
-            </p>
-          </div>
-        )}
+        {!props.mission.pose &&
+          !count &&
+          !props.persistentSurface &&
+          !props.surfaces.length && (
+            <div className="scene-empty">
+              <ScanLine size={35} />
+              <h3>Waiting for a view of the world</h3>
+              <p>
+                Scene data appears when the connected source starts streaming.
+              </p>
+            </div>
+          )}
         <div className="scene-bottom">
           <div className="scene-toolbox">
             <button

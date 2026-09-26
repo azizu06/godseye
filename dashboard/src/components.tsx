@@ -1,3 +1,5 @@
+import { serializeSurface } from "./surfaceColor";
+import type { SurfacePatch } from "./surfaceTypes";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
@@ -706,7 +708,11 @@ export function OperatorControls({
     </section>
   );
 }
-export function exportMission(controller: MissionController) {
+export function exportMission(
+  controller: MissionController,
+  surface: SurfacePatch | null = null,
+  cellM: number | null = null,
+) {
   const snapshot = {
     format: "godseye-dashboard-snapshot",
     version: 1,
@@ -721,6 +727,7 @@ export function exportMission(controller: MissionController) {
     path: controller.mission.path,
     trajectory: controller.mission.trajectory,
     point_chunks: controller.mission.chunks,
+    colored_reconstruction: serializeSurface(surface, cellM),
   };
   const url = URL.createObjectURL(
       new Blob([JSON.stringify(snapshot, null, 2)], {

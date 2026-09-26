@@ -21,6 +21,8 @@ export function useMission() {
   const [config, setConfig] = useState<ConnectionConfig>(defaultConfig);
   const [mission, setMission] = useState(emptyMission);
   const [connection, setConnection] = useState("connected");
+  const [mapConfirmed, setMapConfirmed] = useState(false);
+  const confirmedMap = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [stopLatched, setStopLatched] = useState(true);
   const [rescanBaseline, setRescanBaseline] = useState<string | null>(null);
@@ -56,6 +58,7 @@ export function useMission() {
     if (heldDirection.current !== null) cancelControl();
   }, [cancelControl]);
   const activeMap = useRef<string | null>(null);
+  const { source, wsUrl, apiUrl } = config;
   const receive = useCallback(
     (messages: Message[]) =>
       setMission((s) =>
@@ -79,6 +82,8 @@ export function useMission() {
     cancelControl();
     controlBusy.current = null;
     activeMap.current = null;
+    confirmedMap.current = source === "simulator";
+    setMapConfirmed(confirmedMap.current);
     stopEpoch.current++;
     let disposed = false,
       timer: ReturnType<typeof setTimeout> | undefined,
@@ -90,7 +95,7 @@ export function useMission() {
     setStartedAt(Date.now());
     setPending(null);
     latchStop(true);
-    if (config.source === "simulator") {
+    if (source === "simulator") {
       const sim = new Simulator();
       simulator.current = sim;
       setConnection("connected");
@@ -111,7 +116,7 @@ export function useMission() {
       if (disposed) return;
       setConnection(attempt ? "reconnecting" : "connecting");
       try {
-        socket = new WebSocket(config.wsUrl);
+        socket = new WebSocket(wsUrl);
       } catch {
         setConnection("disconnected");
         setNotice("Could not open the configured WebSocket.");
@@ -120,13 +125,23 @@ export function useMission() {
       socket.onopen = () => {
         if (disposed) return;
         attempt = 0;
-        activeMap.current = null;
+        confirmedMap.current = false;
+        setMapConfirmed(false);
         stopEpoch.current++;
         cancelControl();
         latchStop(true);
-        setMission(emptyMission());
-        setSimSurface(null);
-        setStartedAt(Date.now());
+        // A transport reconnect is not a new AR map. Keep historical spatial
+        // memory, but require fresh identity/pose/health before resuming live use.
+        // Point IDs may restart after a backend restart, so clear their transient
+        // deduplication window while retaining the separate colored scan store.
+        setMission((state) => ({
+          ...state,
+          health: null,
+          healthAt: 0,
+          pose: null,
+          path: [],
+          chunks: [],
+        }));
         setConnection("connected");
       };
       socket.onmessage = (e) => {
@@ -134,6 +149,18 @@ export function useMission() {
         const message = parseMessage(e.data);
         if (message) {
           const key = mapKey(message);
+          if (
+            activeMap.current !== null &&
+            !confirmedMap.current &&
+            (key === null || (key === undefined && message.type !== "health"))
+          )
+            // An empty restarting backend does not establish a different map.
+            // Unscoped pose/path/object updates cannot establish continuity either.
+            return;
+          if (key !== undefined) {
+            confirmedMap.current = key !== null;
+            setMapConfirmed(confirmedMap.current);
+          }
           if (key !== undefined && key !== activeMap.current) {
             activeMap.current = key;
             setStartedAt(Date.now());
@@ -145,10 +172,17 @@ export function useMission() {
         }
       };
       socket.onerror = () => {
-        if (!disposed) setConnection("reconnecting");
+        if (!disposed) {
+          confirmedMap.current = false;
+          setMapConfirmed(false);
+          setConnection("reconnecting");
+        }
       };
       socket.onclose = () => {
         if (disposed) return;
+        confirmedMap.current = false;
+        setMapConfirmed(false);
+        stopEpoch.current++;
         cancelControl();
         latchStop(true);
         setConnection("reconnecting");
@@ -166,7 +200,14 @@ export function useMission() {
         socket.close();
       }
     };
-  }, [config, receive, cancelControl, latchStop]);
+  }, [source, wsUrl, apiUrl, receive, cancelControl, latchStop]);
+  useEffect(() => {
+    // REST permission changes revoke in-flight control authority without closing
+    // the telemetry connection or erasing a scan from the same source/map.
+    stopEpoch.current++;
+    latchStop(true);
+    cancelControl();
+  }, [config.commands, cancelControl, latchStop]);
   useEffect(() => {
     setRescanBaseline(null);
     latchStop(true);
@@ -175,6 +216,7 @@ export function useMission() {
       config.source !== "external" ||
       !config.commands ||
       connection !== "connected" ||
+      !mapConfirmed ||
       !mission.mapKey
     ) {
       setHistoryStatus("Live events only");
@@ -212,7 +254,14 @@ export function useMission() {
       clearTimeout(timeout);
       abort.abort();
     };
-  }, [config, connection, mission.mapKey, cancelControl, latchStop]);
+  }, [
+    config,
+    connection,
+    mapConfirmed,
+    mission.mapKey,
+    cancelControl,
+    latchStop,
+  ]);
   const send = useCallback(
     async (
       path: string,
@@ -252,6 +301,8 @@ export function useMission() {
         // /live can publish the reset snapshot before the REST reply arrives.
         if (key && activeMap.current !== key) {
           activeMap.current = key;
+          confirmedMap.current = true;
+          setMapConfirmed(true);
           receive([ack!]);
         }
         setStartedAt(Date.now());
@@ -567,6 +618,7 @@ export function useMission() {
     config,
     setConfig,
     connection,
+    mapConfirmed,
     stale,
     trackingNormal,
     canDrive,
