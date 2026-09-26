@@ -39,9 +39,9 @@ column-major floats. Bundle transform belongs to the same captured frame.
 an objects snapshot and an empty path at connection and map reset.
 Map resets discard queued updates from the previous map and immediately publish fresh health, objects and path.
 Bounded queues
-drop the oldest pending update for slow viewers. Occupancy will be supplied by
-later work; no fake scene is emitted. `points`, `objects` and `event` are
-described under Live map points, Live objects, and Rescan and change events. Position is transform entries 12–14 in ARKit Y-up meters. Yaw
+drop the oldest pending update for slow viewers. No fake scene is emitted.
+`points`, `occupancy`, `objects` and `event` are described under Live map points,
+Occupancy, Live objects, and Rescan and change events. Position is transform entries 12–14 in ARKit Y-up meters. Yaw
 uses camera forward (-Z), measured from world +Z toward +X; mount calibration
 and rover base heading remain future work.
 
@@ -108,6 +108,51 @@ coordinates and does not orbit when the phone turns. **Dashboard:** subscribe
 to `ws://<mac>:8765/live`, append `points` chunks (colors 0..1), cap the total,
 and reset on a new `session_id`. Neither real-device nor dashboard paths were
 exercised in this slice; the shared checkpoint passes only when both are.
+
+## Occupancy
+
+The same back-projected points (up to 2500 per mapped frame, in the mapping
+worker thread) also feed a 2D grid (`backend/occupancy.py`, pure and
+hardware-free). A separate task snapshots it in a worker thread at most once per
+second and publishes only when the picture changed:
+
+```json
+{ "version": 1, "type": "occupancy", "session_id": "uuid", "map_epoch": 1,
+  "origin": [-4.5, -5.85], "cell_m": 0.05, "width": 177, "height": 109,
+  "cells": "base64 uint8", "floor_y": -1.2 }
+```
+
+- `cells` is `width * height` bytes, row-major: byte `row * width + col` is the
+  cell whose min corner is `origin + [col, row] * cell_m` in world (x, z), so
+  rows run along +z. 0 = unknown, 1 = free, 2 = occupied. The grid is the
+  bounding box of known cells. `session_id`, `map_epoch` and `floor_y` (world Y
+  meters of the estimated floor) are additive to the frozen v1 shape.
+- **Floor assumption:** the phone's height is unknown and the AR origin is where
+  the session started, so the floor is estimated from the evidence: the lowest
+  2 cm height slice covering at least 25 distinct cells and at least twice the
+  cells of the slices 6-16 cm above and below it (a wall covers every slice
+  equally). Until a floor is found nothing is published. A table top or ceiling
+  can only be mistaken for it when no floor has been seen.
+- **Thresholds:** evidence is counted once per frame per 5 x 5 x 2 cm voxel. A cell
+  is free with at least 2 hits within 4 cm of the floor, and occupied (winning
+  over free) with at least 3 hits from 8 cm to 1.5 m above it that also reach
+  10% of its free hits. The 4-8 cm gap, anything below the floor, and anything
+  above 1.5 m (ceiling, overhangs) are ignored.
+- **Caps:** x and z within 10 m of the AR origin (at most 400 x 400 cells, about
+  213 KB of base64) and Y within 4 m; other points are dropped. At most 500,000
+  voxels (about 6 MB) per map; new voxels beyond that are dropped.
+- The grid belongs to one session/epoch: a map reset starts an empty one, a
+  phone rejoining the same map keeps it, and a grid finished after the session or
+  phone changed is counted and dropped. New `/live` viewers and map resets get
+  the current grid, if any, after the objects and path snapshot. A slow viewer
+  holds only the newest pending grid.
+- **Limitations:** not calibrated to the rover (the 8 cm to 1.5 m band is a
+  generic guess, not its clearance); the handheld floor estimate can shift by a
+  slice as evidence grows; there is no free-space ray carving (cells are only
+  known where a surface was seen) and no decay, so a removed object stays
+  occupied. `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
+  produces no grid; tested on synthetic floors and boxes only
+  (`backend/tests/test_occupancy.py`).
 
 ## Live objects
 
