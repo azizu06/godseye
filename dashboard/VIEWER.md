@@ -31,6 +31,10 @@ RGB-D polling leaves **50 ms between completed jobs**, with one network/decode/f
 
 Decoding, image sampling and fusion run off the UI thread. Transfers stay under 32 MiB. Capture eligibility permits up to 15 seconds after backend receipt independently of drive health, and labels observations older than three seconds as delayed. Decoders still require the capture's own normal tracking, rigid calibrated transform, depth/confidence and confirmed session/epoch. Transfers or decodes that expire are rejected; old captures before known tracking loss cannot enter reconstruction.
 
+## Received detections
+
+The top-right **Received detections** panel shows the newest backend `detections` message: detector source, phone frame number, capture wall time, and `LIVE` or `STALE` with the time since this viewer received it (stale after 3 s). Boxes, labels and confidence are drawn only over that frame's own JPEG from `/capture/detections.jpg`; if the image for a newer frame is refused, the previous frame keeps only its own boxes and the list below names the newer frame. Each listed box says whether the same capture's depth placed it (`3D placed · depth`) or it is `2D only`. Fresh placed detections also appear in the 3D view as a `LIVE · class %` marker at their measured position; stale output, 2D-only boxes and a previous map place nothing. A map reset or reconnect clears the panel. Browser coverage: `dashboard/tests/detections.spec.ts`.
+
 ## Lifecycle and validation
 
 Disconnect preserves geometry, clears current pose/health/path and pauses capture until fresh map identity confirms continuity. Same-map reconnect accepts restarted point IDs while voxel association avoids duplicate dots. A changed source/session/epoch clears both point and surface workers and invalidates pending work. First observations frame automatically; **F / Frame scan** recomputes bounds on demand instead of scanning the entire map on every update. Left drag pans, right drag rotates, and wheel zooms. Historical geometry can retain drift and moving-object ghosts; it is not live navigation evidence.

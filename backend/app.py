@@ -31,6 +31,7 @@ from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import (MappingError, PointChunk, build_point_chunk, points_message,
                              points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
+from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
@@ -190,7 +191,7 @@ def create_app(db_path: str | None = None, build_points=None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
                car: CarAdapter | None = None, motion_limits: MotionLimits | None = None,
                audio_provider=None, calibration=None, label_provider=None,
-               label_timeout_s: float = 6.) -> FastAPI:
+               label_timeout_s: float = 6., overlay: tuple[str, ...] | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -199,6 +200,10 @@ def create_app(db_path: str | None = None, build_points=None,
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
     Without a detector, `weights` names existing local YOLO weights to load at
     startup; with neither, object detection is off and health reports it down.
+
+    `overlay` names the classes shown as live detection boxes (default
+    `GODSEYE_OVERLAY_CLASSES` or the staged demo set), limited to those the
+    detector reports it can emit.
 
     `calibration` (backend.calibration.RoverCalibration) is the measured rover
     geometry; without a complete, verified one the map is never motion-ready.
@@ -227,6 +232,9 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.detector = detector
         app.state.detected_at = None
         app.state.detect_stats = Counter()
+        app.state.overlay_classes = overlay_classes(overlay or classes_from_env(),
+                                                    getattr(app.state.detector, 'class_names', None))
+        app.state.detection_view = None  # (message, jpeg) of the newest accepted detection frame
         app.state.session = None
         app.state.phone = None
         app.state.pose = None
@@ -521,6 +529,9 @@ def create_app(db_path: str | None = None, build_points=None,
         sightings = app.state.objects.record(session, result.frame_id, seen_at, result.found)
         app.state.labels.enqueue(session, sightings, result.crops)
         app.state.detected_at = time.monotonic()
+        overlay = detections_message(result, sightings, app.state.overlay_classes)
+        app.state.detection_view = (overlay, result.jpeg)
+        publish(overlay)
         events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
         if sightings or changed:
             publish(objects_message(session))
@@ -552,6 +563,7 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.detection_view = None
         app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
@@ -600,6 +612,21 @@ def create_app(db_path: str | None = None, build_points=None,
         if request.headers.get('if-none-match') == headers['ETag']:
             return Response(status_code=304, headers=headers)
         return Response(frame.jpeg, media_type='image/jpeg', headers=headers)
+
+    @app.get('/capture/detections.jpg')
+    async def detection_jpeg(session_id: str, map_epoch: int, frame_id: int):
+        """The exact JPEG a live `detections` message describes, while it is the newest one.
+
+        Boxes are only valid on their own frame, so any other frame, map or a
+        retired (reset/disconnected) view is refused rather than substituted.
+        """
+        headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
+        view = app.state.detection_view
+        if view is None or (session_id, map_epoch, frame_id) != (
+                view[0]['session_id'], view[0]['map_epoch'], view[0]['frame_id']):
+            return Response(status_code=409, headers=headers)
+        headers['X-Frame-Id'] = str(frame_id)
+        return Response(view[1], media_type='image/jpeg', headers=headers)
 
     @app.get('/capture/frame.bin')
     async def capture_bundle():
@@ -810,6 +837,7 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.phone is owner:
                 app.state.phone = None
                 app.state.pose = app.state.pose_at = app.state.detected_at = None
+                app.state.detection_view = None
                 app.state.tracking_lost_capture = -1.0
                 app.state.capture.clear()
                 app.state.rich_capture.reset()

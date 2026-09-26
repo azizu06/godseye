@@ -28,6 +28,7 @@ import {
 import type { Mission } from "./state";
 import { decodeCells, type WorldObject } from "./protocol";
 import { ProjectLabels, useSceneLabels } from "./SceneLabels";
+import type { LiveMarker } from "./detections";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 
 export const objectName = (o: WorldObject) =>
@@ -48,6 +49,8 @@ export interface SceneProps {
   onSelect: (id: string) => void;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
+  /** Fresh detections placed by their own frame's depth; empty when stale. */
+  liveDetections: LiveMarker[];
 }
 interface Layers {
   surfaces: boolean;
@@ -258,6 +261,7 @@ function World({
   layers,
   canGoal,
   onGoal,
+  liveDetections,
 }: {
   cloud: PointCloudStore;
   persistentSurface: SurfacePatch | null;
@@ -267,6 +271,7 @@ function World({
   layers: Layers;
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
+  liveDetections: LiveMarker[];
 }) {
   const selectedEvent = mission.events
     .filter(
@@ -392,6 +397,25 @@ function World({
             />
           </group>
         ))}
+      {liveDetections.map((d) => (
+        <group key={d.key} position={d.position}>
+          <mesh>
+            <sphereGeometry args={[0.07, 16, 12]} />
+            <meshBasicMaterial
+              color={d.class === "person" ? "#ff7a66" : "#f2d27a"}
+            />
+          </mesh>
+          <mesh>
+            <sphereGeometry args={[0.14, 20, 14]} />
+            <meshBasicMaterial
+              color={d.class === "person" ? "#ff7a66" : "#f2d27a"}
+              transparent
+              opacity={0.22}
+              depthWrite={false}
+            />
+          </mesh>
+        </group>
+      ))}
       <ViewScope mission={mission} />
       {mission.pose && (
         <group
@@ -691,6 +715,7 @@ export default function Scene(props: SceneProps) {
     props.selected,
     props.onSelect,
     layers.objects,
+    props.liveDetections,
   );
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

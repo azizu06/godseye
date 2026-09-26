@@ -1,5 +1,5 @@
 import { useColorSurfaces } from "./useColorSurfaces";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import Scene from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
+import { DetectionOverlay } from "./DetectionOverlay";
+import { detectionsLive, liveMarkers } from "./detections";
 import { useMission } from "./useMission";
 import {
   Dialog,
@@ -159,6 +161,12 @@ export default function App() {
   const persistent = capture.persistent;
   const mapCellM = capture.cellM;
   const object = mission.objects.find((o) => o.id === selected);
+  const detectionsFresh = detectionsLive(mission.detections, now);
+  const live = useMemo(
+    () => liveMarkers(mission.detections, now),
+    // Recompute only for new detector output or when it turns stale.
+    [mission.detections, detectionsFresh],
+  );
   const select = (id: string) => {
     setSelected(id);
     setPanel("intelligence");
@@ -275,6 +283,12 @@ export default function App() {
           !help
         }
         onGoal={(x, z) => void controller.navigate(x, z)}
+        liveDetections={live}
+      />
+      <DetectionOverlay
+        detections={mission.detections}
+        apiUrl={config.apiUrl}
+        now={now}
       />
       <button
         className="workspace-launcher"

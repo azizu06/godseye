@@ -313,7 +313,8 @@ before any session exists.
 
 Detection is off unless `GODSEYE_YOLO_WEIGHTS` names existing local weights
 (`create_app(weights=...)`, or `detector=` with any object that has
-`localize(frame)`). Missing weights fail startup; nothing is downloaded, and
+`localize(frame)`, or `detect(frame)` plus `confidence` to also report boxes
+that lack depth). Missing weights fail startup; nothing is downloaded, and
 `YOLO_OFFLINE=1` is set so Ultralytics skips its online checks. Health
 `detector` is `down` without a detector, `ok` within 2 s of a used result, else
 `stale`; map reset and phone loss clear it. `/arm` still refuses because the car is down.
@@ -334,6 +335,37 @@ checks the pipeline, not recognition or localization accuracy. Neither a real
 phone scene nor the dashboard has been exercised against these objects yet.
 Fake-detector behavior tests (no GPU or weights):
 `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_objects -v`.
+
+### Live detection overlay
+
+Each accepted detection result (same 2 Hz worker, same reset/disconnect/age
+checks as objects) also publishes one additive `detections` message, even when
+the frame contains nothing, so the dashboard can show what the detector saw:
+
+```json
+{ "version": 1, "type": "detections", "session_id": "uuid", "map_epoch": 1,
+  "frame_id": 812, "t_capture": 1234.56, "t_wall_ms": 1790380851600,
+  "image": { "width": 1280, "height": 960 }, "source": "backend_detector",
+  "classes": ["person", "backpack", "chair", "bottle"],
+  "detections": [{ "class": "person", "confidence": 0.87, "box": [x1, y1, x2, y2],
+                   "position": [x, y, z], "depth_m": 2.1, "object_id": "uuid" }] }
+```
+
+- `box` is xyxy in that frame's own JPEG pixels. Every 2D box is listed, highest
+  confidence first (at most 32), whether or not it could be placed.
+- `position`/`depth_m`/`object_id` are non-null only when the same capture's depth
+  localized the box (the rules above) and it was stored as an observation;
+  otherwise the box stays 2D evidence and nothing is placed in 3D.
+- Only `classes` are listed: `GODSEYE_OVERLAY_CLASSES` (comma separated), default
+  the staged demo set `person, backpack, chair, bottle`, reduced at startup to
+  the classes the loaded weights can emit (all four are COCO/YOLO11 classes).
+  Object memory is unchanged and still stores every localized class.
+- `GET /capture/detections.jpg?session_id=&map_epoch=&frame_id=` returns that
+  frame's exact JPEG only while it is the newest accepted detection frame of the
+  active map; any other frame or map, or after a map reset or phone loss, is
+  `409` (never a substitute image). The backend keeps just this one JPEG in memory.
+
+Tests (no weights): `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_detections -v`.
 
 ## Rescan and change events
 
