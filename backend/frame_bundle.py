@@ -45,6 +45,20 @@ def _matrix(values, size, name):
     return np.array([_number(v, name) for v in values], dtype=float).reshape((size, size), order='F')
 
 
+def validate_rigid_transform(values) -> np.ndarray:
+    """Column-major camera-to-world 4x4: finite, affine, orthonormal, right-handed.
+
+    Shared by bundle decoding and /phone health so an all-zero, scaled or
+    reflected matrix can neither map points nor count as a live pose.
+    """
+    transform = _matrix(values, 4, 'transform')
+    if (not np.allclose(transform[3], [0, 0, 0, 1], atol=1e-5)
+            or not np.allclose(transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-4)
+            or not np.isclose(np.linalg.det(transform[:3, :3]), 1, atol=1e-4)):
+        raise FrameValidationError('transform must be a rigid camera-to-world matrix')
+    return transform
+
+
 def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
                        pose: Mapping | None = None) -> FrameBundle:
     """Decode against the hello's active session/epoch; optionally match a pose.
@@ -76,11 +90,7 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
         wall = _integer(header['t_wall_ms'], 't_wall_ms')
         if header['tracking'] != 'normal':
             raise FrameValidationError('tracking is not normal')
-        transform = _matrix(header['transform'], 4, 'transform')
-        if (not np.allclose(transform[3], [0, 0, 0, 1], atol=1e-5)
-                or not np.allclose(transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-4)
-                or not np.isclose(np.linalg.det(transform[:3, :3]), 1, atol=1e-4)):
-            raise FrameValidationError('transform must be a rigid camera-to-world matrix')
+        transform = validate_rigid_transform(header['transform'])
         if pose is not None:
             for key in ('version', 'session_id', 'map_epoch', 'frame_id', 't_capture', 'transform', 'tracking'):
                 if pose.get(key) != header[key]:

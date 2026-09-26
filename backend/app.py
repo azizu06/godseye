@@ -17,14 +17,14 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.changes import ChangeTracker
 from backend.drive import drive
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
-from backend.frame_bundle import FrameValidationError
+from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
@@ -33,6 +33,7 @@ from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 logger = logging.getLogger(__name__)
 MAP_INTERVAL_S = .25  # at most 4 Hz of point chunks
 MAP_MAX_AGE_S = 1.  # discard chunks computed from frames older than this
+POSE_HISTORY = 64  # recent captures kept to check a delayed bundle against its own pose
 MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference
 DETECT_MAX_AGE_S = 2.  # discard detections finished this long after their frame arrived
@@ -81,6 +82,12 @@ class Pose(Input):
     t_wall_ms: int = Field(ge=0)
     transform: list[float] = Field(min_length=16, max_length=16)
     tracking: Literal['normal', 'limited', 'not_available']
+
+    @field_validator('transform')
+    @classmethod
+    def rigid(cls, value):
+        validate_rigid_transform(value)  # same gate as mapping; zero/scaled/reflected never count as a pose
+        return value
 
 
 class Image(Input):
@@ -194,6 +201,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.phone = None
         app.state.pose = None
         app.state.pose_at = None
+        app.state.tracking_lost_capture = -1.0  # frames captured at or before this are untrusted
         app.state.armed = False
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
@@ -310,6 +318,8 @@ def create_app(db_path: str | None = None, build_points=None,
             # The map may have reset or the phone left while this was computing.
             if app.state.phone is not owner or app.state.session != session:
                 stats['discarded_reset'] += 1
+            elif result.t_capture <= app.state.tracking_lost_capture:
+                stats['discarded_tracking'] += 1
             elif result.t_capture <= last_capture or time.monotonic() - received > max_age:
                 stats['discarded_stale'] += 1
             else:
@@ -399,6 +409,7 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
         for listener in app.state.listeners:
@@ -432,7 +443,7 @@ def create_app(db_path: str | None = None, build_points=None,
         response.headers['Cache-Control'] = 'no-store'
         pose = app.state.pose
         return dict(version=1, **app.state.capture.status(), health=health(),
-                    rich=app.state.rich_capture.status(),
+                    rich=app.state.rich_capture.status(), mapping=dict(app.state.map_stats),
                     tracking=None if pose is None else pose.tracking,
                     position=None if pose is None else pose.transform[12:15])
 
@@ -546,7 +557,13 @@ def create_app(db_path: str | None = None, build_points=None,
                 workers.append(asyncio.create_task(frame_worker(
                     owner, session, detections, object_locator(owner), accept_objects, app.state.detect_stats,
                     DETECT_INTERVAL_S, DETECT_MAX_AGE_S)))
-            last_capture = -1.0
+            # Receipt is not progress. Pose and bundle streams are ordered independently:
+            # an encoded bundle may follow newer poses, but only a strictly newer capture
+            # advances the pose watchdog. All of this is per connection, so a reconnect
+            # (whose phone clock may restart) begins clean.
+            last_capture = -1.0  # newest pose progress, from either stream
+            last_frame_capture = -1.0
+            seen = {}  # t_capture -> (frame_id, transform, tracking) of recent messages
             last_pose_publish = -1.0
             while True:
                 message = await ws.receive()
@@ -563,30 +580,56 @@ def create_app(db_path: str | None = None, build_points=None,
                         raise ValueError('frame must be binary')
                 if (pose.session_id, pose.map_epoch) != app.state.session:
                     raise ValueError('session/epoch mismatch; reconnect with hello')
-                if pose.tracking != 'normal':
-                    stop('tracking_lost')
-                # Do not let delayed data refresh the watchdog or overwrite newer poses.
-                if pose.t_capture < last_capture or abs(time.time()*1000 - pose.t_wall_ms) > 250:
-                    stop('pose_stale')
+                is_frame = isinstance(pose, Frame)
+                identity = (pose.frame_id, pose.transform, pose.tracking)
+                if seen.setdefault(pose.t_capture, identity) != identity:
+                    raise ValueError('pose/frame disagree about the same capture')
+                if len(seen) > POSE_HISTORY:
+                    del seen[next(iter(seen))]
+                if abs(time.time()*1000 - pose.t_wall_ms) > 250:
+                    if is_frame:
+                        app.state.map_stats['discarded_wall_time'] += 1
+                    else:
+                        stop('pose_stale')
                     continue
-                last_capture = pose.t_capture
-                app.state.pose = pose
-                app.state.pose_at = time.monotonic()
+                if is_frame:
+                    if (pose.t_capture <= last_frame_capture or
+                            pose.t_capture < last_capture - MAP_MAX_AGE_S):
+                        app.state.map_stats['discarded_order'] += 1
+                        continue
+                    last_frame_capture = pose.t_capture
+                    app.state.map_stats['received'] += 1
+                elif pose.t_capture < last_capture:
+                    stop('pose_stale')  # a rewound pose is not progress
+                    continue
+                elif pose.t_capture == last_capture:
+                    continue  # repeat, or the pose half of a bundle already counted
+                if pose.tracking != 'normal':
+                    app.state.tracking_lost_capture = max(app.state.tracking_lost_capture, pose.t_capture)
+                newest_pose = pose.t_capture > last_capture
+                if newest_pose:
+                    last_capture = pose.t_capture
+                    app.state.pose = pose
+                    app.state.pose_at = time.monotonic()
+                    if pose.tracking != 'normal':
+                        stop('tracking_lost')
                 app.state.db.execute(
                     'INSERT OR REPLACE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,tracking,intrinsics_json) VALUES(?,?,?,?,?,?,?,?)',
                     (pose.session_id, pose.map_epoch, pose.frame_id, pose.t_capture, pose.t_wall_ms,
                      json.dumps(pose.transform), pose.tracking,
                      json.dumps(pose.image.intrinsics) if isinstance(pose, Frame) else None))
                 app.state.db.commit()
-                if isinstance(pose, Frame):
+                if is_frame:
                     app.state.capture.update(message['bytes'], pose.model_dump())
-                if isinstance(pose, Frame) and pose.tracking == 'normal':
+                if is_frame and pose.tracking == 'normal' and pose.t_capture > app.state.tracking_lost_capture:
                     if mailbox.put(message['bytes']):
                         app.state.map_stats['replaced'] += 1
                     if app.state.detector is not None and detections.put(message['bytes']):
                         app.state.detect_stats['replaced'] += 1
+                elif is_frame:
+                    app.state.map_stats['discarded_tracking'] += 1
                 now = time.monotonic()
-                if now - last_pose_publish >= 1/15:
+                if newest_pose and now - last_pose_publish >= 1/15:
                     last_pose_publish = now
                     transform = pose.transform
                     publish(dict(version=1, type='pose', position=transform[12:15],
@@ -600,6 +643,7 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.phone is owner:
                 app.state.phone = None
                 app.state.pose = app.state.pose_at = app.state.detected_at = None
+                app.state.tracking_lost_capture = -1.0
                 app.state.capture.clear()
                 app.state.rich_capture.reset()
                 stop('phone_disconnected')
