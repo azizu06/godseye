@@ -18,3 +18,19 @@ Implementation plan:
 3. `useColorSurfaces.ts` and `useMission.ts`: retain worker/store across connection changes, confirm map identity before resuming, keep recent textures above persistent geometry.
 4. `Scene.tsx`, `App.tsx`, export and docs: accumulated count/resolution, capacity status and snapshot geometry.
 5. Browser regressions: exceed old view cap, retain on disconnect/reconnect/command-permission toggle, clear on source/epoch change, reject late work, verify colors/export and existing movement controls. Review PR and merge after verification.
+
+## Observed planar compression
+
+Dense incoming colored RGB-D regions can release persistent-map capacity before spatial coarsening by replacing their interior vertices with a fitted polygon surface.
+This is geometric simplification, not semantic proof that a region is a wall.
+Grow edge-connected candidates with face normals within 12 degrees of a reference normal, require at least 64 triangles and 32 vertices, then verify every vertex lies within 8 mm of the fitted plane and every face normal still meets the agreement threshold.
+Preserve observed boundary loops and holes in the plane's own coordinate system, including oblique surfaces; remove only collinear boundary samples and triangulate the retained footprint rather than inventing a bounding rectangle.
+Reject non-manifold, unsupported, overly noisy, curved, or insufficiently reduced candidates and retain their original mesh.
+
+Fit a linear RGB color gradient over each accepted plane and require every original sample to differ by no more than 0.04 per linear-color channel.
+When a whole region has stronger color detail, try smaller edge-connected color regions; retain original triangles wherever the same color bound cannot be met.
+This bounded color approximation can smooth slight sensor/color noise while preserving large gradients and refusing to flatten sharp posters or patterned detail.
+Recent image textures remain unchanged above the accumulated map.
+Only compact retained positions, colors and triangle indices count toward the existing 500,000-vertex / 1,000,000-triangle limits; no full-resolution planar evidence cache is retained.
+Repeated shifted/noisy observations remain subject to normal spatial deduplication and capacity limits; this is not perfect multi-view registration or unlimited retention.
+Show the accumulated map's retained vertex count in the scene when available, with raw received-point count as the fallback.
