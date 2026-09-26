@@ -23,8 +23,14 @@ flip a cell. Evidence never decays: a removed object stays occupied.
 Bounds: cells cover x, z in [-HALF_EXTENT_M, HALF_EXTENT_M) around the AR origin
 (at most 400 x 400 cells) and Y in [-4, 4) m; other points are dropped. The voxel
 store holds at most MAX_VOXELS entries; new voxels beyond that are dropped.
+
+A frame reaches the grid in two steps: `frame_evidence` does the per-point work
+anywhere (a worker thread) without touching any grid, and `OccupancyGrid.commit`
+folds it in once the frame has been accepted. The live app commits on its event
+loop, after checking that the frame's phone, map and age are still current.
 """
 import base64
+from dataclasses import dataclass
 import threading
 
 import numpy as np
@@ -51,13 +57,42 @@ _LEVELS = round((Y_MAX_M - Y_MIN_M) * _SLICES_PER_M)
 _EPS = 1e-9
 
 
+@dataclass(frozen=True)
+class Evidence:
+    """One frame's voxel hits, not yet part of any grid."""
+    keys: np.ndarray  # sorted unique voxel keys, read-only
+    outside: int  # points outside the grid bounds
+
+
+def frame_evidence(positions) -> Evidence:
+    """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
+    p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    with np.errstate(invalid='ignore'):
+        ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
+        iz = np.floor(p[:, 2] * _PER_M) + _SIDE // 2
+        iy = np.floor((p[:, 1] - Y_MIN_M) * _SLICES_PER_M)
+        inside = ((ix >= 0) & (ix < _SIDE) & (iz >= 0) & (iz < _SIDE)
+                  & (iy >= 0) & (iy < _LEVELS))  # NaN and inf compare false
+    keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
+                     + iy[inside].astype(np.int64))
+    keys.setflags(write=False)
+    return Evidence(keys, int(len(p) - inside.sum()))
+
+
 class OccupancyGrid:
-    """Evidence for one session/epoch. `add` and `message_if_due` are thread-safe."""
+    """Evidence for one session/epoch. `add`, `commit`, `snapshot` and `message_if_due` are thread-safe.
+
+    `revision` bumps whenever a commit adds evidence (navigation rechecks its path on
+    it). `accepted_at` is the caller's monotonic time of the newest committed frame and
+    advances even when that frame adds nothing, so readers can tell a still-watched
+    map from a stale one.
+    """
 
     def __init__(self, session, max_voxels: int = MAX_VOXELS):
         self.session = tuple(session)
         self.max_voxels = max_voxels
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
+        self.accepted_at = None
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
@@ -71,19 +106,19 @@ class OccupancyGrid:
     def voxels(self) -> int:
         return len(self._keys)
 
-    def add(self, positions) -> None:
+    def add(self, positions, now: float = 0.) -> None:
         """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
-        p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
-        with np.errstate(invalid='ignore'):
-            ix = np.floor(p[:, 0] * _PER_M) + _SIDE // 2
-            iz = np.floor(p[:, 2] * _PER_M) + _SIDE // 2
-            iy = np.floor((p[:, 1] - Y_MIN_M) * _SLICES_PER_M)
-            inside = ((ix >= 0) & (ix < _SIDE) & (iz >= 0) & (iz < _SIDE)
-                      & (iy >= 0) & (iy < _LEVELS))  # NaN and inf compare false
-        keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
-                         + iy[inside].astype(np.int64))
+        self.commit(frame_evidence(positions), now)
+
+    def commit(self, evidence: Evidence, now: float) -> None:
+        """Fold one accepted frame in; `now` is a monotonic time in seconds.
+
+        Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
+        """
+        keys = evidence.keys
         with self._lock:
-            self.dropped += int(len(p) - inside.sum())
+            self.dropped += evidence.outside
+            self.accepted_at = now
             if not len(keys):
                 return
             at = np.searchsorted(self._keys, keys)

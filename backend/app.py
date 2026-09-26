@@ -2,6 +2,7 @@
 import asyncio
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from functools import partial
 import json
 import logging
@@ -19,16 +20,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.audio import register_audio_routes
 from backend.changes import ChangeTracker
 from backend.drive import drive
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform
-from backend.mapping import MappingError, build_point_chunk, points_message
+from backend.mapping import MappingError, PointChunk, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
-from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
+from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
@@ -150,6 +152,14 @@ class Listener:
         self.wake = asyncio.Event()
 
 
+@dataclass(frozen=True)
+class MapUpdate:
+    """One frame's mapping, computed off the event loop and applied only once accepted."""
+    t_capture: float
+    evidence: Evidence | None  # None when the occupancy computation failed
+    chunk: PointChunk | None  # None when every point was sent recently
+
+
 class LatestFrame:
     """Single-slot mailbox: a newer bundle replaces one still waiting."""
 
@@ -172,7 +182,7 @@ class LatestFrame:
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
-               label_provider=None, label_timeout_s: float = 6.) -> FastAPI:
+               audio_provider=None, label_provider=None, label_timeout_s: float = 6.) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -243,6 +253,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
+    register_audio_routes(app, audio_provider)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
@@ -323,7 +334,11 @@ def create_app(db_path: str | None = None, build_points=None,
     async def frame_worker(owner, session, mailbox, compute, accept, stats, interval, max_age):
         """Run `compute` on the newest bundle, one at a time, off the event loop.
 
-        `accept` runs on the event loop only for results that are still current.
+        `compute` must not change map state: its thread keeps running after the worker
+        is cancelled.
+        `accept` runs on the event loop only for results that are still current, in the
+        same step as the checks, so no reset or disconnect can come between them. It may
+        return the stats key to count instead of 'published'.
         """
         last_start = -interval
         last_capture = -1.0
@@ -334,9 +349,6 @@ def create_app(db_path: str | None = None, build_points=None,
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
-            except NoNewPoints:
-                stats['no_new_points'] += 1
-                continue
             except (FrameValidationError, MappingError):
                 stats['rejected'] += 1
                 continue
@@ -354,33 +366,54 @@ def create_app(db_path: str | None = None, build_points=None,
             else:
                 last_capture = result.t_capture
                 try:
-                    accept(result)
+                    outcome = accept(result) or 'published'
                 except Exception:
                     stats['failed'] += 1
                     logger.exception('frame result could not be applied')
                     continue
-                stats['published'] += 1
+                stats[outcome] += 1
 
     def accept_points(chunk):
         app.state.chunk_id += 1
         publish(points_message(chunk, app.state.chunk_id))
         app.state.point_memory.commit(chunk.voxel_keys, chunk.t_capture)
 
-    def map_into(grid):
-        """Point computation that also folds its world points into the session's grid.
+    def map_update(payload, session_id, map_epoch):
+        """Worker-thread half of mapping: the frame's occupancy evidence and deduped chunk.
 
         The grid gets every candidate point; only the published chunk is deduped,
         so occupancy evidence keeps accumulating when nothing new is published.
         """
-        def compute(payload, session_id, map_epoch):
-            chunk = build_points(payload, session_id, map_epoch)
-            try:
-                grid.add(chunk.positions)
-            except Exception:  # an occupancy bug must not cost the live points
-                app.state.occupancy_stats['failed'] += 1
-                logger.exception('occupancy update failed')
-            return app.state.point_memory.select(chunk)
-        return compute
+        candidates = build_points(payload, session_id, map_epoch)
+        evidence = None
+        try:
+            evidence = frame_evidence(candidates.positions)
+        except Exception:  # an occupancy bug must not cost the live points
+            app.state.occupancy_stats['failed'] += 1
+            logger.exception('occupancy evidence failed')
+        try:
+            chunk = app.state.point_memory.select(candidates)
+        except NoNewPoints:
+            chunk = None
+        return MapUpdate(candidates.t_capture, evidence, chunk)
+
+    def accept_map(grid):
+        """Event-loop half: commit a current frame to its map's grid, then publish its points.
+
+        A phone rejoining the same map resumes this grid, so evidence from a frame
+        that did not pass the worker's checks must never reach it.
+        """
+        def accept(update):
+            if update.evidence is not None:
+                try:
+                    grid.commit(update.evidence, time.monotonic())
+                except Exception:  # an occupancy bug must not cost the live points
+                    app.state.occupancy_stats['failed'] += 1
+                    logger.exception('occupancy update failed')
+            if update.chunk is None:
+                return 'no_new_points'
+            accept_points(update.chunk)
+        return accept
 
     async def occupancy_worker(owner, session, grid):
         """Publish the grid at most once per interval, when it changed, off the event loop."""
@@ -598,7 +631,7 @@ def create_app(db_path: str | None = None, build_points=None,
             mailbox = LatestFrame()
             grid = app.state.occupancy
             workers.append(asyncio.create_task(frame_worker(
-                owner, session, mailbox, map_into(grid), accept_points, app.state.map_stats,
+                owner, session, mailbox, map_update, accept_map(grid), app.state.map_stats,
                 MAP_INTERVAL_S, MAP_MAX_AGE_S)))
             workers.append(asyncio.create_task(occupancy_worker(owner, session, grid)))
             detections = LatestFrame()

@@ -15,6 +15,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 
+- Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
