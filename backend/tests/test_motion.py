@@ -111,20 +111,32 @@ class MotionTests(unittest.TestCase):
         self.assertEqual((self.stops, self.car.calls), (['car_error'], [('zero',)]))
         self.assertFalse(self.motion.active)
 
-    def test_a_failing_zero_still_invalidates_every_command(self):
-        class NoZero(FakeCar):
-            def zero(self):
-                raise OSError('link dropped')
-        self.car = NoZero()
-        self.motion = Motion(self.car, check=lambda command: None, stop=self.stop, clock=self.clock)
+    def test_a_failed_zero_is_retried_every_tick_and_blocks_arming(self):
         generation = self.arm()
         self.motion.submit(generation, 'manual', .1, 0.)
-        with self.assertLogs('backend.motion', 'ERROR'):
+        self.car.error = OSError('link dropped')  # a dropped link fails zero too
+        with self.assertLogs('backend.motion', 'ERROR') as logs:
             self.motion.halt()
-        self.motion.tick()
-        self.assertEqual(self.car.calls, [])
+            for _ in range(3):
+                self.motion.tick()
+            self.assertIsNone(self.motion.begin())  # no arm without a confirmed zero
+        self.assertEqual(len(logs.output), 1)  # retries stay quiet
         self.assertFalse(self.motion.submit(generation, 'manual', .1, 0.))
+        self.car.error = None
+        self.motion.tick()
+        self.motion.tick()
+        self.assertEqual(self.car.calls, [('zero',)])  # retried until it landed, then stopped retrying
+        self.assertIsNotNone(self.motion.begin())
 
+    def test_a_failed_expiry_zero_latches_a_car_error_stop(self):
+        generation = self.arm()
+        self.motion.submit(generation, 'manual', .1, 0.)
+        self.clock.now += .3
+        self.car.error = OSError('link dropped')
+        with self.assertLogs('backend.motion', 'ERROR'):
+            self.motion.tick()
+        self.assertEqual(self.stops, ['car_error'])
+        self.assertFalse(self.motion.active)
 
 if __name__ == '__main__':
     unittest.main()

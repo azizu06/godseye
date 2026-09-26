@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.changes import ChangeTracker
-from backend.drive import LoggingCar
+from backend.drive import CarAdapter, LoggingCar
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
@@ -162,7 +162,7 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None, car=None,
+               point_settings: PointSettings | None = None, car: CarAdapter | None = None,
                motion_limits: MotionLimits | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
@@ -219,10 +219,12 @@ def create_app(db_path: str | None = None, build_points=None,
             yield
         finally:
             task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            stop('shutdown')
-            db.close()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:  # zero even if the watchdog died with an error
+                stop('shutdown')
+                db.close()
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
@@ -507,7 +509,8 @@ def create_app(db_path: str | None = None, build_points=None,
     async def arm():
         if hazard() is not None:
             raise HTTPException(409, 'Health must all be ok; the default logging car always reports down')
-        app.state.motion.begin()  # a fresh generation: nothing from before this arm can move
+        if app.state.motion.begin() is None:  # a fresh generation: nothing from before this arm can move
+            raise HTTPException(409, 'The car did not accept a zero command')
         app.state.armed = True
         app.state.stop_reason = None
         return health()

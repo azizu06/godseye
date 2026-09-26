@@ -355,9 +355,10 @@ or drive the rover. See Drive commands for the fake-tested command boundary.
 yaw_rate_rps)`, `zero()` and `health()` (`ok`/`stale`/`down`). `LoggingCar`
 (default) logs through `drive()` and reports down. `FakeCar` records calls and
 reports the health a test sets; it moves nothing. A real adapter may report
-`ok` only from verified car feedback, never from a successful write, and does
-not exist yet: the vendor protocol, acknowledgement and health semantics belong
-to [issue 6](https://github.com/azizu06/godseye/issues/6).
+`ok` only from verified car feedback, never from a successful write, must
+return promptly (its calls run on the event loop), and does not exist yet: the
+vendor protocol, acknowledgement and health semantics belong to
+[issue 6](https://github.com/azizu06/godseye/issues/6).
 
 `motion.py` holds at most one desired command per arm generation:
 
@@ -374,8 +375,12 @@ to [issue 6](https://github.com/azizu06/godseye/issues/6).
   be configured up to the 0.20 m/s contract maximum, never above). A command
   not renewed within 250 ms is zeroed once; the operator stays armed.
   Non-finite input zeroes and raises.
-- An adapter `send` error stops with `car_error`; a failing `zero` is logged
-  and cannot resurrect a command.
+- An adapter `send` error stops with `car_error`. A failed `zero` also stops
+  with `car_error`, is retried every tick with nothing else sent, and blocks
+  `/arm` until the car accepts one.
+- `/manual` carries no token in the frozen v1 wire, so a delayed request or a
+  second dashboard still holding the button counts as fresh input after a
+  re-arm. Only one operator surface should drive at a time.
 
 Navigation plugs in without touching the adapter: read
 `app.state.motion.generation` when a goal is accepted, then call

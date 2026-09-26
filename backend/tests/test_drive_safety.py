@@ -170,6 +170,10 @@ class DriveSafetyTests(unittest.TestCase):
                 wait_for(lambda: not self.health(client)['armed'])
             self.assertEqual(self.health(client)['stop_reason'], 'car_error')
             self.assertEqual(client.post('/manual', json=HOLD).status_code, 409)
+            self.assertEqual(client.post('/arm').status_code, 409)  # the zero is still unconfirmed
+            car.error = None
+            wait_for(lambda: car.calls[-1:] == [('zero',)])  # retried until the car accepted it
+            self.assertEqual(client.post('/arm').status_code, 200)
 
     def test_pose_loss_while_held_stops_all_motion(self):
         with self.rig() as (client, car):
@@ -188,7 +192,8 @@ class DriveSafetyTests(unittest.TestCase):
         with self.rig() as (client, car):
             moving = self.armed_and_moving(client, car)
             client.post('/manual', json=HOLD)
-        self.assertEqual(car.calls[-1], ('zero',))
+        # TestClient closes the phone first (phone_disconnected zero), then shutdown zeroes again.
+        self.assertEqual(car.calls[-2:], [('zero',), ('zero',)])
         self.assertEqual(sends(after_zero(car.calls[moving:])), [])
 
 

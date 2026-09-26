@@ -9,6 +9,8 @@ import logging
 import math
 import time
 
+from backend.drive import CarAdapter
+
 logger = logging.getLogger(__name__)
 MAX_SPEED_MPS = .2  # contract hard maximums
 MAX_YAW_RATE_RPS = .5
@@ -45,22 +47,26 @@ class Motion:
     """`check(command)` names why the command must not be sent now, else None.
 
     `stop(reason)` is the app's latched stop; it must call `halt()`. `tick()`
-    is the only place a nonzero command reaches the car, once per call.
+    is the only place a nonzero command reaches the car, once per call. Not
+    thread-safe: call every method from the event loop.
     """
 
-    def __init__(self, car, check, stop, clock=time.monotonic, limits=MotionLimits()):
+    def __init__(self, car: CarAdapter, check, stop, clock=time.monotonic, limits=MotionLimits()):
         self.car, self.check, self.stop, self.clock, self.limits = car, check, stop, clock, limits
         self.generation = 0
         self.active = False  # accepting commands: armed and not stopped since
         self.desired = None
+        self.zero_pending = False  # the last zero failed; retried every tick, and nothing else is sent
 
     def begin(self):
-        """Open a fresh generation after a successful arm; nothing older is kept.
+        """Open a fresh generation after a successful arm; None if the car refused the zero.
 
         Arming zeroes too, so re-arming over a held command cannot leave a car
         that latches its last command moving.
         """
         self.halt()
+        if self.zero_pending:
+            return None
         self.active = True
         return self.generation
 
@@ -72,10 +78,16 @@ class Motion:
         self.zero()
 
     def zero(self):
+        """True once the car accepted the zero; a failure is retried by every later tick."""
         try:
             self.car.zero()
-        except Exception:  # the command is already dropped, so no send can follow
-            logger.exception('car zero failed')
+        except Exception:
+            if not self.zero_pending:
+                logger.exception('car zero failed; retrying every tick')
+            self.zero_pending = True
+            return False
+        self.zero_pending = False
+        return True
 
     def submit(self, generation, mode, v_mps, yaw_rate_rps):
         """Replace the desired command; False when `generation` is no longer the armed one.
@@ -94,12 +106,19 @@ class Motion:
         return True
 
     def tick(self):
+        if self.zero_pending:
+            if self.active:
+                self.stop('car_error')  # halt() retries the zero
+            else:
+                self.zero()
+            return
         command = self.desired
         if command is None:
             return
-        if self.clock() >= command.expires_at:
+        if self.clock() >= command.expires_at or command.generation != self.generation:
             self.desired = None
-            self.zero()
+            if not self.zero() and self.active:
+                self.stop('car_error')
             return
         if (reason := self.check(command)) is not None:
             self.stop(reason)

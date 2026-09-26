@@ -2,7 +2,9 @@
 
 An adapter sends one command, sends an explicit zero, and reports `health()`
 as 'ok', 'stale' or 'down'. A real adapter may only report 'ok' from verified
-car feedback, never because a write succeeded.
+car feedback, never because a write succeeded. Every call runs on the event
+loop, so it must return promptly (do blocking I/O on the adapter's own thread)
+and raise when a command or zero was not handed off.
 """
 import logging
 from typing import Literal, Protocol
@@ -40,7 +42,7 @@ class FakeCar:
     def __init__(self, health: CarHealth = 'ok'):
         self.state = health
         self.calls = []  # ('send', v_mps, yaw_rate_rps) or ('zero',)
-        self.error = None  # raised from send() when set
+        self.error = None  # raised from send() and zero() when set, like a dropped link
 
     def send(self, v_mps, yaw_rate_rps):
         if self.error is not None:
@@ -48,6 +50,8 @@ class FakeCar:
         self.calls.append(('send', v_mps, yaw_rate_rps))
 
     def zero(self):
+        if self.error is not None:
+            raise self.error
         self.calls.append(('zero',))
 
     def health(self):
