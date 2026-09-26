@@ -292,11 +292,15 @@ export function useMission() {
     connection !== "connected" ||
     !mission.health ||
     now - mission.healthAt > 2000;
-  const healthy =
+  const trackingNormal =
     !stale &&
     mission.pose?.tracking === "normal" &&
     mission.health?.phone === "ok" &&
-    mission.health.car === "ok" &&
+    mission.health.pose_age_ms !== null &&
+    mission.health.pose_age_ms <= 250;
+  const healthy =
+    trackingNormal &&
+    mission.health?.car === "ok" &&
     mission.health.detector === "ok";
   const canDrive =
     healthy &&
@@ -564,6 +568,7 @@ export function useMission() {
     setConfig,
     connection,
     stale,
+    trackingNormal,
     canDrive,
     command,
     pending,
