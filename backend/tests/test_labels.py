@@ -5,7 +5,7 @@ from PIL import Image
 from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.tests.test_objects import FakeDetector, LEFT_CUP
-from backend.tests.test_map_transport import frame, hello, wait_for
+from backend.tests.test_map_transport import frame, hello, next_of, wait_for
 
 
 class FakeLabels:
@@ -22,11 +22,15 @@ class LabelTests(unittest.TestCase):
         provider = FakeLabels()
         with TestClient(create_app(':memory:', detector=FakeDetector(LEFT_CUP),
                                    label_provider=provider)) as client:
-            with client.websocket_connect('/phone') as phone:
+            with client.websocket_connect('/live') as live, client.websocket_connect('/phone') as phone:
                 phone.send_json(hello())
                 phone.send_bytes(frame())
                 wait_for(lambda: provider.crops)
                 wait_for(lambda: client.get('/objects').json()['objects'][0]['identity']['status'] == 'labeled')
+                live_objects = next_of(live, 'objects')['objects']
+                while not live_objects or live_objects[0]['identity']['status'] != 'labeled':
+                    live_objects = next_of(live, 'objects')['objects']
+                self.assertEqual(live_objects[0]['identity']['label'], 'red ceramic coffee mug')
                 phone.send_bytes(frame(frame_id=2, t_capture=2.))
                 wait_for(lambda: client.get('/objects').json()['objects'][0]['observations'] == 2)
                 answer = client.post('/ask', json={'question': "where's my red mug?"}).json()
