@@ -384,7 +384,14 @@ or `status: "unavailable"` with a `reason` (`no_observed_map`,
 `start_or_person_off_map`), always with `assumptions` and `verified: false`.
 A wrong map returns `409` and an unknown or non-person object returns `404`. It never sets a goal,
 publishes `path`, arms or commands motion. The dashboard re-requests it on new
-occupancy or a moved person and drops it on a map reset. Tests:
+occupancy or a moved person and drops it on a map reset.
+
+`app.state.approach_view` is the current selected route for read-only consumers
+(voice answers): the newest `/route` response dict plus `t_wall_ms`, or `None`.
+An unavailable result replaces an earlier success. A `404` selection, a map reset,
+a newly published occupancy picture that differs from the cells it was planned on,
+and a sighting that moves, merges or removes the person all set it to `None`.
+A slower, older request never overwrites a newer selection. Tests:
 `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_approach -v`.
 
 ## Rescan and change events

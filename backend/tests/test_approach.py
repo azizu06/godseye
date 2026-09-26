@@ -1,14 +1,21 @@
 """Suggested approach route to a localized person: observed-free only, visualization only."""
 import math
+import threading
+import time
 import unittest
+from unittest import mock
 
 import numpy as np
 from fastapi.testclient import TestClient
 
+from backend import approach as approach_module
 from backend.app import create_app
 from backend.approach import ASSUMPTIONS, PERSON_KEEP_OUT_M, WALKER_RADIUS_M, approach_route
 from backend.localization import Detection, LocalizedDetection
 from backend.navigation import FREE, OCCUPIED, UNKNOWN, Grid, PlannerConfig, plan_path
+from backend.tests.test_detections import PERSON, BoxDetector, scene
+from backend.tests.test_map_transport import hello, next_of, wait_for
+from backend.tests.test_occupancy import FLOOR_Y, box, plane
 
 CELL = .05
 
@@ -134,6 +141,107 @@ class RouteEndpointTests(unittest.TestCase):
             route = client.post('/route', json=dict(session_id=session[0], map_epoch=session[1],
                                                     object_id=person, start=[3., .5])).json()
         self.assertEqual((route['status'], route['reason']), ('unavailable', 'no_observed_map'))
+
+
+
+class ApproachViewTests(unittest.TestCase):
+    """`app.state.approach_view`: the current selected route for read-only consumers (voice)."""
+
+    def route(self, client, session, person, start, **extra):
+        return client.post('/route', json=dict(session_id=session[0], map_epoch=session[1], object_id=person,
+                                               start=start, **extra))
+
+    def test_selected_route_is_published_then_replaced_by_a_failed_or_missing_selection(self):
+        with TestClient(create_app(':memory:')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, wall_with_gap(room(), 2., 1., .9))
+            person = person_at(client, session, (2., .4, 3.))
+            before = time.time() * 1000
+            ok = self.route(client, session, person, [3., .5]).json()
+            view = client.app.state.approach_view
+            self.assertEqual({k: v for k, v in view.items() if k != 't_wall_ms'}, ok)
+            self.assertLessEqual(before, view['t_wall_ms'])
+            self.assertEqual((view['status'], view['assumptions']['verified']), ('ok', False))
+            self.assertEqual((client.app.state.nav.path, client.get('/health').json()['armed']), ([], False))
+            # A new selection that fails replaces the earlier success.
+            self.route(client, session, person, [3.9, 3.9])  # inside the wall's clearance band
+            unavailable = client.app.state.approach_view
+            self.assertEqual((unavailable['status'], unavailable['start']), ('unavailable', [3.9, 3.9]))
+            self.assertNotIn('points', unavailable)
+            self.route(client, session, person, [3., .5])
+            self.assertEqual(self.route(client, session, 'missing', [3., .5]).status_code, 404)
+            self.assertIsNone(client.app.state.approach_view)
+            self.route(client, session, person, [3., .5])
+            client.post('/session')
+            self.assertIsNone(client.app.state.approach_view)
+
+    def test_an_older_request_finishing_late_never_overwrites_a_newer_selection(self):
+        started, release = threading.Event(), threading.Event()
+        real = approach_module.approach_route
+
+        def slow_then_real(grid, start, person):
+            if start == [0.5, 0.5]:  # the first, older selection
+                started.set()
+                release.wait(5)
+            return real(grid, start, person)
+
+        with TestClient(create_app(':memory:')) as client, \
+                mock.patch('backend.app.approach_route', slow_then_real):
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, room())
+            person = person_at(client, session, (2., .4, 3.))
+            older = []
+            worker = threading.Thread(target=lambda: older.append(self.route(client, session, person, [.5, .5])))
+            worker.start()
+            self.assertTrue(started.wait(5))
+            newer = self.route(client, session, person, [3., .5]).json()
+            release.set()
+            worker.join(5)
+            view = client.app.state.approach_view
+        self.assertEqual(older[0].json()['start'], [.5, .5])  # the caller still gets its answer
+        self.assertEqual((view['start'], view['status']), ([3., .5], newer['status']))
+
+    def test_a_changed_published_occupancy_picture_retires_the_route(self):
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/phone') as phone:
+            phone.send_json(hello('route-map'))
+            wait_for(lambda: client.app.state.session == ('route-map', 1))
+            session, grid = ('route-map', 1), client.app.state.occupancy
+            for now in (1., 2., 3.):
+                grid.add(plane(-2., 2., -2., 2., FLOOR_Y), now=now)
+            wait_for(lambda: grid.last_message is not None)
+            person = person_at(client, session, (1., FLOOR_Y + 1., 1.))
+            self.assertEqual(self.route(client, session, person, [-1., -1.]).json()['status'], 'ok')
+            published = grid.last_message
+            grid.add(plane(-2., 2., -2., 2., FLOOR_Y), now=4.)  # more of the same evidence
+            time.sleep(.5)
+            self.assertIs(grid.last_message, published)
+            self.assertIsNotNone(client.app.state.approach_view)
+            for now in (5., 6., 7.):  # a new obstacle changes the published picture
+                grid.add(box(-.5, -.3, -.5, -.3, FLOOR_Y, FLOOR_Y + .3), now=now)
+            wait_for(lambda: grid.last_message is not published)
+            wait_for(lambda: client.app.state.approach_view is None)
+
+    def test_a_sighting_that_moves_the_person_retires_the_route(self):
+        detector = BoxDetector(PERSON)
+        with TestClient(create_app(':memory:', detector=detector)) as client, \
+                client.websocket_connect('/live') as live, client.websocket_connect('/phone') as phone:
+            phone.send_json(hello('room'))
+            phone.send_bytes(scene(frame_id=1))
+            [person] = next_of(live, 'detections')['detections']
+            self.route(client, ('room', 1), person['object_id'], [0., 0.])
+            self.assertEqual(client.app.state.approach_view['reason'], 'no_observed_map')
+            time.sleep(.55)
+            phone.send_bytes(scene(frame_id=2))  # the same place: the route stands
+            next_of(live, 'detections')
+            self.assertIsNotNone(client.app.state.approach_view)
+            detector.boxes = [Detection((44., 10., 60., 50.), 'person', .87)]  # 0.1 m further along z
+            time.sleep(.55)
+            phone.send_bytes(scene(frame_id=3))
+            [moved] = next_of(live, 'detections')['detections']
+            self.assertEqual(moved['object_id'], person['object_id'])
+            self.assertIsNone(client.app.state.approach_view)
 
 
 if __name__ == '__main__':
