@@ -508,10 +508,18 @@ export default function App() {
         <Settings
           onStop={() => void command("/stop")}
           config={config}
-          onSave={(next) => {
+          onSave={async (next) => {
             controller.release();
+            if (
+              config.source === "external" &&
+              config.commands &&
+              mission.health?.armed
+            ) {
+              if (!(await command("/stop"))) return false;
+            }
             setSelected(next.source === "simulator" ? "sim-backpack" : null);
             setConfig(next);
+            return true;
           }}
           onClose={() => setSettings(false)}
         />
