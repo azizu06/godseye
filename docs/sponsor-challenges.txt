@@ -1,0 +1,173 @@
+[toggle] Best Overall - 1st Place, 2nd Place, and 3rd Place 
+  [text] Description: Best overall in-person projects based on creativity, execution, and impact. All projects submitted are automatically entered for the best overall categories.
+  [text] Prize Pool: 
+  [text] To be released on the day of the event
+  [callout] 
+    [text] Prize Pool Rule: 
+    [bulleted_list] 1st place winners choose first 
+    [bulleted_list] 2nd place winners choose second
+    [bulleted_list] 3rd place winners have the remaining prize
+    [text] Please note that you and your teammates will receive the same prize when picking from the prize pool. Please discuss with your teammates what you would like to select before the closing ceremony, as you will have only 1 minute to notify us upon arrival to claim your prize on stage. 
+
+If you and your teammates are not present during the closing ceremony, you will forfeit dibs to your 2nd- or 3rd-place peers and will receive the remaining prize. 
+
+At least one team member must be present during the Closing Ceremony to choose from the prize pool. 
+  [text] 
+[toggle] Best First-Time Hacker  
+  [text] Description: To qualify, 50% of the team must be first-time hackers (submitting a project at a hackathon for the first time)
+  [text] Prize: 
+  [text] To be released on the day of the event
+[toggle] Sperry Tech
+  [text] The GridLock Challenge
+  [quote] 
+    [text] Power grid companies (“utilities”) each plan future construction projects years in advance. The problem: neighboring utilities in different states often plan this work without much visibility into what the other one is doing nearby.
+    [text] The challenge: Build a tool that compares at least two utilities' public future construction plans and flags where their planned work overlaps — either because the projects are physically close to each other, or because they're scheduled around the same time.
+    [text] Why it matters: when utilities coordinate on nearby projects, they can potentially share labor, equipment and other critical resources.
+    [text] This is a real, current problem — federal regulators (FERC) issued a rule in 2024 because utilities have historically planned in isolation, leading to waste and delays in building a reliable power grid.
+  [text] ADDITIONAL INFORMATION:
+  [bulleted_list] 🔗 Challenge Specifications <https://dakotame-my.sharepoint.com/:w:/g/personal/theodor_owchariw_dakotamats_com/IQDUTjqvUXoYS6tUPSoYIw2bAeVvfnDznRZSFLaBcWZSRkE?e=pqtgzo>
+  [bulleted_list] 🔗 Project Video <https://www.instagram.com/reel/DdIDyAiKoXD/?stkn=ZGI4dWRidzl0Ym41>
+  [text] Prizes:
+  [bulleted_list] 1st place - Guaranteed internships and Macbook Airs
+  [bulleted_list] 2nd place - Interviews and IPads
+  [bulleted_list] 3rd place - Interviews
+[toggle] Assurant
+  [text] Take Control of AI
+  [quote] 
+    [text] AI is reshaping daily life but most users don't know what data they're sharing, what they're spending, or whether they've picked the right tool. Build something that gives people real control: privacy protection, spending visibility, or confident tool selection.
+    [text] This challenge asks you to build something that changes that: How do we make sure people in a connected world use AI mindfully?
+  [text] Prizes: 
+  [bulleted_list] 1st place - Shokz OpenRun Bone-Conduction Open-Ear Sport Headphones, Black
+  [bulleted_list] 2nd place - Staples Easy Desktop Set, Keyboard, Mouse, Mouse Pad, Laptop Stand, ProGel Pens & Sticky Notes
+  [bulleted_list] 3rd place - Logitech ERGO M575S Wireless Ergonomic Trackball Mouse, Black
+  [copy_indicator] HackathonChallengeDraft_v2024.docx
+[toggle] Waymo
+  [text] The Waymo Mobility Challenge
+  [quote] Waymo is an autonomous driving technology company with the mission to be the most trusted driver. With this mission in mind, we challenge you to use publicly available data to create a hack that improves transportation. The possibilities are endless: online, you can find APIs for directions, 360º street view, aerial view, elevation data, time zones, and much, much more. Whether you’re building an app to help students carpool to campus, or creating a social network to share and review the best cafes for studying, use your imagination to build the best transportation-related hack. Feel free to utilize any publicly available data like, https://developers.google.com/maps <https://developers.google.com/maps>.
+  [text] Prizes: 
+  [text] TBA
+[toggle] Microsoft
+  [text] What’s Missing?
+  [quote] 
+    [text] Your generation is inheriting tools and systems that weren’t designed for the way you learn, work, connect, create, or navigate life.
+    [text] Pick something that feels unnecessarily difficult, inaccessible, outdated, or simply missing, and build an AI-powered experience that makes it better.
+    [text] Don’t recreate an existing assistant. We want to see AI used as part of the experience, not the entire experience. Build something that helps a person do something they couldn’t easily do before, and show us the difference it makes.
+    [text] Challenge Requirement:
+    [text] Your core experience cannot be a chatbot or depend on a chat window.
+    [text] Your demo should show someone accomplishing a real task, making something, discovering something, testing something, or improving something, not simply asking AI for an answer.
+  [text] Prizes: 
+  [bulleted_list] Microsoft swag
+[toggle] Blackstone
+  [text] Reimagining the Investor Experience
+  [quote] 
+    [text] Investors have access to more information than ever before, but understanding what they own and evaluating what to invest in next can be difficult. Performance reports, company filings, market data, economic trends, and news are often spread across different sources, making it challenging to turn information into meaningful insight. Build a product that reimagines how investors understand their current investments and research new opportunities.
+    [text] Your solution might help users analyze their existing portfolio, compare investment opportunities, discover trends and risks, summarize complex information, visualize performance, or ask questions in natural language. Use any publicly available financial or economic data source and any technology stack you choose.
+    [text] We’re looking for solutions that make financial information more accessible, actionable, and engaging. Whether through AI, analytics, visualization, education, or entirely new user experiences, show us how technology can improve the way investors interact with information and make decisions.
+  [text] Prize:
+  [bulleted_list] $350 Visa gift card
+[toggle] State Farm
+  [text] Auto Insurance Challenge
+  [quote] Auto Insurance claims can be a lot and it helps to be prepared. Your goal is to create a hack that makes auto insurance simpler and helpful for students like you to reduce every day risks (like theft, fire, or accidents) where they live, study, or travel. Your hack's features could include helpful tools, gamifying experiences, or education. Be creative!
+  [text] Prizes: 
+  [bulleted_list] State Farm backpacks
+  [bulleted_list] Personal safes
+[toggle] INIT National
+  [text] Building Together
+  [quote] 
+    [text] How can technology support student builders collaborate to create great projects together?
+    [text] Explore the challenges students face when working together beyond a short hackathon— whether it's over weeks or even months—building in-person or remotely.
+    [text] Create a solution that helps students find teammates, learn from one another, share knowledge, ask for help, receive mentorship, overcome roadblocks, and stay engaged until they ship. Feel free to use your own experiences (or that of hackers around you) to find unique pain points and solve them!
+    [text] Your solution should not only help manage the work—it should help people build relationships, contribute at different skill levels, and become better builders, together.
+  [text] Prize: 
+  [bulleted_list] Claude subscriptions for each team member
+[toggle] MLH - ElevenLabs
+  [text] Best Use of ElevenLabs
+  [quote] 
+    [text] Deploy natural, human-sounding audio with ElevenLabs. Create realistic, dynamic, and emotionally expressive voices for any project, from interactive AI companions to narrated stories and voice-enabled apps. ElevenLabs will empower you to build rich, immersive experiences without the need for actors or complex audio production, using simply the power of AI.
+    [text] Integrate fully autonomous audio experiences into your hack with ElevenLabs and give your project a voice, along with giving your team the chance to win some wireless earbuds!
+  [text] Click for more info and free codes: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize:
+  [bulleted_list] Wireless Earbuds
+[toggle] MLH - Google Cloud
+  [text] Best Use of Gemini API
+  [quote] 
+    [text] It’s time to push the boundaries of what’s possible with AI using Google Gemini. Check out the Gemini API to build AI-powered apps that make your friends say WHOA. So, what can Gemini do for your hackathon project?
+    [bulleted_list] Understand language like a human and build a chatbot that gives personalized advice
+    [bulleted_list] Analyze info like a supercomputer and create an app that summarizes complex research papers
+    [bulleted_list] Generate creative content like code, scripts, music, and more
+    [text] Think of the possibilities… what will you build with the Google Gemini API this weekend?
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize: 
+  [bulleted_list] MLH Swag Kits
+[toggle] MLH - Solana
+  [text] Best Use of Solana
+  [quote] 
+    [text] The world of development is evolving fast and Solana is leading the charge with a network built to handle all of your infrastructure needs. Forget high fees and slow confirmations, it’s time to build applications that are fast, efficient, and scalable.
+    [text] Harness Solana’s core advantages like blazing fast execution and near-zero transaction costs to make your hackathon ideas become real world projects. With Solana, the possibilities are endless.
+    [bulleted_list] Create a game, social app, or consumer product that relies on instant, high-frequency transactions.
+    [bulleted_list] Design a sophisticated trading, lending, or decentralized exchange (DEX).
+    [bulleted_list] Build a prototype for supply chain, identity, or payments that can handle massive, real-world volume.
+    [text] Show us how you can innovate with Solana for a chance to win some cool prizes for you and each member of your team!
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize: 
+  [bulleted_list] Ledger Nano S Plus
+[toggle] MLH - Tiger Data
+  [text] Best Use of Tiger Data
+  [quote] 
+    [text] Building high-performance apps under hackathon deadlines shouldn't mean spending half your weekend configuring complex databases or learning obscure query languages. Tiger Data extends PostgreSQL to give student developers an ultra-fast foundation for real-time data, time-series metrics, and complex analytics.
+    [text] Why build with Tiger Data this weekend?
+    [bulleted_list] Standard SQL Power: Query massive datasets instantly using the SQL you already know, with no complex NoSQL aggregation pipelines required.
+    [bulleted_list] Unified Data Stack: Store relational user profiles and high-frequency metric streams side-by-side in a single database.
+    [bulleted_list] Instant Dashboards: Serve lag-free, real-time frontend charts using pre-computed Continuous Aggregates.
+    [bulleted_list] 90%+ Data Compression: Store millions of events on free-tier cloud instances without running out of disk space.
+    [text] Whether you’re building real-time IoT monitoring, AI-driven analytics dashboards, or financial prediction engines, show us how Tiger Data powers your project. The team that demonstrates the most innovative, impactful, and performance-driven use of Tiger Data will take home some great prizes!
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize:
+  [bulleted_list] Stream Deck Mini
+[toggle] MLH - DigitalOcean
+  [text] Best Use of DigitalOcean
+  [quote] 
+    [text] DigitalOcean offers a reliable and easy-to-use cloud platform for every stage of your project. Leverage core services like Droplets, Managed Databases, and App Platform to build, deploy, and scale your application effortlessly. Building with AI? DigitalOcean Gradient™ AI enables you to build, train, and deploy machine learning models, including access to GPU infrastructure and serverless inference!
+    [text] Sign up for DigitalOcean <https://mlh.link/digitalocean-signup> today and get $200 worth of free credits that you can use towards building your next great hack. Build with DigitalOcean’s robust cloud infrastructure for a chance to win some great prizes for you and each of your teammates!
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize:
+  [bulleted_list] Retro Wireless Mouse
+[toggle] MLH - Snowflake
+  [text] Best Use of Snowflake API
+  [quote] 
+    [text] Play with industry-leading LLMs on a single account using the Snowflake APIs. Adding AI capabilities into your application can be as simple as a single CURL command to Snowflake’s REST API.
+    [text] Build customized applications, RAG powered chat bots, or embed AI-powered features into your app in half the time with half the hassle. Get started for free with a special, student 120-day Snowflake trial <https://mlh.link/snowflake-signup> and check out this repository <https://mlh.link/snowflake-tutorial> for an example of the Snowflake REST API in action.
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize:
+  [bulleted_list] Raspberry Pi 4
+[toggle] MLH - MongoDB
+  [text] Best Use of MongoDB Atlas
+  [quote] MongoDB Atlas takes the leading modern database and makes it accessible in the cloud! Get started with a $50 credit for students <https://mlh.link/mongodb> or sign up for the Atlas free forever tier <https://mlh.link/mongodb-free> (no credit card required). Along with a suite of services and functionalities, you’ll have everything you need to manage all of your data, and you can get a headstart with free resources from MongoDB University <https://mlh.link/mongodb-university>! Build a hack using MongoDB Atlas for a chance to win a M5Stack IoT Kit for you and each member of your group.
+  [text] Click for more info and resources: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize:
+  [bulleted_list] M5Stack IoT Kit
+[toggle] MLH - GoDaddy Registry
+  [text] Best Domain Name from GoDaddy Registry
+  [quote] GoDaddy Registry is giving you everything you need to be the best hacker no matter where you are. Register your domain name with GoDaddy Registry for a chance to win some amazing prizes! 
+  [text] Click for more info and free codes: 
+  [bookmark] Prizes at ShellHacks | Major League Hacking
+  [text] Prize: 
+  [bulleted_list] Digital Gift Card
+[toggle] Scholé AI - AI Learning
+  [text] What it's for during the hackathon
+  [quote] Scholé is your learning buddy. We’re built out of Berkeley and Harvard, and we’re the fastest way to get up to date on the latest AI concepts and tools, so ShellHackers can use them directly in their projects! Try lessons for hundreds of tools, or concepts you’ve always wanted to learn about (MCP, RAG, long horizon tasks, scaling laws) in ten minutes or less. Get unblocked, and discover something new to use!
+  [text] And it keeps working after Sunday
+  [quote] For everyone applying for jobs right now, demonstrated AI competency is the #1 hire-able skill. The same account that got them through the weekend is the one that turns "I've heard of this" into "I've shipped with it” and "I have a certification on it", which is the sentence that lands in an interview. :)
+  [text] Access link:
+  [quote] 🔗 https://app.schole.ai/invite/bf6802b0-d507-49a4-a9fb-7a416ed2fc6e <https://app.schole.ai/invite/bf6802b0-d507-49a4-a9fb-7a416ed2fc6e>
+  [quote] Anyone who opens it gets a full account. Premium runs until 30 September, so it covers the whole weekend and a few days extra.
+  [text] A useful place to start
+  [quote] 🔗 https://schole.ai/learn <https://schole.ai/learn>
+  [quote] Over a hundred short guides to the tools people are hiring for experience with, each one free and open in about two minutes. Good for a team deciding what to use on Friday night, and good for a job search as well. They can start there before making an account, then use the link above for the full personalized track.

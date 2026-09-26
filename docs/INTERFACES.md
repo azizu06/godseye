@@ -1,0 +1,134 @@
+# God's Eye Interfaces (v1)
+
+Frozen contract between the iPhone app, the Mac backend, the dashboard, and the car.
+Change it only by agreement, and bump `version` when you do. Based on the v0.1 spec, section 13.
+
+## Network
+
+- All devices join one phone hotspot, 2.4 GHz ("Maximize Compatibility" on).
+- The Mac backend listens on port **8765**. Put the Mac's hotspot IP in each client's config; don't hardcode it.
+- Every message carries `"version": 1`.
+
+## Coordinates and units (v1)
+
+- **Use the ARKit world frame everywhere for now**: meters, right-handed, **+Y up**, origin where the AR session started.
+  This matches Three.js (also Y up), so the dashboard can draw positions directly.
+- The floor is the X–Z plane. The 2D occupancy grid uses (x, z).
+- 4×4 transforms are sent as **16 floats, column-major** (the same memory order as `simd_float4x4`).
+- The spec's separate rover base frame (x forward, z up) comes later, once the phone mount is calibrated.
+  Until then, the rover's position is the camera position projected onto the floor.
+
+## Timestamps
+
+- `t_capture`: `ARFrame.timestamp` in seconds (phone uptime clock). Use this to match pose, image and depth.
+- `t_wall_ms`: phone wall-clock milliseconds when sent. Used only for latency and staleness checks.
+
+---
+
+## 1. iPhone → Mac: `ws://<mac>:8765/phone`
+
+### 1a. `hello` (JSON text, once per connection)
+
+```json
+{ "version": 1, "type": "hello", "device": "iphone-17-pro", "session_id": "uuid",
+  "map_epoch": 1, "supports_scene_depth": true, "supports_mesh": true }
+```
+
+A new or reset AR session gets a new `session_id` and increments `map_epoch`. The backend never mixes data across epochs.
+
+### 1b. `pose` (JSON text, 30 Hz)
+
+```json
+{ "version": 1, "type": "pose", "session_id": "uuid", "map_epoch": 1, "frame_id": 1842,
+  "t_capture": 5123.4412, "t_wall_ms": 1790380848123,
+  "transform": [16 floats, column-major, camera to world],
+  "tracking": "normal" }
+```
+
+`tracking` is one of `normal`, `limited`, `not_available`. The backend stops the car on anything other than `normal`.
+
+### 1c. `frame` bundle (binary, 5–10 Hz)
+
+One binary WebSocket message, laid out as:
+
+```
+[uint32 LE: header_len][header JSON, UTF-8][JPEG bytes][depth bytes][confidence bytes]
+```
+
+Header JSON:
+
+```json
+{ "version": 1, "type": "frame", "session_id": "uuid", "map_epoch": 1, "frame_id": 1842,
+  "t_capture": 5123.4412, "t_wall_ms": 1790380848123,
+  "transform": [16 floats, column-major, camera to world, from the SAME ARFrame],
+  "tracking": "normal",
+  "image": { "width": 960, "height": 720, "jpeg_len": 81234,
+             "intrinsics": [fx, 0, 0, 0, fy, 0, cx, cy, 1],
+             "orientation": "landscape_right" },
+  "depth": { "width": 256, "height": 192, "format": "float32_m", "len": 196608 },
+  "confidence": { "width": 256, "height": 192, "format": "uint8_0_2", "len": 49152 } }
+```
+
+- **Image**: `ARFrame.capturedImage` downscaled to 960×720 and JPEG-encoded (quality around 0.6). Send it in the sensor's native orientation (landscape right), not rotated to match the screen.
+- **Intrinsics**: 3×3 column-major, **scaled to the JPEG you send**. Log the real `capturedImage` size on the phone first (often 1920×1440), then multiply fx and cx by `jpeg_width / native_width`, and fy and cy by `jpeg_height / native_height`.
+- **Depth**: `sceneDepth.depthMap`, float32 meters, little-endian, row-major.
+- **Confidence**: `sceneDepth.confidenceMap`, uint8 (0 = low, 1 = medium, 2 = high).
+- Never send pose from a different frame than the image and depth in the same bundle.
+
+### 1d. `mesh` (optional, P2)
+
+Leave it out of v1. Add it with its own message type when the point cloud works.
+
+---
+
+## 2. Mac → dashboard: `ws://<mac>:8765/live`
+
+JSON text messages, each with a `type`. The dashboard ignores types it doesn't know.
+
+| type | rate | payload |
+|---|---|---|
+| `health` | 2 Hz | `{ phone, car, detector: "ok"/"stale"/"down", pose_age_ms, mode, armed, stop_reason }` |
+| `pose` | 15 Hz | `{ position: [x,y,z], yaw_rad, tracking }` |
+| `points` | 2–5 Hz | `{ chunk_id, positions: [x,y,z,...], colors: [r,g,b,...] }`, downsampled; the dashboard appends chunks and caps the total |
+| `occupancy` | 1 Hz | `{ origin: [x,z], cell_m: 0.05, width, height, cells: "base64 uint8" }`, where 0 = unknown, 1 = free, 2 = occupied |
+| `path` | on change | `{ points: [[x,z], ...] }` |
+| `objects` | on change | `{ objects: [{ id, class, position: [x,y,z], confidence, first_seen, last_seen, observations, state }] }` |
+| `event` | on change | `{ kind: "new"/"moved"/"possible_move"/"not_found", object_id, old_position, new_position, displacement_m, t }` |
+
+`state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
+
+## 3. Dashboard → Mac: REST on `http://<mac>:8765`
+
+| Method | Path | Body | Does |
+|---|---|---|---|
+| POST | `/session` | none | New map session |
+| POST | `/arm` | none | Arm, only if health is all `ok` |
+| POST | `/stop` | none | Latch the stop state (always accepted) |
+| POST | `/mode` | `{ "mode": "manual" / "navigate" / "explore" }` | Stops first, then switches |
+| POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
+| POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
+| POST | `/rescan` | none | Save a baseline and start the revisit |
+| POST | `/ask` | `{ "question": "where's my backpack?" }` | Answer from saved objects (P2) |
+| GET | `/objects`, `/events`, `/health` | none | Current state |
+
+## 4. Mac → car
+
+**Phase 1 (tonight):** send the stock ElegooKit Wi-Fi commands, once triumph confirms the format from ELEGOO's official V4 repo.
+Write it behind one Python function, `drive(v_mps, yaw_rate_rps)`, so nothing else changes when phase 2 lands.
+
+**Phase 2:** the spec's drive command, sent over WebSocket to the ESP32 bridge at 20 Hz:
+
+```json
+{ "version": 1, "session_id": "uuid", "map_epoch": 1, "seq": 184, "mode": "navigate",
+  "v_mps": 0.12, "yaw_rate_rps": 0.20, "issued_at_ms": 812340, "valid_for_ms": 250,
+  "arm_token": "session-specific-token" }
+```
+
+- Speed limits: 0.10–0.15 m/s to start, 0.20 m/s maximum. Turning: 0.5 rad/s maximum.
+- The car stops if no valid command arrives within **300 ms**.
+
+## Fake data (so nobody waits)
+
+- **Backend:** `tools/fake_phone.py` replays a recorded session (or random poses) into `/phone`.
+- **Dashboard:** `tools/fake_live.py` emits every `/live` message type with made-up objects and a moving pose.
+- **iOS:** until the backend is up, test against `websocat -s 8765`.

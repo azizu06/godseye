@@ -1,0 +1,19 @@
+# Local runtime and credentials
+.venv/
+.env
+.env.*
+!.env.example
+*.pt
+*.db
+*.db-*
+__pycache__/
+*.py[cod]
+
+# Web, Python, and Xcode build outputs
+node_modules/
+.build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+.DS_Store
