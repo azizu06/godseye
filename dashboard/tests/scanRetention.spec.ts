@@ -99,7 +99,7 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
   const count = await page
     .getByTestId("surface-status")
     .getAttribute("data-map-triangles");
-  expect(Number(count)).toBeGreaterThan(532);
+  expect(Number(count)).toBeGreaterThan(0);
   await expect(
     page.getByRole("heading", { name: "Waiting for a view of the world" }),
   ).toHaveCount(0);
@@ -114,6 +114,12 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
   const map = json.colored_reconstruction;
   expect(map).not.toBeNull();
   expect(map.indices.length).toBeGreaterThan(0);
+  // Compression retains the full sweep with fewer vertices than its raw views.
+  expect(map.positions.length / 3).toBeLessThan(32 * 300);
+  await expect(page.locator(".scene-stat > span")).toHaveText("MAP VERTICES");
+  await expect(page.locator(".scene-stat > strong")).toHaveText(
+    (map.positions.length / 3).toLocaleString(),
+  );
   let min = Infinity,
     max = -Infinity,
     oldRed = false;
@@ -167,5 +173,8 @@ test("whole colored scan outlives recent views, phone loss and same-map reconnec
   await expect(page.getByTestId("surface-status")).toHaveAttribute(
     "data-map-triangles",
     "0",
+  );
+  await expect(page.locator(".scene-stat > span")).toHaveText(
+    "POINTS RECEIVED",
   );
 });

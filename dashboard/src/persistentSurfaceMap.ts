@@ -1,4 +1,5 @@
 import type { SurfacePatch } from "./surfaceTypes";
+import { simplifyPlanarPatch } from "./planarSurface";
 
 type Triple = [number, number, number];
 type Vertex = { position: Triple; color: Triple };
@@ -62,6 +63,7 @@ function append(mesh: Mesh, patch: SurfacePatch): Mesh {
   for (const index of patch.indices)
     if (index >= vertexCount)
       throw Error("Surface triangle index is outside its vertex buffer.");
+  patch = simplifyPlanarPatch(patch);
   const vertices = [...mesh.vertices],
     triangles = [...mesh.triangles],
     groups = [...(mesh.groups ?? mesh.vertices.map(() => -1))];
