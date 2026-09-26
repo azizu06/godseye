@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.audio import register_audio_routes
 from backend.changes import ChangeTracker
 from backend.drive import drive
 from backend.capture import CaptureBuffer
@@ -179,7 +180,8 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None) -> FastAPI:
+               point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
+               audio_provider=None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -243,6 +245,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
+    register_audio_routes(app, audio_provider)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 

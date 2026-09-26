@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import Scene from "./Scene";
+import { SpokenEvent } from "./SpokenEvent";
 import { useMission } from "./useMission";
 import {
   Dialog,
@@ -436,6 +437,11 @@ export default function App() {
                 <span className="count-badge">{mission.events.length}</span>
               </div>
               <p className="drawer-note">{historyStatus}</p>
+              <SpokenEvent
+                config={config}
+                scope={mission.mapKey}
+                events={mission.events}
+              />
               <EventList
                 events={mission.events}
                 objects={mission.objects}

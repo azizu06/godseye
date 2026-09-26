@@ -422,3 +422,9 @@ serial, vendor, motor or credential integration. Startup is disarmed. Manual
 leases, 20 Hz commands, detector and hardware watchdogs must be implemented and
 independently verified before anyone enables arming; navigation only reaches the
 logging stub. The skeleton cannot arm or drive the rover.
+
+## Spoken change events
+
+See [AUDIO.md](AUDIO.md) for offline-by-default synthesis, bounded audio playback,
+restart-safe deduplication, deterministic tone demo, and the separate live-provider
+spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
