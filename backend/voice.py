@@ -26,6 +26,8 @@ MAX_CONTEXT_OBJECTS = 40
 MAX_CONTEXT_CHANGES = 20
 MAX_ROUTE_POINTS = 32
 MAX_EXTRAS = 4096
+MAX_FRAME_DETECTIONS = 16
+MAX_APPROACH_POINTS = 16
 TRANSCRIBE_S, ANSWER_S, SPEAK_S = 15, 12, 15
 DEFAULT_BUDGET = 100  # paid questions per backend process (a new map does not reset it); never retried
 
@@ -70,17 +72,59 @@ def _age(now, t):
     return None if not isinstance(t, (int, float)) else max(0, round(now - t))
 
 
-def _route(points):
-    if not points:
-        return None
+def _sample(points, limit):
+    """At most `limit` points spread along the path, always keeping both ends."""
     n = len(points)
-    keep = sorted({round(i * (n - 1) / (MAX_ROUTE_POINTS - 1)) for i in range(MAX_ROUTE_POINTS)}) \
-        if n > MAX_ROUTE_POINTS else range(n)
-    return dict(kind='navigation_path', points=[[round(float(v), 2) for v in points[i]] for i in keep])
+    keep = sorted({round(i * (n - 1) / (limit - 1)) for i in range(limit)}) if n > limit else range(n)
+    return [[round(float(v), 2) for v in points[i]] for i in keep]
+
+
+def _route(points):
+    return dict(kind='rover_path', points=_sample(points, MAX_ROUTE_POINTS)) if points else None
+
+
+def _current(message, session):
+    return isinstance(message, dict) and session is not None and \
+        (message.get('session_id'), message.get('map_epoch')) == tuple(session)
+
+
+def frame_detections(view, session, *, now):
+    """The newest detection frame (#55 `app.state.detection_view`) as bounded text facts.
+
+    Only this map's frame counts; the image and pixel boxes never reach the answer model.
+    """
+    message = view[0] if isinstance(view, tuple) and view else None
+    if not _current(message, session):
+        return None
+    return dict(age_s=_age(now, message.get('t_wall_ms', 0) / 1000), detections=[
+        {'class': d.get('class'), 'confidence': d.get('confidence'), 'position_m': d.get('position'),
+         'depth_m': d.get('depth_m')} for d in message.get('detections', [])[:MAX_FRAME_DETECTIONS]])
+
+
+def approach_summary(route, session, *, now):
+    """The selected person's suggested walking approach (the last /route response), not the rover's path."""
+    if not _current(route, session):
+        return None
+    summary = dict(kind='suggested_walking_approach_to_person', status=route.get('status'),
+                   person_position_m=route.get('person'), start_m=route.get('start'),
+                   age_s=_age(now, route.get('t_wall_ms', 0) / 1000), verified=False)
+    if route.get('status') == 'ok' and route.get('points'):
+        summary.update(approach_m=_sample([route['approach']], 1)[0], length_m=route.get('length_m'),
+                       points=_sample(route['points'], MAX_APPROACH_POINTS))
+    else:
+        summary['reason'] = route.get('reason')
+    return summary
+
+
+def scene_extras(state, session, now):
+    """Live evidence beyond stored objects; each part is absent until its producer sets it."""
+    extras = dict(latest_frame=frame_detections(getattr(state, 'detection_view', None), session, now=now),
+                  approach_route=approach_summary(getattr(state, 'approach_view', None), session, now=now))
+    return {key: value for key, value in extras.items() if value} or None
 
 
 def _extras(source):
-    """Optional bounded evidence from a future producer (detections, suggested route); absent-safe."""
+    """Optional bounded live evidence (frame detections, selected approach route); absent-safe."""
     if source is None:
         return None
     try:

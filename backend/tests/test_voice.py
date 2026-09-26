@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.tests.test_changes import BACKPACK, FAR, REFS, Scene
-from backend.voice import MAX_CONTEXT_OBJECTS, VoiceProviders, grounding, providers_from_env
+from backend.voice import (MAX_CONTEXT_OBJECTS, VoiceProviders, approach_summary, frame_detections, grounding,
+                           providers_from_env, scene_extras)
 
 # Synthetic stand-in for a browser MediaRecorder clip: bytes are opaque to the backend.
 CLIP = b'\x1aE\xdf\xa3' + bytes(range(256)) * 8
@@ -112,6 +113,67 @@ class GroundingTests(unittest.TestCase):
         self.assertNotIn('extras', grounding(None, [], [], now=5., live=False, extras=lambda: 1 / 0))
 
 
+def detection_view(session=('s', 1), t_wall_ms=100_000, count=3):
+    """The (message, jpeg) pair #55 keeps as app.state.detection_view."""
+    detections = [dict(**{'class': 'person'}, confidence=.91, box=[1., 2., 30., 60.], position=[1.2, 0., 2.5],
+                       depth_m=2.1, object_id='p1')] + [
+        dict(**{'class': 'chair'}, confidence=.5, box=[0., 0., 5., 5.], position=None, depth_m=None, object_id=None)
+        for _ in range(count - 1)]
+    return (dict(version=1, type='detections', session_id=session[0], map_epoch=session[1], frame_id=7,
+                 t_capture=3., t_wall_ms=t_wall_ms, image=dict(width=640, height=480), source='backend_detector',
+                 classes=['person', 'chair'], detections=detections), b'\xff\xd8jpeg')
+
+
+def approach_view(session=('s', 1), status='ok', t_wall_ms=100_000, points=40):
+    """The last /route response plus t_wall_ms, as proposed for app.state.approach_view."""
+    base = dict(version=1, session_id=session[0], map_epoch=session[1], object_id='p1', person=[1.2, 2.5],
+                start=[0., 0.], occupancy_revision=4, t_wall_ms=t_wall_ms,
+                assumptions=dict(walker_radius_m=.25, unknown='blocked', doors='not_inferred', verified=False))
+    if status != 'ok':
+        return dict(base, status='unavailable', reason='no_observed_free_route')
+    route = [[i * .03, i * .06] for i in range(points)]
+    return dict(base, status='ok', points=route, approach=route[-1], length_m=2.6)
+
+
+class SceneEvidenceTests(unittest.TestCase):
+    def test_latest_frame_detections_are_bounded_current_map_facts_without_image_or_boxes(self):
+        summary = frame_detections(detection_view(count=40), ('s', 1), now=112.)
+        self.assertEqual(summary['age_s'], 12)
+        self.assertEqual(len(summary['detections']), 16)
+        self.assertEqual(summary['detections'][0], {'class': 'person', 'confidence': .91,
+                                                    'position_m': [1.2, 0., 2.5], 'depth_m': 2.1})
+        self.assertIsNone(summary['detections'][1]['position_m'])  # 2D-only stays unlocalized
+        self.assertNotIn('jpeg', json.dumps(summary))
+        for view, session in [(None, ('s', 1)), (detection_view(), ('s', 2)), (detection_view(), None),
+                              (('junk',), ('s', 1))]:
+            self.assertIsNone(frame_detections(view, session, now=112.))
+
+    def test_approach_route_is_a_bounded_unverified_walking_suggestion_for_the_current_map(self):
+        summary = approach_summary(approach_view(), ('s', 1), now=103.)
+        self.assertEqual(summary['status'], 'ok')
+        self.assertEqual(summary['kind'], 'suggested_walking_approach_to_person')
+        self.assertEqual(summary['person_position_m'], [1.2, 2.5])
+        self.assertEqual(summary['length_m'], 2.6)
+        self.assertEqual(summary['age_s'], 3)
+        self.assertFalse(summary['verified'])
+        self.assertLessEqual(len(summary['points']), 16)
+        self.assertEqual(summary['points'][-1], summary['approach_m'])
+        unavailable = approach_summary(approach_view(status='unavailable'), ('s', 1), now=103.)
+        self.assertEqual((unavailable['status'], unavailable['reason']), ('unavailable', 'no_observed_free_route'))
+        self.assertNotIn('points', unavailable)
+        self.assertIsNone(approach_summary(approach_view(), ('s', 2), now=103.))
+        self.assertIsNone(approach_summary(None, ('s', 1), now=103.))
+
+    def test_scene_extras_fit_the_grounding_budget_and_are_absent_safe(self):
+        class State:
+            pass
+        state = State()
+        self.assertIsNone(scene_extras(state, ('s', 1), now=112.))
+        state.detection_view, state.approach_view = detection_view(count=40), approach_view(points=500)
+        context = grounding(('s', 1), [], [], now=112., live=True, extras=lambda: scene_extras(state, ('s', 1), 112.))
+        self.assertEqual(set(context['extras']), {'latest_frame', 'approach_route'})
+
+
 class VoiceRouteTests(unittest.TestCase):
     def test_default_backend_reports_unavailable_and_never_reads_audio(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -143,6 +205,7 @@ class VoiceRouteTests(unittest.TestCase):
             self.assertEqual([c['kind'] for c in context['changes']], ['moved'])
             self.assertEqual(context['changes'][0]['class'], 'backpack')
             self.assertEqual(context['map']['session_id'], 's')
+            self.assertNotIn('extras', context)  # no live frame or selected route in a stored map
             self.assertEqual(voice.speaker.texts, ['The backpack was last seen near the far wall.'])
             self.assertEqual(result['status'], 'ok')
             self.assertEqual(result['question'], 'Where is the backpack?')
@@ -157,6 +220,21 @@ class VoiceRouteTests(unittest.TestCase):
             self.assertAlmostEqual(result['speech']['duration_s'], .2)
             # Neither the recording nor the spoken reply is stored.
             self.assertNotIn('spoken_audio', tables)
+
+    def test_live_frame_detections_and_selected_approach_route_reach_the_answer_model(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice = providers()
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                now_ms = int(time.time() * 1000)
+                client.app.state.detection_view = detection_view(t_wall_ms=now_ms)
+                client.app.state.approach_view = approach_view(t_wall_ms=now_ms)
+                self.assertEqual(client.post('/voice/ask', content=CLIP, headers=WEBM).status_code, 200)
+                client.app.state.approach_view = approach_view(session=('other', 1))
+                client.post('/voice/ask', content=CLIP, headers=WEBM)
+            extras = voice.answerer.calls[0][1]['extras']
+            self.assertEqual(extras['latest_frame']['detections'][0]['class'], 'person')
+            self.assertEqual(extras['approach_route']['status'], 'ok')
+            self.assertNotIn('approach_route', voice.answerer.calls[1][1]['extras'])
 
     def test_empty_transcript_is_no_speech_without_answer_or_speech(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -33,7 +33,8 @@ from backend.mapping import (MappingError, PointChunk, build_point_chunk, points
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
-from backend.voice import DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scout_position
+from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
+                           scout_position)
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
@@ -274,14 +275,14 @@ def create_app(db_path: str | None = None, build_points=None,
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
     register_audio_routes(app, audio_provider)
-    # Optional future evidence (detections, suggested approach route): set app.state.voice_extras
-    # to a callable returning a small JSON dict; absent means the answer model never sees it.
+    # Live extras come from app.state.detection_view (newest detection frame) and
+    # app.state.approach_view (last /route response); each is absent until its producer sets it.
     register_voice_routes(app, voice_providers, voice_budget, lambda: dict(
         session=shown_session(), objects=app.state.objects.snapshot(shown_session(), limit=None),
         events=app.state.changes.events(shown_session()),
         live=app.state.phone is not None and app.state.session is not None,
         scout=scout_position(rover_pose()), route=app.state.nav.path,
-        extras=getattr(app.state, 'voice_extras', None)))
+        extras=lambda: scene_extras(app.state, shown_session(), time.time())))
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match"],
                        expose_headers=["ETag", "X-Capture-Age-Ms"])

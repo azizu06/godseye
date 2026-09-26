@@ -26,8 +26,9 @@ as clear, recognizes people, or invents routes or destinations.
    shown map (active, else newest stored): up to 40 newest objects (class, Gemini
    crop label only when `labeled`, position in scan meters, state, observations,
    confidence, seconds since last seen), the 20 newest change events, whether the
-   phone is live, the fresh tracked scout position, and the navigation path when
-   one is being followed. Stored ids and images are not sent.
+   phone is live, the fresh tracked scout position, the rover's own path (`rover_path`)
+   when a navigation run follows one, and the live `extras` below. Stored ids and
+   images are not sent.
 5. `GeminiLabels.answer()` calls `generateContent` with a system instruction that
    limits answers to that JSON, requires last-seen wording instead of presence
    claims, forbids all-clear, person identification, invented routes and movement
@@ -45,12 +46,19 @@ Provider failures return sanitized 502s (`Speech transcription unavailable`,
 Nothing is retained: no clip, transcript, answer or reply audio is written to
 SQLite, captures or logs. Provider errors and bodies are never logged or returned.
 
-## Future evidence seam
+## Live frame and approach route
 
-A detection or route producer can set `app.state.voice_extras` to a callable that
-returns a small JSON dict (for example `{"detections": [...], "approach_route":
-{...}}`). It is added to the grounding as `extras` only when it serializes to at
-most 4 KB; missing, failing or oversized extras are omitted.
+`scene_extras()` adds two optional parts to the grounding as `extras`, each only for
+the shown map and absent until its producer sets it:
+
+- `latest_frame`: from `app.state.detection_view` (newest detection frame, PR #55):
+  frame age and up to 16 detections as class, confidence, `position_m` (null when
+  the box had no reliable depth) and `depth_m`. No image or pixel boxes are sent.
+- `approach_route`: from `app.state.approach_view`, the last `/route` response
+  (PR #56) plus `t_wall_ms`. It is summarized as the selected person's position, a
+  status (`ok` with length, approach point and at most 16 points, or `unavailable`
+  with a reason) and age, always `verified: false`. This is a walking suggestion
+  and is distinct from the grounding's `route` (the rover's own `rover_path`).
 
 ## Live configuration
 
