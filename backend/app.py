@@ -28,6 +28,8 @@ from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import MappingError, build_point_chunk, points_message
 from backend.objects import ObjectMemory, detect_objects
 from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, OccupancyGrid
+from backend.navigation import path_message
+from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
 logger = logging.getLogger(__name__)
@@ -168,7 +170,7 @@ class LatestFrame:
 
 def create_app(db_path: str | None = None, build_points=None,
                detector=None, weights: str | None = None, capture_directory: str | None = None,
-               point_settings: PointSettings | None = None) -> FastAPI:
+               point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -215,6 +217,10 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.map_stats = Counter()
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.occupancy_stats = Counter()
+        app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
+                                  occupancy=lambda: app.state.occupancy, drive=lambda v, w: drive(v, w),
+                                  stop=nav_stop, publish=publish,
+                                  armed_mode=lambda: app.state.mode if app.state.armed else None)
         task = asyncio.create_task(watchdog())
         try:
             yield
@@ -222,6 +228,7 @@ def create_app(db_path: str | None = None, build_points=None,
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            await app.state.nav.aclose()
             stop('shutdown')
             db.close()
 
@@ -233,12 +240,25 @@ def create_app(db_path: str | None = None, build_points=None,
     def stop(reason):
         app.state.armed = False
         app.state.stop_reason = reason
+        if getattr(app.state, 'nav', None) is not None:
+            app.state.nav.halt()  # end any goal/explore run and clear its path first
         drive(0.0, 0.0)
         session = app.state.session or (None, None)
         app.state.db.execute(
             'INSERT INTO health_events(t_wall_ms,session_id,map_epoch,component,reason,mode,armed) VALUES(?,?,?,?,?,?,?)',
             (int(time.time()*1000), *session, 'backend', reason, app.state.mode, 0))
         app.state.db.commit()
+
+    def nav_stop(reason):
+        stop(reason)
+        publish(health())
+
+    def rover_pose():
+        pose = app.state.pose
+        if pose is None or app.state.pose_at is None:
+            return None
+        x, z, yaw = pose_from_transform(pose.transform)
+        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
 
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
@@ -397,6 +417,9 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
                 if app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
+            # Explore runs whenever the rover is armed in explore mode; arming is unchanged.
+            if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
+                app.state.nav.start_explore()
             ticks += 1
             if ticks % 10 == 0:
                 publish(health())
@@ -502,7 +525,22 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/goal')
     async def goal(body: Goal):
-        raise HTTPException(501, 'Navigation is not implemented')
+        # No disarmed preview: a drawn path must mean the rover is about to follow it.
+        if not app.state.armed or app.state.mode != 'navigate':
+            raise HTTPException(409, 'Arm in navigate mode before choosing a goal')
+        session = app.state.session
+        result = await app.state.nav.plan_once((body.x, body.z))
+        if not app.state.armed or app.state.mode != 'navigate' or app.state.session != session:
+            raise HTTPException(409, 'Stopped while planning')
+        if result is None:
+            nav_stop('pose_stale')
+            raise HTTPException(409, 'No current rover pose')
+        if not result.ok:
+            reason = PLAN_STOP_REASONS.get(result.reason, 'no_path')
+            nav_stop(reason)
+            raise HTTPException(409, reason)
+        app.state.nav.start_goal((body.x, body.z), result)
+        return dict(version=1, goal=[body.x, body.z], points=result.points)
 
     @app.post('/rescan')
     async def rescan():
@@ -657,7 +695,7 @@ def create_app(db_path: str | None = None, build_points=None,
         async def send():
             await ws.send_json(health())
             await ws.send_json(objects_message(shown_session()))
-            await ws.send_json(dict(version=1, type='path', points=[]))
+            await ws.send_json(path_message(app.state.nav.path))
             if (grid_message := occupancy_snapshot()) is not None:
                 await ws.send_json(grid_message)
             while True:

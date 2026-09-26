@@ -9,6 +9,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke` (see Car-ready smoke there).
 
 - Live `points`, `objects` and `event` payloads, limits, object memory and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Rescan and change events).
+- `/goal`/explore planning, follow loop, stop reasons and the unverified yaw-sign/mount/turn-in-place car dependencies: `backend/README.md` (Navigation).
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.

@@ -335,6 +335,60 @@ observations come from the spec), tested only on synthetic scenes
 (`backend/tests/test_changes.py`); real-scene accuracy, depth noise and ARKit
 drift are unmeasured.
 
+## Navigation
+
+`POST /goal` and explore mode plan on the active session's occupancy grid
+(`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
+(`backend/navigator.py`). Commands reach only the logging-only `drive()`, and
+`/arm` still refuses while the car reports down, so runs are exercised only by
+tests that set the armed flag directly.
+
+- **Starting:** `/goal {x, z}` needs the backend armed in `navigate` mode (409
+  otherwise; there is no disarmed preview). It plans from the current pose (at
+  most 250 ms old), answers `{version, goal, points}`, publishes `path` and starts
+  following; a new goal replaces the current run. Explore starts by itself
+  whenever the backend is armed in `explore` mode and drives to the nearest
+  reachable frontier (a known-free cell next to unknown or the edge of the cropped
+  grid), then the next, until none is left. Before any floor is mapped, goals plan
+  straight through unknown and explore waits in place with zero drive.
+- **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, occupied
+  cells inflated by a 0.15 m radius plus 0.03 m margin, line-of-sight shortcuts,
+  waypoints at most 0.25 m apart, at most 200,000 expansions. Unknown cells are
+  traversable at 3x the cost of free ones (depth sees only a few meters ahead)
+  and the grid is padded with unknown so goals beyond the mapped area still plan
+  (up to 1,000,000 cells).
+- **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `drive()` call per
+  tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
+  the contract's 0.20 m/s and 0.5 rad/s. Heading errors above 0.6 rad turn in
+  place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
+- **Replanning:** a full replan from the current pose about once per second; a
+  new map revision also triggers a blocked-path check (at most 4 Hz) that halts
+  and replans at once when the rest of the path now passes within the inflation
+  radius of an occupied cell. `path` is published only when its points change,
+  and new `/live` viewers get the current path.
+- **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
+  zero drive, health event) and publishes an empty `path`; health reports the
+  reason. `arrived`, `explore_complete`; `no_path`, `search_limit`,
+  `destination_blocked` (goal occupied or inside the inflation), `destination_unknown`,
+  `out_of_bounds`, `start_blocked`; `pose_stale` (no pose within 250 ms),
+  `tracking_lost`; `no_progress` (motion commanded while the pose moved under
+  5 cm and 0.15 rad for 5 s); `nav_error` (planner or loop failure); `disarmed`
+  (defensive: the armed mode changed without a stop). Operator stop, mode change,
+  map reset, phone loss, tracking loss, the pose watchdog and shutdown end the
+  run through `stop` as well. A `/goal` that cannot be planned answers 409 with
+  the reason and disarms.
+- **Unverified interface dependencies** (rover issue #6): positive
+  `yaw_rate_rps` means increasing `yaw_rad`, a left (counterclockwise from above)
+  turn with +Y up, and the car adapter must confirm that sign; heading is the
+  camera forward, so the phone must face the rover's direction of travel (no
+  mount calibration); turning in place assumes a skid- or differential-steer
+  base; radius, margin, speeds and tolerances are placeholders, not measured car
+  parameters. Because the logging-only car never moves, a live run ends with
+  `no_progress` after 5 s.
+- **Tests:** `backend/tests/test_navigation.py` (planner, follower, 400 x 400
+  timing) and `backend/tests/test_navigator.py` (runs against a kinematic
+  stand-in rover, `/goal` and app-level stops).
+
 ## REST
 
 All successful responses carry `version: 1`. Errors use FastAPI's standard
@@ -344,10 +398,10 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 |---|---|
 | POST `/session` | Create map identity, revoke phone, clear current pose and disarm |
 | POST `/arm` | 409 while any health component is not ok; car is always down here |
-| POST `/stop` | Always accepted; latch operator stop and log zero drive |
+| POST `/stop` | Always accepted; latch operator stop, end any navigation run and log zero drive |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed; motion unimplemented |
-| POST `/goal` | Validate x/z; 501 navigation unimplemented |
+| POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Validate question; 501 query unimplemented |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
@@ -356,6 +410,6 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
 serial, vendor, motor or credential integration. Startup is disarmed. Manual
-leases, 20 Hz commands, navigation, detector and hardware watchdogs must be
-implemented and independently verified before anyone enables arming. The
-skeleton cannot arm or drive the rover.
+leases, 20 Hz commands, detector and hardware watchdogs must be implemented and
+independently verified before anyone enables arming; navigation only reaches the
+logging stub. The skeleton cannot arm or drive the rover.
