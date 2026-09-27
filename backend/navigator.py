@@ -20,6 +20,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Callable
 
 import numpy as np
@@ -27,7 +28,8 @@ import numpy as np
 from backend.exploration import ExplorationMemory
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
-                                path_blocked, path_message, plan_path, preferred_explore_frontier)
+                                path_blocked, path_message, plan_approach, plan_path,
+                                preferred_explore_frontier)
 from backend.occupancy import FREE, OCCUPIED, OccupancySnapshot
 from backend.scan_pacing import CameraPose, ScanPacer
 
@@ -314,7 +316,7 @@ class Navigator:
 
     # Planning runs in worker threads -------------------------------------------------
 
-    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None, excluded=()):
+    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None, excluded=(), approach=False):
         """Read the authoritative snapshot in this worker, then plan only known-clear floor."""
         def straight_ahead(points):
             fx, fz = math.sin(yaw), math.cos(yaw)
@@ -367,7 +369,7 @@ class Navigator:
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
                     if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
                         goal = farther
-        result = plan_path(grid, start, goal, config)
+        result = plan_approach(grid, start, goal, config) if approach else plan_path(grid, start, goal, config)
         if explore and result.reason in FRONTIER_RESELECT_REASONS:
             self.exploration.reject(snapshot.session, goal)
             # An implicit frontier may disconnect or lose route-cell clearance
@@ -404,14 +406,19 @@ class Navigator:
                 problem = 'path_blocked'
         return 'check', snapshot, problem
 
-    async def plan_once(self, goal) -> PlanResult | None:
-        """Initial plan for /goal; the app captures its arm generation before this await."""
+    async def plan_once(self, goal, approach: bool = False) -> PlanResult | None:
+        """Initial plan for /goal; the app captures its arm generation before this await.
+
+        ``approach`` lets an occupied or unknown clicked target resolve to a reachable
+        stand-off (``plan_approach``); the result's last waypoint is then the goal to follow.
+        """
         pose = self.fresh_pose()
         if pose is None:
             return None
         if pose.tracking != 'normal':
             return PlanResult([], 'tracking_lost')
-        return (await asyncio.to_thread(self._plan, self._occupancy, (pose.x, pose.z), goal, False))[3]
+        plan = partial(self._plan, approach=True) if approach else self._plan
+        return (await asyncio.to_thread(plan, self._occupancy, (pose.x, pose.z), goal, False))[3]
 
     # Run lifecycle -----------------------------------------------------------------
 

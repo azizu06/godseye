@@ -921,7 +921,9 @@ export function useMission() {
     (x: number, z: number) => {
       if (!Number.isFinite(x) || !Number.isFinite(z))
         return Promise.resolve(false);
-      return handoff("navigate", () => send("/goal", { x, z }));
+      // approach: a click on a box, wall or unknown space drives to the nearest
+      // reachable stand-off the planner accepts, instead of refusing and disarming.
+      return handoff("navigate", () => send("/goal", { x, z, approach: true }));
     },
     [handoff, send],
   );

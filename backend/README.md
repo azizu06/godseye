@@ -599,6 +599,18 @@ while the default car reports down, so runs are exercised by tests with
   reachable frontier (a known-free cell next to unknown or the edge of the cropped
   grid), then the next, waiting and checking again when none is left. Before a calibrated floor is mapped, both goals and explore stop with the
   map readiness reason; neither can move into unknown space.
+- **Click-to-approach:** `/goal {x, z, approach: true}` (default `false`, which
+  keeps the behavior above byte-for-byte) accepts a clicked thing rather than a
+  floor cell. When the target is occupied, unknown or inside the footprint band,
+  `plan_approach` (`backend/navigation.py`) tries the planner's own traversable
+  cells within 1.5 m of it, nearest first with up to 0.5 m of added cost for lying
+  behind the target as seen from the rover, planning at most 8 of them with the
+  unchanged `plan_path`. The first that plans is followed; the answer is
+  `{version, goal, target, points}` with `goal` the stand-off (the last waypoint)
+  and `target` the click. No reachable stand-off keeps the original
+  `destination_blocked`/`destination_unknown` refusal and stop. Clearance, inflation, the
+  arm requirement and Stop are unchanged; the dashboard's Navigate clicks always
+  send `approach: true`.
 - **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, line-of-sight
   shortcuts, waypoints at most 0.25 m apart, at most 200,000 expansions. Every path
   cell must be known free throughout the calibrated `inflation_m` footprint disc.
@@ -678,7 +690,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/stop` | Always accepted; latch operator stop, end any navigation run and send an explicit zero |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
 | POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or authority is stale; generation-bound joystick takeover on the iPhone adapter (below), then a 250 ms command lease and health response |
-| POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
+| POST `/goal` | Validate x/z (optional `approach`); 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |
 | GET `/voice`, POST `/voice/ask` | Push-to-talk Q&A: availability, then clip -> transcript -> grounded answer -> speech (see [VOICE.md](VOICE.md); off by default) |
