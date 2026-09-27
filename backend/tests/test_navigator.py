@@ -555,9 +555,11 @@ class LiveNavigationTests(unittest.TestCase):
             self.arm(client, phone, 'explore')
             self.keep_fresh(phone, lambda: len(self.sends()) >= 5)
             self.assertTrue(client.app.state.nav.active)
+            self.assertIsNone(client.get('/health').json()['navigation_wait_reason'])
             client.post('/stop')
             self.assertFalse(client.app.state.nav.active)
             self.assertFalse(client.get('/health').json()['armed'])
+            self.assertIsNone(client.get('/health').json()['navigation_wait_reason'])
 
 
 if __name__ == '__main__':

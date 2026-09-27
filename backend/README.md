@@ -570,11 +570,25 @@ while the default car reports down, so runs are exercised by tests with
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
   place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
-- **Replanning:** a full replan from the current pose about once per second; snapshot
+  Before submitting, the runner checks the immediate footprint step and samples
+  the requested pursuit arc at half-cell spacing up to its target. If the arc cuts
+  a corner, it halves lookahead down to the larger of cell size and arrival
+  tolerance, retaining the same path and original configured lookahead on clear
+  stretches. These are nominal requested kinematics, not measured prototype PWM
+  arcs or a stopping-distance certificate; no footprint or margin is reduced.
+- **Replanning:** a full replan from the current pose every 4 s, sooner near an
+  Explore frontier or after a blocked path; snapshot
   checks run at most 4 Hz regardless of `/live` publication. Each reads accepted
   sensing time, and a new revision checks the remaining path. An obstructed path
-  ends the run with `path_blocked`, zeroes and disarms. Current and next-tick pursuit
-  footprint positions must also remain clear, so pursuit cannot cut an unsafe corner.
+  ends an explicit goal run with `path_blocked`, zeroes and disarms. Explore instead
+  pauses at zero and replans; a proven disconnected frontier yields to another
+  reachable frontier. If no pursuit candidate is clear, Explore waits at zero with
+  `health.navigation_wait_reason: "no_feasible_step"`. Identical map/path/pose
+  replans retain that rejection; changed map, route or meaningful pose evidence
+  permits another attempt. The route remains visible while this wait is active.
+  Other zero waits report their plan/pause reason, including `explore_complete`
+  when no reachable frontier exists; waits still validate current accepted sensing.
+  Current and next-tick pursuit footprint positions must remain clear.
   Reaching an explore frontier discards pending planning/check work before selecting
   the next frontier (the landed exploration race fix). `path` is published only when
   its points change, and new `/live` viewers get the current path.

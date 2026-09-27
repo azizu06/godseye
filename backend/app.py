@@ -501,7 +501,8 @@ def create_app(db_path: str | None = None, build_points=None,
                 detector = 'ok'
         return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
-                    stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry)
+                    stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry,
+                    navigation_wait_reason=app.state.nav.waiting_reason)
 
     def car_health():
         try:

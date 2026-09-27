@@ -98,6 +98,14 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 
+`health` optionally includes `navigation_wait_reason`: `null` while navigation is
+not waiting, or an active Explore zero-motion reason such as `no_feasible_step`,
+`path_blocked`, `start_blocked`, `no_path`, `search_limit`, `explore_complete`, or
+the prototype sensor/relay pause reason. This does not disarm or grant motion
+authority. `no_feasible_step` retains the safe planned route but has no supported
+clear pursuit command; identical replans do not retry it until map, route or pose
+evidence changes. Terminal stops still use `stop_reason` and clear this wait reason.
+
 `health` optionally includes `mission_entry` (also in `GET /health` and arm responses):
 `null`, or `{ session_id, map_epoch, start: [x,z], frame_id, t_capture, started_at_ms,
 basis: "explore_start" }`. It is the measured camera-floor projection at the first

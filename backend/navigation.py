@@ -710,7 +710,7 @@ class PurePursuit:
             x, z = bx, bz
         return self.path[-1]
 
-    def step(self, x: float, z: float, yaw_rad: float) -> Command:
+    def step(self, x: float, z: float, yaw_rad: float, *, lookahead_m: float | None = None) -> Command:
         cfg = self.config
         if not self.path:
             return Command(0., 0., 'empty')
@@ -729,7 +729,7 @@ class PurePursuit:
             target = goal
         else:
             self.segment, t = self._closest(x, z)
-            target = self._lookahead(self.segment, t, cfg.lookahead_m)
+            target = self._lookahead(self.segment, t, cfg.lookahead_m if lookahead_m is None else lookahead_m)
         dx, dz = target[0] - x, target[1] - z
         alpha = _wrap(math.atan2(dx, dz) - yaw_rad)  # + means target is to the left
         if abs(alpha) > cfg.rotate_in_place_rad:
