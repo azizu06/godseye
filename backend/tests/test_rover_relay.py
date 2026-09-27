@@ -116,6 +116,32 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.car.send(self.drive(2))
         self.assertEqual(self.car.next_message()['seq'], 2)
 
+    async def test_arm_waits_for_fresh_feedback_across_brief_permit_gap(self):
+        self.car.zero(DriveStop(None, 0, 0))
+        pending = asyncio.create_task(self.car.prepare(SESSION))
+        await self.settle()
+        stop = self.car.next_message()
+        self.car.receive(dict(version=1, type='ack', id='Z' + stop['id']))
+        self.now += .21
+        await self.settle()
+        self.assertFalse(pending.done(), 'a brief gap must not fail the explicit Arm')
+        self.assertIsNone(self.car.next_message(), 'Arm needs a fresh post-Stop permit')
+        self.feedback()
+        await self.settle()
+        self.now += .21
+        self.assertIsNone(self.car.next_message(), 'an expired permit cannot dispatch Arm')
+        self.assertFalse(pending.done())
+        self.feedback()
+        arm = self.car.next_message()
+        self.assertEqual((arm['type'], arm['permit']), ('arm', self.car.status.permit))
+        self.car.receive(dict(version=1, type='ack', id='A' + SESSION.upper()))
+        self.now += .21
+        await self.settle()
+        self.assertFalse(pending.done(), 'post-Arm feedback must also be fresh')
+        self.feedback()
+        await pending
+        self.assertEqual(self.car.armed_session, SESSION.upper())
+
     async def test_stale_feedback_wrong_capture_and_unmeasured_rates_refused(self):
         await self.arm()
         with self.assertRaises(ValueError): self.car.send(self.drive(yaw_rate_rps=.2))

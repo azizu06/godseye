@@ -85,6 +85,9 @@ that new session. Its `{A<session>}` acknowledgement follows the UART Stop hando
 all previous permits are invalidated. Wait for this acknowledgement and a subsequent
 permit before sending movement. Retrying an arm with the same session is refused;
 a missing acknowledgement requires Stop and a new explicit arm, not automatic retry.
+During the explicit Stop/Arm acknowledgement barrier, a brief gap in ESP status
+holds the pending Arm until a fresh permit arrives; the barrier still times out
+after three seconds, and no drive command uses a stale permit.
 
 `N=202,H=<session>,C=<permit>,S=<increasing uint32>,D1=<direction>,D2=<PWM>,T=200`
 becomes the bounded stock `N=2` packet only when the session, sequence and permit

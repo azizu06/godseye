@@ -160,14 +160,14 @@ class RelayCar:
         if not re.fullmatch(r'[0-9a-fA-F]{32}', session) or self.health() != 'ok':
             raise ValueError('Rover cannot arm')
         revision, stop_id = self.revision, self.stop_id
-        deadline = self.clock() + 2.
+        deadline = self.clock() + 3.
 
         async def wait_for(predicate):
             while True:
                 self.changed.clear()
-                if revision != self.revision or self.health() != 'ok':
+                if revision != self.revision or self.blockers() not in ([], ['rover_feedback_stale']):
                     raise ValueError('Stopped or lost feedback during arm')
-                if predicate():
+                if self.health() == 'ok' and predicate():
                     return
                 remaining = deadline - self.clock()
                 if remaining <= 0:
@@ -197,6 +197,11 @@ class RelayCar:
                 self.awaiting = 'Z' + message['id']
             else:
                 if self.health() != 'ok':
+                    if self.blockers() == ['rover_feedback_stale']:
+                        # Wait for a new ESP permit instead of consuming this
+                        # one-time Arm or retiring the explicit arm request.
+                        self.control = message
+                        return None
                     self.zero(DriveStop(None, 0, 0))
                     return self.next_message()
                 message = dict(message, permit=self.status.permit)
