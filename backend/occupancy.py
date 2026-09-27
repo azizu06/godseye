@@ -170,6 +170,7 @@ class OccupancyGrid:
         self._dirty = False
         self._last_at = None
         self._last_picture = None
+        self._floor_y = None  # Accepted floor in this AR map; reset with the grid.
         self._lock = threading.Lock()
 
     @property
@@ -205,6 +206,20 @@ class OccupancyGrid:
             self._dirty = True
             self.revision += 1
 
+    def _classify(self, keys, hits):
+        # Looking toward walls must not erase a floor already observed in this
+        # map. Prefer a fresh valid estimate (including a newly seen lower
+        # floor); fall back to its last observed height, never old free cells.
+        picture = classify(keys, hits, self.obstacle_from_m)
+        if picture is not None:
+            with self._lock:
+                self._floor_y = picture[3]
+            return picture
+        with self._lock:
+            floor_y = self._floor_y
+        return (classify(keys, hits, self.obstacle_from_m, floor_y=floor_y)
+                if floor_y is not None else None)
+
     def snapshot(self):
         """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
 
@@ -213,7 +228,7 @@ class OccupancyGrid:
         """
         with self._lock:
             revision, keys, hits = self.revision, self._keys.copy(), self._hits.copy()
-        picture = classify(keys, hits, self.obstacle_from_m)
+        picture = self._classify(keys, hits)
         if picture is None:
             return revision, None, None
         col0, row0, cells, _ = picture
@@ -232,7 +247,7 @@ class OccupancyGrid:
                 return None
             self._dirty = False
             keys, hits = self._keys.copy(), self._hits.copy()
-        picture = classify(keys, hits, self.obstacle_from_m)
+        picture = self._classify(keys, hits)
         if picture is None:
             return None
         col0, row0, cells, floor_y = picture
@@ -254,7 +269,7 @@ class OccupancyGrid:
         with self._lock:
             revision, accepted_at = self.revision, self.accepted_at
             keys, hits = self._keys.copy(), self._hits.copy()
-        picture = classify(keys, hits, self.obstacle_from_m)
+        picture = self._classify(keys, hits)
         origin = cells = floor_y = None
         if picture is not None:
             col0, row0, cells, floor_y = picture
@@ -291,13 +306,14 @@ def estimate_floor(levels: np.ndarray):
     return float(np.average(centers, weights=area[lo:hi]))
 
 
-def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M):
+def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M, *, floor_y=None):
     """(first column, first row, uint8 cells[rows=z, cols=x], floor_y) of the known area, or None."""
     if not len(keys):
         return None
     levels = keys % _LEVELS
     columns = keys // _LEVELS  # ix * SIDE + iz
-    floor_y = estimate_floor(levels)
+    if floor_y is None:
+        floor_y = estimate_floor(levels)
     if floor_y is None:
         return None
     height = Y_MIN_M + (levels + .5) / _SLICES_PER_M - floor_y
