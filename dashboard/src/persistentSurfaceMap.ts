@@ -588,6 +588,8 @@ export class PersistentSurfaceMap {
   private sentVertices = 0;
   private sentIndices = 0;
   private replaceDelta = true;
+  /** First published index a face deletion changed; earlier topology is unchanged. */
+  private rewriteFrom = Infinity;
   private spacing: number;
   private clustered = false;
   private saturated = false;
@@ -759,6 +761,7 @@ export class PersistentSurfaceMap {
       knownTriangles: this.knownTriangles,
       revision: this.revision,
       replaceDelta: this.replaceDelta,
+      rewriteFrom: this.rewriteFrom,
       saturated: this.saturated,
       retirementCursor: this.retirementCursor,
       recentRetirementCursor: this.recentRetirementCursor,
@@ -823,7 +826,9 @@ export class PersistentSurfaceMap {
     if (!removed.size) return 0;
     // Retain stable vertex IDs and delete only affected dedup entries. Unused
     // slots are reclaimed by the existing budget path, while exports compact them.
+    let first = Infinity;
     for (const index of removed) {
+      first = Math.min(first, index);
       const face = triangles[index],
         key = triangleKey(face);
       this.knownTriangles.delete(key);
@@ -844,7 +849,9 @@ export class PersistentSurfaceMap {
     };
     this.mesh = next;
     this.cached = null;
-    this.replaceDelta = true;
+    // Vertex IDs stay stable, so only topology from the first removed face
+    // changes. Positions/colors are not republished; coarsening still replaces.
+    this.rewriteFrom = Math.min(this.rewriteFrom, 3 * first);
     this.revision++;
     this.saturated = false;
     this.retirementCursor %= Math.max(1, next.triangles.length);
@@ -1065,7 +1072,9 @@ export class PersistentSurfaceMap {
   }
   takeDelta(): SurfaceDelta {
     const vertexStart = this.replaceDelta ? 0 : this.sentVertices;
-    const indexStart = this.replaceDelta ? 0 : this.sentIndices;
+    const indexStart = this.replaceDelta
+      ? 0
+      : Math.min(this.sentIndices, this.rewriteFrom);
     const positions = new Float32Array(
       (this.mesh.vertices.length - vertexStart) * 3,
     );
@@ -1093,6 +1102,7 @@ export class PersistentSurfaceMap {
     this.sentVertices = delta.vertexCount;
     this.sentIndices = delta.indexCount;
     this.replaceDelta = false;
+    this.rewriteFrom = Infinity;
     return delta;
   }
   snapshot(): SurfacePatch | null {
