@@ -470,6 +470,47 @@ observations come from the spec), tested only on synthetic scenes
 (`backend/tests/test_changes.py`); real-scene accuracy, depth noise and ARKit
 drift are unmeasured.
 
+## Recent motion evidence
+
+Navigation uses a conservative motion snapshot separately from the historical
+visual occupancy grid. The explicitly selected upstream prototype profile remains
+available and uncalibrated; its medium-confidence carpet evidence is subject to
+the same conservative hazard and fresh-clearance checks. No estimate becomes a
+physical measurement. Any accepted high-confidence obstacle-height voxel vetoes
+motion in its column immediately, even if hundreds of earlier frames saw floor
+there. Historical floor votes cannot outvote the hazard. The veto remains for the
+session; a later empty view does not prove the obstacle was removed. The visual
+map keeps its existing multi-hit/ratio policy, so its colors are not motion permission.
+
+Each retained floor voxel records a fixed monotonic observation estimate taken
+at WebSocket receipt, subtracting the validated positive capture wall-clock age
+(up to the existing 250 ms ingress tolerance). A tolerated future phone clock
+never moves this estimate beyond receipt. Queuing and worker computation cannot
+renew it; commit time remains separate for map activity. Before every nonzero navigation command, the entire measured
+inflated footprint and sampled swept path must have floor evidence no older than
+`NavSettings.map_max_age_s` (currently 1 second, the existing sensing deadline).
+Fresh frames elsewhere, unchanged publication timestamps, and empty frames do not
+refresh these cells. This also applies to rotations: overlap with the preceding
+footprint never grants fresh clearance. `/autonomy` exposes
+`sensing_clearance_unknown` when the current envelope lacks this evidence; a run
+stops/disarms with that reason if it loses clearance. If new in-bounds voxel
+information cannot fit in the bounded store, `motion_evidence_capacity` blocks
+motion until a new map rather than silently dropping a newly seen hazard.
+
+A fixed forward camera may not observe the floor under/behind the rover or its
+clearance margins. Such a mount will refuse motion or stop when those observations
+expire. No free padding or static-scene assumption fills this blind region. A
+manual clearance sweep alone does not grant indefinite permission. Physical
+mount/coverage verification remains required; these tests establish software
+refusal, not working classroom autonomy. The height classifier still cannot prove
+that a tabletop-only plane is the floor, detect hazards absent from the depth
+samples, or certify full 3D/dynamic-obstacle clearance. These limits remain even
+with a calibrated chassis and current observations.
+
+Hardware-free regressions: `python -m unittest backend.tests.test_motion_evidence -v`.
+They cover dense old floor/new obstacles, capacity refusal, per-cell freshness,
+stationary expiry, command suppression, and a perspective mounted-camera blind area.
+
 ## Navigation
 
 `POST /goal` and explore mode plan on the active session's occupancy grid

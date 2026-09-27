@@ -79,7 +79,8 @@ class LiveSensingTests(unittest.TestCase):
             wait_for(lambda: any(call[0] == 'send' and call[1] for call in car.calls))
             source.frames = False
             wait_for(lambda: not client.app.state.armed)
-            self.assertEqual(client.app.state.stop_reason, 'sensing_stale')
+            # A footprint cell may expire before the globally newest frame.
+            self.assertIn(client.app.state.stop_reason, ('sensing_stale', 'sensing_clearance_unknown'))
             self.assertEqual(car.calls[-1], ('zero',))
             self.assertEqual(client.app.state.nav.path, [])
             self.assertEqual(client.get('/health').json()['phone'], 'ok')

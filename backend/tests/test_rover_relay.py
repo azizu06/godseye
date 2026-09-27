@@ -260,11 +260,11 @@ class RelayHTTPTests(unittest.TestCase):
         geometry = RoverCalibration.model_validate(dict(TEST_CALIBRATION, clearance_margin_m=.15))
         self.rehearse_rgbd(fixture(), geometry)
 
-    def test_prototype_rgbd_goal_and_stale_sensing_stop(self):
+    def test_prototype_profile_does_not_bypass_unobserved_clearance(self):
         from backend.prototype import PrototypeActuation, prototype_geometry
-        self.rehearse_rgbd(PrototypeActuation(), prototype_geometry(.24, .14))
+        self.rehearse_rgbd(PrototypeActuation(), prototype_geometry(.24, .14), expect_clearance_refusal=True)
 
-    def rehearse_rgbd(self, actuation, geometry):
+    def rehearse_rgbd(self, actuation, geometry, expect_clearance_refusal=False):
         car = RelayCar(KEY, actuation)
         app = create_app(db_path=':memory:', car=car, calibration=geometry,
                          detector=EmptyDetector(), capture_directory='')
@@ -295,6 +295,16 @@ class RelayHTTPTests(unittest.TestCase):
                     worker = threading.Thread(target=firmware, daemon=True)
                     worker.start()
                     try:
+                        if expect_clearance_refusal:
+                            # This fixture's camera does not freshly observe the
+                            # prototype profile's larger uncertainty envelope.
+                            wait_for(lambda: client.get('/health').json()['car'] == 'ok')
+                            readiness = client.get('/autonomy').json()
+                            self.assertIn('sensing_clearance_unknown', readiness['blockers'])
+                            self.assertFalse(readiness['ready'])
+                            self.assertEqual(client.post('/arm', headers=headers).status_code, 409)
+                            self.assertFalse(any(p['type'] == 'command' for p in packets))
+                            return
                         wait_for(lambda: client.get('/autonomy').json()['ready'])
                         self.assertEqual(client.post('/mode', json={'mode': 'navigate'}, headers=headers).status_code, 200)
                         response = client.post('/arm', headers=headers)
@@ -307,7 +317,7 @@ class RelayHTTPTests(unittest.TestCase):
                         self.assertTrue(all(p['lease_ms'] == 200 and 0 <= p['power'] <= 80 for p in commands))
                         source.frames = False  # poses and firmware feedback stay healthy
                         wait_for(lambda: not app.state.armed)
-                        self.assertEqual(app.state.stop_reason, 'sensing_stale')
+                        self.assertIn(app.state.stop_reason, ('sensing_stale', 'sensing_clearance_unknown'))
                         stopped = len([p for p in packets if p['type'] == 'command'])
                         time.sleep(.25)
                         self.assertEqual(stopped, len([p for p in packets if p['type'] == 'command']))
