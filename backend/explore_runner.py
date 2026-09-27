@@ -197,7 +197,11 @@ async def run_exploration(nav, generation):
                     or abs(wrap(pose.yaw_rad - anchor[2])) > cfg.stable_yaw_rad
                 )
                 if drift:
-                    status["phase"] = "settling"
+                    status["phase"] = (
+                        "aligning"
+                        if abs(wrap(target_yaw - camera_yaw)) > cfg.stable_yaw_rad
+                        else "settling"
+                    )
                     anchor = (pose.x, pose.z, pose.yaw_rad)
                     stable_since = now
                     evidence = None
@@ -210,7 +214,18 @@ async def run_exploration(nav, generation):
                     scan_since = now
                     status["phase"] = "scanning"
                 elif phase == "scanning":
-                    evidence.accept(obs)
+                    if not evidence.ready:
+                        if now - scan_since > cfg.capture_timeout_s:
+                            return nav._finish("scan_capture_unusable")
+                        # Dense captures can contain 20k samples. Run novelty
+                        # membership off-loop while explicitly holding zero.
+                        # Re-enter the loop before crediting: fresh pose, drift,
+                        # scope and arm checks must still pass after this await.
+                        if not nav._submit(generation, "explore", 0.0, 0.0):
+                            return nav._finish("command_stale")
+                        await asyncio.to_thread(evidence.accept, obs)
+                        await asyncio.sleep(period)
+                        continue
                     if evidence.ready:
                         new_surfaces = evidence.new_surface_keys
                         if (
