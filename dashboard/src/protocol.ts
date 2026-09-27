@@ -1,3 +1,4 @@
+import { parseExploration, type ExplorationStatus } from "./exploration";
 import { parseBinaryPoints } from "./pointCloud";
 export type Vec3 = [number, number, number];
 export type Vec2 = [number, number];
@@ -15,6 +16,7 @@ export interface WorldObject {
   state: ObjectState;
 }
 export interface Health {
+  exploration?: ExplorationStatus;
   phone: "ok" | "stale" | "down";
   car: "ok" | "stale" | "down";
   detector: "ok" | "stale" | "down";
@@ -145,6 +147,12 @@ export function parseMessage(raw: unknown): Message | null {
           member(m.mode, ["manual", "navigate", "explore"]) &&
           typeof m.armed === "boolean" &&
           (m.stop_reason === null || typeof m.stop_reason === "string");
+        if (valid && m.exploration !== undefined)
+          // Optional progress must never suppress otherwise valid safety health.
+          return {
+            ...m,
+            exploration: parseExploration(m.exploration) ?? undefined,
+          } as Message;
         break;
       case "pose":
         valid =
