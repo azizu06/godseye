@@ -27,11 +27,20 @@ class PathObservation:
     path-blocking evidence, and missing depth is not proof of clearance.
     ``imminent`` marks evidence severe enough (e.g. a very close in-corridor
     reading) to require an immediate pause, bypassing the confirm debounce.
+
+    ``frame_id`` optionally identifies the underlying sensor sample this
+    evidence came from (e.g. a capture sequence number or timestamp). When a
+    caller polls faster than the sensor updates and re-presents the same
+    ``frame_id`` on a later tick, that tick is a repeat, not a new distinct
+    observation: it must not advance the confirm/clear streaks or the resume
+    hold, and it must not itself complete a resume. Leave it ``None`` when no
+    stable identity is available; every tick is then treated as distinct.
     """
 
     path_blocked: bool
     depth_known: bool
     imminent: bool = False
+    frame_id: Optional[object] = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,7 @@ class ExploreObstacleGate:
         self._confirm_streak = 0
         self._clear_streak = 0
         self._clear_hold_started_at: Optional[float] = None
+        self._last_frame_id: object = object()  # sentinel: never equals a real frame_id
 
     def decide(
         self,
@@ -86,6 +96,19 @@ class ExploreObstacleGate:
             self._clear_streak = 0
             self._clear_hold_started_at = None
             return GateDecision(yielding=True, wait_reason="imminent", resumed_this_tick=False)
+
+        is_repeat_sample = (
+            observation.frame_id is not None and observation.frame_id == self._last_frame_id
+        )
+        if observation.frame_id is not None:
+            self._last_frame_id = observation.frame_id
+
+        if is_repeat_sample:
+            # Same sensor sample re-presented: not a new distinct observation.
+            # Must not advance any streak or the hold, and must not itself
+            # complete a resume -- freeze and report the unchanged state.
+            reason = "path_crossing" if self._yielding else None
+            return GateDecision(yielding=self._yielding, wait_reason=reason, resumed_this_tick=False)
 
         if observation.depth_known and observation.path_blocked:
             self._confirm_streak += 1
