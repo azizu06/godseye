@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -133,7 +134,13 @@ class PrototypeDepthTests(unittest.TestCase):
             self.assertEqual(state.map_stats['rejected'], len(cases))
 
     def test_high_to_medium_transition_keeps_floor_fresh_but_replays_old_and_untracked_data_do_not(self):
-        with phone_link() as (client, phone):
+        # These are replay/tracking cases, not an encoder-speed benchmark. Four
+        # prebuilt RGB-D packets can otherwise age the first replay past 250 ms
+        # and correctly hit wall-age rejection before the replay gate. Monotonic
+        # sensing age below remains real, including the deliberate stale wait.
+        wall = time.time()
+        with patch('time.time', return_value=wall), \
+                patch('time.time_ns', return_value=int(wall * 1e9)), phone_link() as (client, phone):
             send(client, phone, packet(1, 2))
             first = client.app.state.occupancy.accepted_at
             send(client, phone, packet(2))

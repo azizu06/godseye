@@ -188,3 +188,17 @@ class AnchorExtentTests(unittest.TestCase):
         remote = dict(y=-1.2, polygon=[[100., 100.], [101., 100.], [101., 101.], [100., 101.]])
         with self.assertRaises(FrameValidationError):
             parse_frame_bundle(anchored_packet(5, floor=remote), session_id=SESSION, map_epoch=1)
+
+
+class ImplausibleDepthFloorTests(unittest.TestCase):
+    def test_floor_one_cm_below_camera_is_not_a_supported_rover_floor(self):
+        # Latest owner telemetry at the old runtime: camera -.722, floor -.732.
+        # Do not substitute the reported phone-body height for optical geometry.
+        for calibration in profiles():
+            with self.subTest(prototype=getattr(calibration, 'unknown_traversable', False)):
+                grid = OccupancyGrid(('floor-test', 1), calibration=calibration)
+                for _ in range(3):
+                    grid.commit(frame_evidence(plane(-1., 1., -1., 1., -.732), camera_y=-.722),
+                                time.monotonic())
+                self.assertIn('no_floor', grid.map_snapshot().blockers)
+                self.assertIsNone(grid.message_if_due(time.monotonic()))

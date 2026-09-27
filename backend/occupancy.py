@@ -9,8 +9,8 @@ origin is wherever the session started, so the floor height is estimated from th
 data. ARKit world Y is gravity-aligned, so the floor is a horizontal plane: a height
 slice covering many distinct cells that clearly outnumbers the slices 6-16 cm above
 and below it (a wall covers every slice about equally). The lowest such slice is the
-floor; a table top can still win when no floor has been seen. A candidate above
-the accepted camera is rejected for both profiles. The estimate
+floor; a table top can still win when no floor has been seen. A candidate less than
+5 cm below the accepted camera is rejected for both profiles. The estimate
 is recomputed from all evidence on every snapshot, so it settles as more floor
 appears; until a floor is found nothing is published. For the explicit flat-terrain
 prototype, a same-frame plane below the phone camera takes precedence over an
@@ -60,6 +60,7 @@ OCCUPIED_MIN_HITS = 3
 OCCUPIED_FREE_RATIO = .1
 FLOOR_MIN_CELLS = 25  # distinct cells in a 6 cm slab, about 0.06 m2 of floor
 FLOOR_PEAK_RATIO = 2.
+MIN_CAMERA_FLOOR_M = .05  # Same lower bound as classified-floor wire evidence.
 PUBLISH_INTERVAL_S = 1.  # contract rate: at most 1 Hz
 
 _PER_M = round(1 / CELL_M)  # integer scale keeps the 5 cm lattice exact
@@ -353,7 +354,7 @@ class OccupancyGrid:
                 if (not self._floor_from_anchor
                         and getattr(self.calibration, 'unknown_traversable', False)):
                     candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
-                    if candidate is not None and candidate < evidence.camera_y:
+                    if candidate is not None and evidence.camera_y - candidate >= MIN_CAMERA_FLOOR_M:
                         if self._floor_y is None or candidate <= self._floor_y + .15:
                             self._floor_y = candidate
             if (evidence.camera_xz is not None and len(evidence.camera_xz) == 2
@@ -402,15 +403,16 @@ class OccupancyGrid:
     def _classify(self, keys, hits):
         # A ceiling can dominate glossy-floor depth. Neither measured nor
         # prototype navigation may call a plane above the same-frame camera a
-        # floor. A classified anchor wins over this depth-only heuristic.
+        # floor. Require the same 5 cm minimum camera separation as anchor evidence.
+        # A classified anchor wins over this depth-only heuristic.
         with self._lock:
             floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
             anchored, revision = self._floor_from_anchor, self.revision
-        if floor_y is not None and camera_y is not None and floor_y >= camera_y:
+        if floor_y is not None and camera_y is not None and camera_y - floor_y < MIN_CAMERA_FLOOR_M:
             floor_y = None
         if not anchored:
             candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
-            if candidate is not None and (camera_y is None or candidate < camera_y):
+            if candidate is not None and (camera_y is None or camera_y - candidate >= MIN_CAMERA_FLOOR_M):
                 # Preserve the prototype's flat-terrain floor against elevated
                 # furniture; measured depth may refine a valid existing floor.
                 if (floor_y is None or not getattr(self.calibration, 'unknown_traversable', False)

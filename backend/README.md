@@ -195,11 +195,14 @@ only when the picture changed:
   the session started, so the floor is estimated from the evidence: the lowest
   2 cm height slice covering at least 25 distinct cells and at least twice the
   cells of the slices 6-16 cm above and below it (a wall covers every slice
-  equally). A depth-only floor must be below the accepted camera in both
+  equally). A depth-only floor must be at least 5 cm below the accepted camera in both
   measured and prototype profiles; a ceiling-dominant frame produces `no_floor`
   instead of authorizing clearance. A previously observed floor may survive a
-  wall-only view while it remains below the camera in the same map. This height
+  wall-only view while it keeps that minimum separation in the same map. This height
   check cannot distinguish all furniture surfaces from an actual floor.
+  The 5 cm minimum is the supported floor-inference envelope shared with v2
+  anchors, not a calibrated mount height. A lower camera mount is unsupported
+  by this envelope and returns `no_floor`; never invent its true floor.
 - **Thresholds:** evidence is counted once per frame per 5 x 5 x 2 cm voxel. A cell
   is free with at least 2 hits within 4 cm of the floor, and occupied (winning
   over free) with at least 3 hits from 8 cm to 1.5 m above it that also reach
