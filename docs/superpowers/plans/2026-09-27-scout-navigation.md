@@ -33,3 +33,4 @@ Tasks share existing FollowerConfig, PlannerConfig, PurePursuit, PrototypeActuat
 - Verification before integration: backend463/463, tools23/23, Swift32/32, four firmware ASan/UBSan host suites, actual Swift fake-BLE checks, five autonomy loopback scenarios; unsigned iOS build and ESP32-S3 build succeeded.
 - Benchmark nominal: corridor46.9→17.3s, corner55.9→22.0s, approach5.6→2.2s; detour previously start_blocked, now18.2s arrival. All36 synthetic response variations arrived without chassis collision. Quantized steering changes remain visible in the replay; no physical test/video claimed.
 - Integration includes concurrent main commit12f1fda (ARKit floor planes); rerun combined validation before reporting completion.
+- Combined validation: backend466/466, tools23/23, Swift32/32 plus both backend decoders and v2 floor/capture fixtures; unsigned integrated iOS build succeeded. The tested source tree includes main12f1fda.
