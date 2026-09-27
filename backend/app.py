@@ -596,7 +596,7 @@ def create_app(db_path: str | None = None, build_points=None,
         except NoNewPoints:
             chunk = None
         return MapUpdate(candidates.t_capture, evidence, chunk,
-                         observation=observation_from_frame(decode_frame(payload), evidence))
+                         observation=observation_from_frame(decode_frame(payload), frame_evidence(candidates.positions)))
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.

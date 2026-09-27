@@ -221,7 +221,7 @@ class Navigator:
     def _finish(self, reason: str) -> None:
         logger.info('navigation ended: %s', reason)
         if self.kind == 'explore':
-            self.exploration_status.update(phase='complete' if reason == 'scan_accessible_exhausted' else 'blocked',
+            self.exploration_status.update(phase='complete' if reason in ('scan_accessible_exhausted', 'scan_diminishing_returns') else 'blocked',
                                            reason=reason, target=None)
         self._stop(reason)  # disarms, zero drive, and calls halt()
 
