@@ -15,6 +15,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
 - Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay, incremental rendering and the 3D object-label evidence/declutter policy: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
+- Persistent colored surface map budgets, block-local capacity recovery and its saturation regression: `dashboard/PERSISTENT_SCAN.md` (Capacity recovery). Browser tests reuse an existing server on 5173; set `GODSEYE_DASHBOARD_TEST_PORT` to avoid a running demo.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 - Direct iPhone ELEGOO V4 manual control, timed PWM protocol and hardware-free loopback validation: `ios/ROVER.md`. This does not enable the backend's navigation adapter.
