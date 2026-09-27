@@ -64,9 +64,14 @@ class RoverPose:
     tracking: str
 
 
-def pose_from_transform(transform) -> tuple[float, float, float]:
-    """(x, z, yaw_rad) with the same yaw as the live pose message (camera forward, -Z)."""
-    return transform[12], transform[14], math.atan2(-transform[8], -transform[10])
+def pose_from_transform(transform, camera_yaw_rad: float = 0.) -> tuple[float, float, float]:
+    """Camera floor position and rover heading corrected by the measured mount yaw.
+
+    Position stays in the v1 camera frame; map inflation already covers the
+    chassis about that point. The live display's camera yaw remains unchanged.
+    """
+    yaw = math.atan2(-transform[8], -transform[10]) - camera_yaw_rad
+    return transform[12], transform[14], math.atan2(math.sin(yaw), math.cos(yaw))
 
 
 def map_problem(snapshot: OccupancySnapshot | None, max_age_s: float) -> str | None:

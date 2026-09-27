@@ -40,6 +40,19 @@ The optional dependency is `requirements-rover.txt`. Hardware-free checks:
 
 `tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts, the latest `points` chunk, the latest objects and any change events, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
 
+## Paired iPhone rover backend
+
+`python3 -m tools.run_rover_backend --init` creates a private local pairing key and
+all-null geometry/actuation profiles. Run without `--init` to serve the opt-in phone
+relay; pass `--weights /absolute/path/to/yolo11n.pt` for the detector. Unknown
+measurements prevent driving. See [autonomy setup](../docs/AUTONOMY.md).
+
+`python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy`
+checks the real ESP/Uno with Stop, sensor queries, an arm barrier and idle zeros;
+it sends no nonzero motor command. Disconnect the phone's BLE connection first.
+`python3 ios/Tests/check_rover_autonomy.py` instead exercises the actual Swift relay
+over a loopback WebSocket with fake BLE, without hardware.
+
 ## Car-ready smoke (no car)
 
 ```sh

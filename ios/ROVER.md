@@ -1,6 +1,10 @@
 # ELEGOO V4 manual remote
 
-The iPhone can control the ELEGOO Smart Robot Car V4 through its ESP board using stock Wi-Fi firmware or the new God's Eye Bluetooth bridge firmware, or through a laptop USB relay to the Uno. The Uno remains the motor controller. These are separate manual remotes; the laptop's navigation adapter still logs only and reports the car down.
+The iPhone can control the ELEGOO Smart Robot Car V4 through its ESP board using stock Wi-Fi firmware or the new God's Eye Bluetooth bridge firmware, or through a laptop USB relay to the Uno. The Uno remains the motor controller. The default backend still logs only and reports the car down; the separate opt-in [autonomous relay](../docs/AUTONOMY.md) uses the phone's Bluetooth connection and requires measured calibration.
+
+## Mounted-phone dashboard controls
+
+Pair **Dashboard remote** before mounting and keep the app foregrounded. From the dashboard's **Rover controls → Mounted phone**, start/stop capture, discover/select the Bluetooth rover, enable/disable laptop control, or stop the rover. These setup actions never arm or send movement. Capture startup and Bluetooth selection have been verified on the real iPhone and Uno. Reconnecting the setup channel stops the rover and disables laptop control; it never resumes motion. See [setup and validation](../docs/AUTONOMY.md#run-and-use-the-mounted-phone-controls) for the local pairing key and backend command.
 
 ## Laptop USB: use the currently connected Uno
 

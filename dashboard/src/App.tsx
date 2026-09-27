@@ -16,6 +16,7 @@ import {
 import Scene from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { VoiceAsk } from "./VoiceAsk";
+import { PhoneControls } from "./PhoneControls";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
 import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
@@ -477,6 +478,10 @@ export default function App() {
           )}
           {panel === "controls" && (
             <>
+              <PhoneControls
+                config={config}
+                onStop={() => void controller.command("/stop")}
+              />
               <OperatorControls controller={controller} />
               <section className="rescan-banner">
                 <ScanLine size={24} />

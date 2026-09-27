@@ -33,7 +33,12 @@ final class RoverBLELink: NSObject, @preconcurrency CBCentralManagerDelegate, @p
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 20_000_000_000)
             guard let self, !self.closed, self.peripheral == nil else { return }
-            self.onFailure?("Bluetooth scan timed out. The ESP needs God's Eye BLE firmware.")
+            self.central?.stopScan()
+            if self.found.isEmpty {
+                self.onFailure?("No God's Eye rover found. Check rover power and Bluetooth firmware.")
+            } else {
+                self.onStatus?("Select a discovered Bluetooth rover to connect")
+            }
         }
     }
 

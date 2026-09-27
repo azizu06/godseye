@@ -9,6 +9,10 @@ public enum ElegooReply: Equatable {
     case heartbeat
     case stopped
     case response(id: String, value: String)
+    case permit(String)
+    case armed(String)
+    case stopAcknowledged(String)
+    case retired
 }
 
 public enum ElegooWire {
@@ -65,6 +69,15 @@ public struct ElegooReplyDecoder {
                 if let text = String(bytes: bytes, encoding: .utf8) {
                     if text == "Heartbeat" { replies.append(.heartbeat) }
                     else if text == "ok" { replies.append(.stopped) }
+                    else if text == "X" { replies.append(.retired) }
+                    else if text.first == "P", AutonomyCommand.hex(String(text.dropFirst()), count: 16) {
+                        replies.append(.permit(String(text.dropFirst())))
+                    } else if text.first == "A", AutonomyCommand.hex(String(text.dropFirst()), count: 32) {
+                        replies.append(.armed(String(text.dropFirst())))
+                    } else if text.first == "Z", (2...25).contains(text.utf8.count),
+                              text.dropFirst().utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) }) {
+                        replies.append(.stopAcknowledged(String(text.dropFirst())))
+                    }
                     else if let split = text.firstIndex(of: "_") {
                         let id = String(text[..<split])
                         let value = String(text[text.index(after: split)...])

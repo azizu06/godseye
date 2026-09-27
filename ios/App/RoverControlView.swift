@@ -63,7 +63,7 @@ struct RoverControlView: View {
                 HStack {
                     Button(rover.enabled ? "Disable controls" : "Enable manual controls") {
                         if rover.enabled { rover.stop() } else { rover.enable() }
-                    }.buttonStyle(.bordered).disabled(!rover.verified)
+                    }.buttonStyle(.bordered).disabled(!rover.verified || rover.autonomyEnabled)
                     Button("STOP") { rover.stop() }
                         .buttonStyle(.borderedProminent).tint(.red).disabled(!rover.connected)
                 }

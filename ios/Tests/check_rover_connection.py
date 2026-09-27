@@ -136,6 +136,7 @@ def main():
             'DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'))
         subprocess.run(['xcrun', 'swiftc', '-emit-library', '-emit-module', '-module-name', 'SensorCore',
                         str(ROOT / 'ios/Sources/SensorCore/ElegooWire.swift'),
+                        str(ROOT / 'ios/Sources/SensorCore/AutonomyWire.swift'),
                         '-emit-module-path', str(folder / 'SensorCore.swiftmodule'),
                         '-o', str(folder / 'libSensorCore.dylib')], check=True, env=env)
         subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-I', str(folder), '-L', str(folder),

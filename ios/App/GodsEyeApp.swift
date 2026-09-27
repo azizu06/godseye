@@ -40,6 +40,25 @@ struct CaptureView: View {
     @State private var lossless = true
     @State private var rate = 30.0
     @State private var archiveRate = 2.0
+    @StateObject private var autonomy = RoverAutonomyLink()
+    @StateObject private var remote = PhoneRemoteLink()
+    @State private var provisionedRemote = false
+    // Local development provisioning from devicectl; stays in process memory.
+    #if DEBUG
+    @State private var autonomyKey = ProcessInfo.processInfo.environment["GODSEYE_ROVER_PAIRING_KEY"] ?? ""
+    #else
+    @State private var autonomyKey = ""
+    #endif
+
+    private var captureOptions: CaptureOptions {
+        CaptureOptions(endpoint: endpoint, stream: stream, fullSensorUpload: fullSensorUpload,
+                       record: record, mesh: mesh, losslessColor: lossless, frameHz: rate, archiveHz: archiveRate)
+    }
+
+    private func connectDashboard() {
+        remote.connect(capture: capture, rover: rover, autonomy: autonomy,
+                       options: captureOptions, key: autonomyKey)
+    }
 
     var body: some View {
         NavigationStack {
@@ -65,6 +84,28 @@ struct CaptureView: View {
                     }.font(.subheadline)
 
                     RoverControlView(rover: rover)
+                    GroupBox("Autonomous driving") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(autonomy.status).font(.subheadline)
+                            SecureField("Laptop control pairing key", text: $autonomyKey)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .textFieldStyle(.roundedBorder).disabled(autonomy.enabled || remote.enabled)
+                            Text(remote.status).font(.subheadline)
+                            Button(remote.enabled ? "Disconnect dashboard remote" : "Connect dashboard remote") {
+                                if remote.enabled { remote.disconnect() }
+                                else { connectDashboard() }
+                            }.buttonStyle(.bordered)
+                            Text("Connect before mounting, then use the dashboard to start capture, connect Bluetooth, and enable laptop control. Keep this app open; the screen stays awake while paired.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button(autonomy.enabled ? "Disable laptop control" : "Enable laptop control") {
+                                if autonomy.enabled { autonomy.disconnect() }
+                                else { autonomy.connect(rover: rover, capture: capture, key: autonomyKey) }
+                            }.buttonStyle(.bordered)
+                                .disabled(!autonomy.enabled && (!capture.running || !rover.verified))
+                            Text("Uses this capture's laptop address and Bluetooth rover. Enabling allows a paired laptop to arm; motion still requires measured calibration and a ready map. Stop on the phone always takes control.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     GroupBox("Capture settings") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -107,10 +148,7 @@ struct CaptureView: View {
                         Button(capture.running ? "Stop capture" : "Start capture") {
                             if capture.running { capture.stop() }
                             else {
-                                capture.start(CaptureOptions(endpoint: endpoint, stream: stream,
-                                    fullSensorUpload: fullSensorUpload, record: record,
-                                    mesh: mesh, losslessColor: lossless,
-                                    frameHz: rate, archiveHz: archiveRate))
+                                capture.start(captureOptions)
                             }
                         }.buttonStyle(.borderedProminent)
                         Button("High-res photo") { capture.takeStill() }
@@ -123,6 +161,20 @@ struct CaptureView: View {
                 }.padding()
             }
             .navigationTitle("God's Eye")
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+                remote.disconnect(reason: "Dashboard remote disconnected while app inactive")
+            }
+            .onAppear {
+                #if DEBUG
+                // Explicit local development launch provisioning, never shipped
+                // credentials or automatic motion. No reconnect after a stop.
+                if !provisionedRemote {
+                    provisionedRemote = true
+                    if let value = ProcessInfo.processInfo.environment["GODSEYE_LAPTOP_ENDPOINT"] { endpoint = value }
+                    if ProcessInfo.processInfo.environment["GODSEYE_DASHBOARD_REMOTE"] == "1" { connectDashboard() }
+                }
+                #endif
+            }
         }
     }
 }

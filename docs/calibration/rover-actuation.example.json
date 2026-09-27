@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "measured_by": null,
+  "forward": null,
+  "reverse": null,
+  "left": null,
+  "right": null,
+  "positive_yaw_direction": null,
+  "stopping_distance_m": null,
+  "stop_time_ms": null
+}

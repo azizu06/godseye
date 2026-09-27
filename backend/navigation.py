@@ -518,6 +518,9 @@ class FollowerConfig:
     rotate_in_place_rad: float = .6  # beyond this heading error, turn on the spot
     rotate_gain: float = 2.
     slow_radius_m: float = .40
+    # Stock ELEGOO N=2 has straight/turn directions, not independent wheel speeds.
+    # A measured hardware profile opts into pivoting first, then driving straight.
+    pivot_only: bool = False
     # Optional look-around before following: the phone camera only faces forward, so one
     # turn on the spot at the yaw-rate limit maps the surroundings first. Progress is
     # measured from the poses passed to step(), not a clock, so a car that is not actually
@@ -613,11 +616,14 @@ class PurePursuit:
         dx, dz = target[0] - x, target[1] - z
         alpha = _wrap(math.atan2(dx, dz) - yaw_rad)  # + means target is to the left
         if abs(alpha) > cfg.rotate_in_place_rad:
-            return Command(0., _clamp(cfg.rotate_gain * alpha, -max_w, max_w), 'rotate', target)
+            turn = math.copysign(max_w, alpha) if cfg.pivot_only else _clamp(cfg.rotate_gain * alpha, -max_w, max_w)
+            return Command(0., turn, 'rotate', target)
         distance = max(math.hypot(dx, dz), 1e-6)
         curvature = 2. * math.sin(alpha) / distance
         v = max_v * min(1., remaining / cfg.slow_radius_m) if cfg.slow_radius_m > 0 else max_v
         v = _clamp(v, min(cfg.min_mps, max_v), max_v)
+        if cfg.pivot_only:
+            return Command(v, 0., 'follow', target)
         if abs(v * curvature) > max_w:  # keep the arc, slow down instead of cutting it
             v = max_w / abs(curvature)
         w = _clamp(v * curvature, -max_w, max_w)

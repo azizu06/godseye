@@ -3,8 +3,8 @@ import Combine
 import Network
 import SensorCore
 
-/// Direct ELEGOO V4 manual remote. This does not replace the laptop's calibrated
-/// navigation adapter and never interprets PWM as measured vehicle velocity.
+/// Sole BLE owner for manual control or the explicitly enabled laptop relay.
+/// PWM conversion belongs to the laptop's measured actuation profile.
 @MainActor
 final class RoverController: ObservableObject {
     @Published private(set) var status = "Rover disconnected" {
@@ -17,6 +17,16 @@ final class RoverController: ObservableObject {
     @Published var power = 60
     @Published private(set) var bluetoothPeers: [RoverBLEPeer] = []
     @Published private(set) var connecting = false
+    @Published private(set) var autonomyEnabled = false
+    var onAutonomyReply: ((ElegooReply) -> Void)?
+    var onAutonomyLoss: (() -> Void)?
+    private var autonomyGate = AutonomyGate()
+    private var autonomyPending: AutonomyCommand?
+    private var lastPermit = -Double.infinity
+    var unoAgeMS: Double { max(0, (now - lastReply) * 1000) }
+    var autonomyAvailable: Bool {
+        bluetooth != nil && connected && verified && unoAgeMS < 1500 && now - lastPermit < 0.2
+    }
 
     private var connection: NWConnection?
     private var bluetooth: RoverBLELink?
@@ -145,6 +155,9 @@ final class RoverController: ObservableObject {
         lastReply = -.infinity
         lastMotion = -.infinity
         roundTripMS = nil
+        autonomyGate.stop()
+        autonomyPending = nil
+        lastPermit = -.infinity
     }
 
     private func linkReady(label: String? = nil) {
@@ -160,6 +173,7 @@ final class RoverController: ObservableObject {
     }
 
     func enable() {
+        guard !autonomyEnabled else { return }
         guard verified, now - lastReply < 2.5 else { return }
         held = nil
         enabled = true
@@ -167,7 +181,7 @@ final class RoverController: ObservableObject {
     }
 
     func hold(_ direction: ElegooDirection) {
-        guard enabled, verified, !stopPending else { return }
+        guard !autonomyEnabled, enabled, verified, !stopPending else { return }
         guard held != direction else { return }
         held = direction
         lastMotion = -.infinity
@@ -181,12 +195,14 @@ final class RoverController: ObservableObject {
     }
 
     func stop() {
+        endAutonomy()
         enabled = false
         release()
         if verified { status = "Stopped · enable controls to drive again" }
     }
 
     func disconnect(reason: String = "Rover disconnected") {
+        endAutonomy()
         generation += 1
         timer?.invalidate()
         timer = nil
@@ -231,8 +247,40 @@ final class RoverController: ObservableObject {
         if !busy { tick() }
     }
 
+    func enableAutonomy() -> Bool {
+        guard autonomyAvailable else { return false }
+        stop()
+        autonomyEnabled = true
+        status = "Laptop control enabled · awaiting explicit arm"
+        return true
+    }
+
+    private func endAutonomy() {
+        let wasEnabled = autonomyEnabled
+        autonomyEnabled = false
+        autonomyPending = nil
+        autonomyGate.stop()
+        if wasEnabled { onAutonomyLoss?() }
+    }
+
+    func acceptAutonomy(_ command: AutonomyCommand) -> Bool {
+        guard autonomyEnabled, connected,
+              (command.type == .stop || autonomyAvailable),
+              autonomyGate.accept(command, now: now) else { return false }
+        // Stop supersedes every pending command, including an arm handshake.
+        // Movement can replace only movement within the acknowledged session.
+        autonomyPending = command
+        if command.type == .stop { stopPending = false }
+        if !busy { tick() }
+        return true
+    }
+
     private func tick() {
         guard connected else { return }
+        if autonomyEnabled && (!verified || unoAgeMS >= 1500 || now - lastPermit >= 0.25) {
+            stop()
+            status = "Laptop control stopped · rover feedback expired"
+        }
         if busy {
             if now - busySince > 0.5 { disconnect(reason: "Rover send stalled · controls disabled") }
             return
@@ -246,6 +294,13 @@ final class RoverController: ObservableObject {
             if stopPending {
                 packet.append(try ElegooWire.stop(id: "S"))
                 stopPending = false
+            } else if autonomyEnabled, let command = autonomyPending {
+                autonomyPending = nil
+                guard command.type == .stop || autonomyGate.fresh(command, now: now) else {
+                    stop()
+                    return
+                }
+                packet.append(try command.packet)
             } else if enabled, let held, now - lastMotion >= Self.motionInterval {
                 // Stock N2 has no immediate acknowledgment. Reserve unique IDs for
                 // probes; shorter movement frames leave room on the 9600-baud UART.
@@ -292,7 +347,7 @@ final class RoverController: ObservableObject {
     private func didSend(_ error: Error?) {
         busy = false
         if let error { disconnect(reason: "Rover send failed: \(error.localizedDescription)") }
-        else if stopPending { tick() }
+        else if stopPending || autonomyPending != nil { tick() }
     }
 
     private func accept(_ data: Data) {
@@ -311,6 +366,18 @@ final class RoverController: ObservableObject {
                     }
                 }
             case .stopped: break
+            case .permit(let permit):
+                lastPermit = now
+                autonomyGate.sawPermit(permit, now: now)
+                if autonomyEnabled { onAutonomyReply?(reply) }
+            case .armed(let session):
+                if autonomyEnabled && autonomyGate.armed(session) { onAutonomyReply?(reply) }
+            case .stopAcknowledged:
+                if autonomyEnabled { onAutonomyReply?(reply) }
+            case .retired:
+                autonomyGate.stop()
+                autonomyPending = nil
+                if autonomyEnabled { onAutonomyReply?(reply) }
             }
         }
     }

@@ -13,7 +13,7 @@ INPUT = '9e9e0002-3a17-4d2e-9a61-5c7d581f1800'
 OUTPUT = '9e9e0003-3a17-4d2e-9a61-5c7d581f1800'
 
 
-async def run(name, samples):
+async def run(name, samples, autonomy=False):
     from bleak import BleakClient, BleakScanner
     found = await BleakScanner.discover(timeout=8, return_adv=True, service_uuids=[SERVICE])
     matches = [device for device, advertisement in found.values()
@@ -36,6 +36,17 @@ async def run(name, samples):
             for start in range(0, len(packet), 20):
                 await client.write_gatt_char(INPUT, packet[start:start + 20], response=True)
 
+        async def wait_frame(pattern, reject_retirement=False):
+            deadline = time.monotonic() + 2.5
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0: raise TimeoutError('No matching firmware acknowledgement')
+                frame = await asyncio.wait_for(replies.get(), left)
+                if reject_retirement and frame == b'{X}':
+                    raise RuntimeError('Firmware retired the test session unexpectedly')
+                if match := re.fullmatch(pattern, frame):
+                    return match
+
         await write(STOP)
         times = []
         prefix = 'BP' + secrets.token_hex(3).upper()
@@ -55,6 +66,23 @@ async def run(name, samples):
                         print(f'Uno reply {i + 1}/{samples}: {times[-1]} ms', flush=True)
                         break
                 await asyncio.sleep(0.25)
+            if autonomy:
+                tag = 'AS' + secrets.token_hex(4).upper()
+                await write(json.dumps(dict(N=100, H=tag), separators=(',', ':')).encode())
+                await wait_frame(rb'\{Z' + tag.encode() + rb'\}')
+                permit = (await wait_frame(rb'\{P([0-9A-F]{16})\}'))[1].decode()
+                session = secrets.token_hex(16).upper()
+                await write(json.dumps(dict(N=201, H=session, C=permit), separators=(',', ':')).encode())
+                await wait_frame(rb'\{A' + session.encode() + rb'\}', reject_retirement=True)
+                permit = (await wait_frame(rb'\{P([0-9A-F]{16})\}', reject_retirement=True))[1].decode()
+                # The only N=202 emitted by this probe is an explicit idle zero.
+                zero = json.dumps(dict(N=202, H=session, C=permit, S=1, D1=0, D2=0, T=200), separators=(',', ':')).encode()
+                await write(zero)
+                await wait_frame(rb'\{P([0-9A-F]{16})\}', reject_retirement=True)
+                # Replaying even an idle sequence retires the firmware session.
+                await write(zero)
+                await wait_frame(rb'\{X\}')
+                print('Autonomy firmware verified: unique Stop ack, fresh permit, arm barrier, idle zero and replay rejection. No movement.', flush=True)
         finally:
             if client.is_connected: await write(STOP)
         print(f'BLE + real Uno verified: {samples} replies, max {max(times)} ms. No motion sent.', flush=True)
@@ -64,6 +92,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--name', required=True, help='Exact advertised GodsEye-Rover-XXXX name')
     parser.add_argument('--samples', type=int, default=10)
+    parser.add_argument('--autonomy', action='store_true', help='Also test firmware arm/permit/idle/replay gates; never sends nonzero motion')
     args = parser.parse_args()
     if not 1 <= args.samples <= 100: parser.error('samples must be 1–100')
-    asyncio.run(run(args.name, args.samples))
+    asyncio.run(run(args.name, args.samples, args.autonomy))

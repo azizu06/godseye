@@ -22,6 +22,19 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
     var reply = true
     var closed = false
     var pendingWrites = 0
+    var permitNumber: UInt64 = 0
+    var permits = false
+    var permit: String { String(format: "%016llX", permitNumber) }
+    func startPermits() {
+        permits = true
+        Task { @MainActor in
+            while self.permits && !self.closed {
+                self.permitNumber += 1
+                self.onData?(Data("{P\(self.permit)}".utf8))
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
     func start() { Self.latest = self; onPeers?([RoverBLEPeer(id: id, name: "Test rover")]) }
     func select(_ id: UUID) { precondition(id == self.id); onPeers?([]); onReady?() }
     func close() { closed = true }
@@ -32,6 +45,12 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
             let text = String(raw) + "}"
             guard let message = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { continue }
             packets.append(message)
+            if message["N"] as? Int == 201 {
+                onData?(Data("{A\(message["H"] as! String)}".utf8))
+            }
+            if message["N"] as? Int == 100 {
+                onData?(Data("{Z\(message["H"] as! String)}".utf8))
+            }
             if message["N"] as? Int == 22 && reply {
                 let id = message["H"] as! String
                 let response = Array("{WRONG_42}{\(id)_512}".utf8)
@@ -92,9 +111,50 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
                 try await until { rover.verified }
                 precondition(!rover.enabled)
                 precondition(!second.packets.contains { $0["N"] as? Int == 2 })
+                // Same real controller, laptop ownership. A fake firmware sends
+                // permits/acks; no CoreBluetooth, radio, or motor is touched.
+                second.startPermits()
+                try await until { rover.autonomyAvailable }
+                precondition(rover.enableAutonomy())
+                var armed = false
+                rover.onAutonomyReply = { if case .armed = $0 { armed = true } }
+                try await Task.sleep(nanoseconds: 100_000_000)
+                @MainActor func command(_ type: String, seq: Int = 1) throws -> AutonomyCommand {
+                    var fields: [String: Any] = ["version": 1, "type": type,
+                        "session": "0123456789ABCDEF0123456789ABCDEF", "permit": second.permit]
+                    if type == "command" {
+                        fields.merge(["seq": seq, "direction": 3, "power": 40, "lease_ms": 200]) { _, new in new }
+                    }
+                    return try AutonomyCommand.decode(JSONSerialization.data(withJSONObject: fields))
+                }
+                let premature = try command("command")
+                precondition(!rover.acceptAutonomy(premature))
+                let arm = try command("arm")
+                precondition(rover.acceptAutonomy(arm))
+                try await until { armed }
+                try await Task.sleep(nanoseconds: 60_000_000)
+                for seq in 1...100 {
+                    let movement = try command("command", seq: seq)
+                    precondition(rover.acceptAutonomy(movement))
+                }
+                try await Task.sleep(nanoseconds: 90_000_000)
+                let autonomous = second.packets.filter { $0["N"] as? Int == 202 }
+                precondition(autonomous.count <= 2 && autonomous.last?["S"] as? Int == 100,
+                             "Movement must use one latest-only slot")
+                rover.enable(); rover.hold(.left)
+                precondition(!rover.enabled, "Manual control must not silently take over autonomy")
+                let stop = try AutonomyCommand.decode(Data(#"{"version":1,"type":"stop","id":"TESTSTOP"}"#.utf8))
+                precondition(rover.acceptAutonomy(stop))
+                let late = try command("command", seq: 101)
+                precondition(!rover.acceptAutonomy(late))
+                try await Task.sleep(nanoseconds: 80_000_000)
+                precondition(second.packets.contains { $0["N"] as? Int == 100 && $0["H"] as? String == "TESTSTOP" })
+                second.permits = false
+                try await until { !rover.autonomyEnabled }
+                precondition(!rover.enabled)
                 second.onFailure?("Bluetooth lost")
                 precondition(!rover.connected && !rover.enabled)
-                print("BLE controller selection, fragmented feedback, explicit enable, paced writes, Stop, lost feedback and stale callbacks passed.")
+                print("BLE controller manual regression, autonomous ownership, arm/permit gates, latest-only movement, priority Stop and lost-feedback checks passed.")
                 exit(0)
             } catch { print(error); exit(1) }
         }
@@ -103,17 +163,22 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='godseye-ble-controller-') as folder:
-    folder = Path(folder)
-    source = folder / 'Check.swift'
-    source.write_text(SOURCE)
-    env = dict(os.environ, DEVELOPER_DIR=os.environ.get('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'))
-    subprocess.run(['xcrun', 'swiftc', '-emit-library', '-emit-module', '-module-name', 'SensorCore',
-                    str(ROOT / 'ios/Sources/SensorCore/ElegooWire.swift'),
-                    '-emit-module-path', str(folder / 'SensorCore.swiftmodule'),
-                    '-o', str(folder / 'libSensorCore.dylib')], check=True, env=env)
-    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-I', str(folder), '-L', str(folder),
-                    '-lSensorCore', '-Xlinker', '-rpath', '-Xlinker', str(folder),
-                    str(ROOT / 'ios/App/RoverController.swift'), str(source),
-                    '-o', str(folder / 'check')], check=True, env=env)
-    subprocess.run([str(folder / 'check')], check=True, timeout=15)
+def run_check(check_source=SOURCE, *, extra_sources=(), args=()):
+    with tempfile.TemporaryDirectory(prefix='godseye-ble-controller-') as folder:
+        folder = Path(folder)
+        source = folder / 'Check.swift'
+        source.write_text(check_source)
+        env = dict(os.environ, DEVELOPER_DIR=os.environ.get('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'))
+        subprocess.run(['xcrun', 'swiftc', '-emit-library', '-emit-module', '-module-name', 'SensorCore',
+                        *map(str, (ROOT / 'ios/Sources/SensorCore').glob('*.swift')),
+                        '-emit-module-path', str(folder / 'SensorCore.swiftmodule'),
+                        '-o', str(folder / 'libSensorCore.dylib')], check=True, env=env)
+        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-I', str(folder), '-L', str(folder),
+                        '-lSensorCore', '-Xlinker', '-rpath', '-Xlinker', str(folder),
+                        str(ROOT / 'ios/App/RoverController.swift'), *extra_sources, str(source),
+                        '-o', str(folder / 'check')], check=True, env=env)
+        return subprocess.run([str(folder / 'check'), *args], check=True, timeout=20)
+
+
+if __name__ == '__main__':
+    run_check()

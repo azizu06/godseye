@@ -184,6 +184,23 @@ export function Settings({
           <small>
             Color surfaces use this API even when drive commands are off.
           </small>
+          {draft.commands && (
+            <label>
+              Rover pairing key
+              <input
+                type="password"
+                autoComplete="off"
+                value={draft.roverKey ?? ""}
+                onChange={(e) =>
+                  setDraft({ ...draft, roverKey: e.target.value.trim() })
+                }
+                placeholder="Required for the iPhone rover adapter"
+              />
+              <small>
+                Kept in this tab until reload. Use the same key on the phone.
+              </small>
+            </label>
+          )}
           <div className="preset-row">
             <span>Quick setup</span>
             <button
@@ -514,16 +531,20 @@ export function OperatorControls({
     steer,
     releaseSteering,
     config,
+    autonomy,
   } = controller;
   const health = mission.health,
     available = config.commands;
   const armed = !!health?.armed;
   const canStop = controller.requiresStop;
+  const physical = autonomy?.adapter === "iphone";
   const allHealthy =
     !stale &&
     health?.phone === "ok" &&
     health.car === "ok" &&
-    health.detector === "ok";
+    health.detector === "ok" &&
+    (!physical ||
+      (autonomy.ready && health.mode !== "manual" && !!config.roverKey));
   const control = (
     label: string,
     icon: ReactNode,
@@ -570,56 +591,90 @@ export function OperatorControls({
           {!health ? "Waiting for status" : armed ? "Armed" : "Disarmed"}
         </span>
       </div>
+      {!compact && autonomy && (
+        <div className="drawer-note" aria-label="Autonomy readiness">
+          <strong>
+            {physical
+              ? "iPhone · Bluetooth rover"
+              : "Rover motion is not connected"}
+          </strong>
+          <p>
+            {autonomy.ready ? "Ready for explicit arming." : "Before driving:"}
+          </p>
+          {!autonomy.ready && (
+            <ul>
+              {autonomy.blockers.map((reason) => (
+                <li key={reason}>{reason.replaceAll("_", " ")}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <div className="operator-content">
         <div className="mode-control">
           <span className="eyebrow">CONTROL MODE</span>
           <div className="segmented mode-tabs">
-            {(["standard", "explore"] as const).map((mode) => (
+            {(physical
+              ? (["navigate", "explore"] as const)
+              : (["standard", "explore"] as const)
+            ).map((mode) => (
               <button
                 key={mode}
                 aria-pressed={
-                  mode === "explore"
-                    ? health?.mode === "explore"
-                    : !!health && health.mode !== "explore"
+                  mode === "standard"
+                    ? !!health && health.mode !== "explore"
+                    : health?.mode === mode
                 }
                 disabled={!available || !!pending || stale}
                 className={
                   (
-                    mode === "explore"
-                      ? health?.mode === "explore"
-                      : !!health && health.mode !== "explore"
+                    mode === "standard"
+                      ? !!health && health.mode !== "explore"
+                      : health?.mode === mode
                   )
                     ? "active"
                     : ""
                 }
                 onClick={() => {
-                  if (mode === "explore" || health?.mode === "explore")
+                  if (mode !== "standard" || health?.mode === "explore")
                     void command("/mode", {
-                      mode: mode === "standard" ? "manual" : "explore",
+                      mode: mode === "standard" ? "manual" : mode,
                     });
                 }}
               >
-                {mode === "standard" ? "Standard" : "Explore"}
+                {mode === "standard"
+                  ? "Standard"
+                  : mode === "navigate"
+                    ? "Navigate"
+                    : "Explore"}
               </button>
             ))}
           </div>
           <p>
-            {health?.mode === "explore"
-              ? "Exploration requires backend support"
-              : "Arrow keys to steer · click the map to navigate"}
+            {physical
+              ? "Select Navigate, arm, then click a mapped destination. Manual driving stays on the phone."
+              : health?.mode === "explore"
+                ? "Exploration requires backend support"
+                : "Arrow keys to steer · click the map to navigate"}
           </p>
         </div>
-        <div className="drive-pad">
-          {control("Move forward", <ArrowUp size={17} />, "up")}
-          <div>
-            {control("Turn left and move", <ArrowLeft size={17} />, "left")}
-            <span>
-              <Navigation size={15} />
-            </span>
-            {control("Turn right and move", <ArrowRight size={17} />, "right")}
+        {!physical && (
+          <div className="drive-pad">
+            {control("Move forward", <ArrowUp size={17} />, "up")}
+            <div>
+              {control("Turn left and move", <ArrowLeft size={17} />, "left")}
+              <span>
+                <Navigation size={15} />
+              </span>
+              {control(
+                "Turn right and move",
+                <ArrowRight size={17} />,
+                "right",
+              )}
+            </div>
+            {control("Turn around and move", <ArrowDown size={17} />, "down")}
           </div>
-          {control("Turn around and move", <ArrowDown size={17} />, "down")}
-        </div>
+        )}
         <div className="arm-control">
           <button
             className={`button ${canStop ? "stop-button" : "primary"}`}

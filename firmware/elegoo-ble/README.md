@@ -1,6 +1,6 @@
 # God's Eye Bluetooth rover bridge
 
-This firmware replaces the ELEGOO ESP camera/access-point firmware with a BLE-to-Uno manual-control bridge. The iPhone stays on its normal Wi-Fi for RGB-D uploads and uses Bluetooth for the car. The laptop does not need Bluetooth or the ELEGOO network. Phone and laptop still need a reachable network path for capture.
+This firmware replaces the ELEGOO ESP camera/access-point firmware with a BLE-to-Uno bridge for manual control and the opt-in [autonomous relay](../../docs/AUTONOMY.md). The iPhone stays on its normal Wi-Fi for RGB-D uploads and uses Bluetooth for the car. The laptop does not need Bluetooth or the ELEGOO network. Phone and laptop still need a reachable network path for capture.
 
 **Deployment status (2026-09-26):** the connected ESP32-S3 has been backed up, flashed and flash-hash verified. It advertises **GodsEye-Rover-D022**. After powering the battery and switching to **Cam**, ten real sensor queries passed over Mac Bluetooth → ESP → Uno and back in 105.2–123.4 ms, including fragmented acknowledged writes. The installed iPhone 17 Pro app then connected over Bluetooth, received its own matching Uno reply and enabled manual controls; both its console and the user confirmed readiness. Simultaneous RGB-D/full-sensor uploads over the normal LAN and real 3D dashboard rendering also passed; sampled RGB-D rates were 17–31 Hz with intermittent tracking/network freshness drops. The operator confirmed the held-forward/release test worked well. See [the phone validation record](../../ios/ROVER.md#bluetooth-keep-normal-wi-fi-for-mapping). Speed and stopping distance are still unmeasured. Keep the original full-flash backup outside the repository.
 
@@ -46,8 +46,14 @@ Only these commands pass the bridge, reconstructed from validated fields:
 - `N=2`: direction 1–4, PWM 1–80, lease exactly 200 ms.
 - `N=22,D1=1`: cached line-sensor query, preserving its request ID.
 - `N=100`: Stop.
+- `N=201`: open a drive session after a fresh ESP permit and a UART Stop handoff.
+- `N=202`: bounded timed movement or idle zero, requiring that session, a fresh ESP permit and an increasing sequence. See [the autonomous protocol](../../docs/AUTONOMY.md#esp-protocol).
 
-No indefinite movement, arbitrary UART passthrough, ultrasonic blocking query, firmware-write command, or autonomous backend control is exposed. A GATT write response acknowledges BLE delivery, not motor execution. Only a matching Uno reply verifies the downstream connection.
+No indefinite movement, arbitrary UART passthrough, ultrasonic blocking query or firmware-write command is exposed. A GATT write response acknowledges BLE delivery, not motor execution. Only a matching Uno reply verifies the downstream connection. Autonomous driving additionally requires the backend's measured geometry and actuation profiles.
+
+BLE callbacks only copy bounded input into `BridgeInbox`; JSON parsing runs on the main loop. This fixes a Bluetooth-task stack overflow observed on the S3 during an autonomous idle test. The updated firmware was flashed and hash-verified; five real Uno queries took 96.7–174.4 ms, and the Stop acknowledgement, permit, arm barrier, idle zero and replay rejection all passed without movement. Run `python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy` with the phone disconnected to repeat that check.
+
+If the PlatformIO uploader's stub fails on this S3, esptool 5 with `--no-stub` and 115200 baud successfully updated the application at `0x10000`. Use that application-only path only when the installed bootloader and partition layout already match the build.
 
 There is one pending movement and one pending query. New movement replaces pending movement; Stop clears it and takes priority. Movement waiting more than 100 ms is discarded with Stop. Incomplete frames expire after 150 ms. UART writes are paced at their actual 9600-baud serialization cost. The bridge sends Stop after 200 ms without forwarding a new movement and on BLE disconnect; each forwarded movement also retains the Uno's 200 ms lease. These are software timers, not a measured hardware stopping guarantee. Already-transmitted bytes and radio delays are not absolute end-to-end command expiry.
 

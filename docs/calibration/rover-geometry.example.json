@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "measured_by": null,
+  "obstacle_min_m": null,
+  "footprint_length_m": null,
+  "footprint_width_m": null,
+  "clearance_margin_m": null,
+  "camera_forward_m": null,
+  "camera_left_m": null,
+  "camera_yaw_rad": null
+}

@@ -9,8 +9,8 @@ a value not measured yet is written as null and keeps the map not motion-ready.
 - `clearance_margin_m`: extra distance kept between the footprint and any obstacle.
 - `camera_forward_m`, `camera_left_m`: where the phone camera sits relative to the
   footprint center, along the rover's forward and left axes.
-- `camera_yaw_rad`: camera heading minus rover heading, positive to the left. Nothing
-  in the backend applies it yet; a follower that steers by the camera yaw needs it.
+- `camera_yaw_rad`: camera heading minus rover heading, positive to the left.
+  The navigation pose subtracts it to steer using the chassis heading.
 - `measured_by`: who measured and where the evidence is; null means unverified.
 
 The v1 rover position is still the camera position projected onto the floor
