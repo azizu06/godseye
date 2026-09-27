@@ -1,4 +1,4 @@
-# God's Eye Interfaces (v1, optional floor-frame v2)
+# God's Eye Interfaces (v1, optional floor/mesh frame extensions)
 
 Frozen contract between the iPhone app, the Mac backend, the dashboard, and the car.
 Change it only by agreement, and bump `version` when you do. Based on the v0.1 spec, section 13.
@@ -8,7 +8,8 @@ Change it only by agreement, and bump `version` when you do. Based on the v0.1 s
 - All devices join one phone hotspot, 2.4 GHz ("Maximize Compatibility" on).
 - The Mac backend listens on port **8765**. Put the Mac's hotspot IP in each client's config; don't hardcode it.
 - Existing messages carry `"version": 1`. A frame carrying a classified ARKit
-  floor plane uses `"version": 2`; its binary layout and all v1 fields stay the same.
+  floor plane uses `"version": 2`; a frame carrying a current compact ARKit mesh
+  uses `"version": 3`. Their binary layout and all v1 fields stay the same.
 
 ## Coordinates and units (v1)
 
@@ -90,9 +91,20 @@ world X–Z meters from the same ARFrame's anchor snapshot. The plane must be
 cannot include `floor`. This seeds **free floor cells only** where an ARKit floor
 anchor exists; it does not manufacture obstacle depth for reflective objects.
 
-### 1d. `mesh` (optional, P2)
+A v3 frame includes `"mesh_voxels": "..."`: base64 of at most 4,000 world-space
+`int16` XYZ triples, little-endian, each coordinate in 5 cm units. It may also
+include the v2 `floor` object. The phone sends the current mesh snapshot about
+once per second; an empty encoded snapshot removes its previous mesh obstacles.
+The backend accepts voxels within 5.5 m horizontally and 0.8 m below to 1.6 m
+above the current camera. Mesh evidence is a short-lived navigation overlay,
+not permanent depth evidence; absent snapshots expire after 2.5 seconds of
+newer accepted frames. Observed RGB-D obstacles remain in the persistent map.
 
-Leave it out of v1. Add it with its own message type when the point cloud works.
+### 1d. Full mesh archive
+
+The v1 live stream has no mesh message. Full classified ARKit meshes remain in
+the separate v2 capture archive; the v3 live frame carries only bounded voxel
+positions for current navigation occupancy.
 
 ---
 
