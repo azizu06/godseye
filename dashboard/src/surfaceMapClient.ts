@@ -5,6 +5,7 @@ import type { CapturedSurface } from "./surfaceTypes";
 import type { SurfaceViewpoint } from "./surfaceKeyframes";
 import type { ColorPixels } from "./surfaceColor";
 import type { SurfacePatch } from "./surfaceTypes";
+import type { PersonClearance, PersonProbe } from "./personMemory";
 export interface MapSnapshot {
   patch: SurfacePatch | null;
   cellM: number;
@@ -13,6 +14,8 @@ export interface MapSnapshot {
   capacity?: boolean;
   delta?: SurfaceDelta;
   retiredSurfaces?: { id: string; indices: Uint32Array }[];
+  /** Remembered people whose old location both proof views saw empty. */
+  clearedPeople?: PersonClearance[];
 }
 /** At most one posted operation, even after its caller aborts while fusion continues. */
 export class SurfaceMapClient {
@@ -44,9 +47,10 @@ export class SurfaceMapClient {
     trackingLostCapture = -1,
     latest = -Infinity,
     completedAfterAbort?: (points: CapturedPoints) => void | Promise<unknown>,
+    people: readonly PersonProbe[] = [],
   ): Promise<MapSnapshot> {
     return this.request(
-      { buffer, expectedMap, expiresAt, trackingLostCapture, latest },
+      { buffer, expectedMap, expiresAt, trackingLostCapture, latest, people },
       signal,
       preview,
       [buffer],

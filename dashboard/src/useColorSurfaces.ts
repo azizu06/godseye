@@ -9,6 +9,7 @@ import type {
 } from "./surfaceTypes";
 import type { CapturedPoints } from "./pointCloud";
 import { retainSurface, surfaceMapKey } from "./surfaceStore";
+import type { PersonClearance, PersonProbe } from "./personMemory";
 
 type SurfaceState = {
   key: string;
@@ -28,6 +29,11 @@ type Retention = SurfaceState & {
 const closeImage = (patch: SurfacePatch) => {
   if (patch.image && "close" in patch.image) patch.image.close();
 };
+/** Remembered people offered to each capture's depth proof, and its verdicts. */
+export interface PeopleProof {
+  probes: () => readonly PersonProbe[];
+  cleared: (map: string, cleared: PersonClearance[]) => void;
+}
 /** Single-flight fetching and worker fusion; disconnects retain confirmed map data. */
 export function useColorSurfaces(
   config: ConnectionConfig,
@@ -37,7 +43,10 @@ export function useColorSurfaces(
     points: CapturedPoints,
     restore?: boolean,
   ) => Promise<boolean>,
+  people?: PeopleProof,
 ) {
+  const peopleProof = useRef(people);
+  peopleProof.current = people;
   const key = JSON.stringify([config.source, config.wsUrl, config.apiUrl, map]);
   const blank = (): SurfaceState => ({
     key,
@@ -193,8 +202,11 @@ export function useColorSurfaces(
             if (bucket.cleanupFailed)
               publish("paused", "Point cleanup interrupted");
           },
+          peopleProof.current?.probes() ?? [],
         );
         if (disposed || signal.aborted) return;
+        if (result.clearedPeople?.length)
+          peopleProof.current?.cleared(map, result.clearedPeople);
         // Worker validates age before integration. A large retained mesh remains
         // historical geometry even if its fusion finishes after display freshness.
         if (result.retiredSurfaces?.length) {

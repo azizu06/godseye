@@ -20,6 +20,7 @@ import { PhoneControls } from "./PhoneControls";
 import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
+import { retainedPeople } from "./personMemory";
 import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
 import { useMission } from "./useMission";
 import { useDashboardActions } from "./useDashboardActions";
@@ -158,11 +159,22 @@ export default function App() {
       document.removeEventListener("visibilitychange", cancelGesture);
     };
   }, [clearPress]);
+  const people = useRef(mission.people);
+  people.current = mission.people;
   const capture = useColorSurfaces(
     config,
     mission.mapKey,
     connection === "connected" && controller.mapConfirmed,
     controller.ingestCaptured,
+    {
+      probes: () =>
+        people.current.tracks.map(({ id, measuredAt, position }) => ({
+          id,
+          measuredAt,
+          position,
+        })),
+      cleared: controller.clearPeople,
+    },
   );
   const surfaces = capture.patches;
   const persistent = capture.persistent;
@@ -206,6 +218,13 @@ export default function App() {
       ),
     // Recompute only for new detector output, when it turns stale, or for a new filter.
     [mission.detections, detectionsFresh, controls.classes],
+  );
+  const retained = useMemo(
+    () =>
+      !controls.classes || controls.classes.includes("person")
+        ? retainedPeople(mission.people, mission.detections, now)
+        : [],
+    [mission.people, mission.detections, detectionsFresh, controls.classes],
   );
   const approach = useApproachRoute(config.apiUrl, mission, {
     ready: !stale && controller.mapConfirmed && mission.health?.phone === "ok",
@@ -341,6 +360,7 @@ export default function App() {
         }
         onGoal={(x, z) => void controller.navigate(x, z)}
         liveDetections={live}
+        retainedPeople={retained}
         approachRoute={approachDrawing}
         now={now}
         pickingRouteStart={pickingRouteStart && !panel}

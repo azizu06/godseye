@@ -2,6 +2,7 @@ import { useEffect, useMemo, type RefObject, type ReactNode } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Vector3 } from "three";
 import { LIDAR_RANGE_M } from "./sensorProfile";
+import { overlayY } from "./floor";
 import type { Mission } from "./state";
 import type { Vec2, Vec3 } from "./protocol";
 import { className, type LiveMarker } from "./detections";
@@ -15,6 +16,7 @@ import {
   overlappingLabels,
   type ScreenRect,
 } from "./objectDisplay";
+import { displayedStoredObjects, type PersonTrack } from "./personMemory";
 /** An operator-started approach route to draw: start always, path once planned. */
 export interface ApproachDrawing {
   start: Vec2;
@@ -38,10 +40,16 @@ export function useSceneLabels(
   route: ApproachDrawing | null = null,
   now = Date.now(),
   showWeak = false,
+  floor: number | null = null,
+  people: PersonTrack[] = [],
 ): SceneLabel[] {
   return useMemo(() => {
     const labels: SceneLabel[] = objectsVisible
-      ? displayedObjects(mission.objects, showWeak, selected).map((o) => {
+      ? displayedObjects(
+          displayedStoredObjects(mission.objects, mission.people, selected),
+          showWeak,
+          selected,
+        ).map((o) => {
           const possible = objectEvidence(o) === "possible_person";
           const weak = objectEvidence(o) === "weak";
           const stale = objectStale(o, now);
@@ -72,6 +80,29 @@ export function useSceneLabels(
           };
         })
       : [];
+    for (const person of people) {
+      const age = Math.max(0, (now - person.receivedAt) / 1000);
+      labels.push({
+        id: `__person-${person.id}`,
+        priority: 900,
+        position: [
+          person.position[0],
+          person.position[1] + 0.35,
+          person.position[2],
+        ],
+        content: (
+          <span
+            className="retained-person-label"
+            data-testid="retained-person-label"
+            title="Latest measured position. Kept until newer depth views see this spot empty; not a live or current position."
+          >
+            {/* Label ages step every 10 s, so the first minute stays coarse. */}
+            PERSON · last detected {age < 60 ? "<1m ago" : ageLabel(age)} · not
+            live
+          </span>
+        ),
+      });
+    }
     for (const marker of live)
       labels.push({
         id: `__live-${marker.key}`,
@@ -94,7 +125,7 @@ export function useSceneLabels(
     if (route) {
       labels.push({
         id: "__route-start",
-        position: [route.start[0], 0.1, route.start[1]],
+        position: [route.start[0], overlayY(floor, "rover"), route.start[1]],
         content: (
           <span className="route-label" data-testid="route-start-label">
             START · operator-selected
@@ -104,7 +135,11 @@ export function useSceneLabels(
       if (route.approach)
         labels.push({
           id: "__route-approach",
-          position: [route.approach[0], 0.1, route.approach[1]],
+          position: [
+            route.approach[0],
+            overlayY(floor, "rover"),
+            route.approach[1],
+          ],
           content: (
             <span className="route-label" data-testid="route-approach-label">
               APPROACH POINT · suggested
@@ -117,7 +152,7 @@ export function useSceneLabels(
       labels.push(
         {
           id: "__rover",
-          position: [p.position[0], 0.1, p.position[2]],
+          position: [p.position[0], overlayY(floor, "rover"), p.position[2]],
           offset: 25,
           content: <span className="rover-label">ROVER / PHONE</span>,
         },
@@ -125,7 +160,7 @@ export function useSceneLabels(
           id: "__scope",
           position: [
             p.position[0] + Math.sin(p.yaw_rad) * (LIDAR_RANGE_M + 0.16),
-            0.085,
+            overlayY(floor, "scopeLabel"),
             p.position[2] + Math.cos(p.yaw_rad) * (LIDAR_RANGE_M + 0.16),
           ],
           content: <span className="scope-label">LiDAR · 5 m MAX</span>,
@@ -148,6 +183,8 @@ export function useSceneLabels(
     return labels;
   }, [
     mission.objects,
+    mission.people,
+    people,
     mission.pose,
     mission.events,
     selected,
@@ -157,6 +194,7 @@ export function useSceneLabels(
     route,
     now,
     showWeak,
+    floor,
   ]);
 }
 // DOM nodes belong exclusively to the outer React root. Projection only updates

@@ -12,7 +12,13 @@ import {
   type MapScope,
   type Message,
 } from "./protocol";
-import { emptyMission, reduceMessage } from "./state";
+import {
+  clearMissionPeople,
+  emptyMission,
+  reconnectMission,
+  reduceMessage,
+} from "./state";
+import type { PersonClearance } from "./personMemory";
 import { DirectionalSteering, type SteeringDirection } from "./steering";
 import { useAutonomy } from "./useAutonomy";
 import {
@@ -167,6 +173,11 @@ export function useMission() {
     );
   }, []);
   const notify = useCallback((message: string) => setNotice(message), []);
+  const clearPeople = useCallback(
+    (map: string, cleared: PersonClearance[]) =>
+      setMission((state) => clearMissionPeople(state, map, cleared)),
+    [],
+  );
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
@@ -223,18 +234,7 @@ export function useMission() {
         stopEpoch.current++;
         cancelControl();
         latchStop(true);
-        // A transport reconnect is not a new AR map. Keep historical spatial
-        // memory, but require fresh identity/pose/health before resuming live use.
-        // Point IDs may restart: clear only deduplication, retaining observed geometry.
-        setMission((state) => ({
-          ...state,
-          health: null,
-          healthAt: 0,
-          pose: null,
-          path: [],
-          pointIds: [],
-          detections: null,
-        }));
+        setMission(reconnectMission);
         setConnection("connected");
       };
       socket.onmessage = (e) => {
@@ -772,6 +772,7 @@ export function useMission() {
     pending,
     notice,
     notify,
+    clearPeople,
     now,
     startedAt,
     drive,
