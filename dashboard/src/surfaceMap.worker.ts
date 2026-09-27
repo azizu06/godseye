@@ -121,8 +121,9 @@ self.onmessage = async (
         cameraPosition: surface.cameraPosition,
         cameraForward: surface.cameraForward,
       };
+      // Capacity is re-evaluated per view: bounded coarsening lets later views
+      // in, and a saturated map rejects them cheaply without new work.
       if (
-        !capacity &&
         observation.indices.length &&
         keyframes.shouldIntegrate(observation)
       ) {
@@ -134,6 +135,7 @@ self.onmessage = async (
           if (accepted.retained)
             points.covered = retainedCoverage(surface, accepted.retained);
           keyframes.remember(observation);
+          capacity = map.atCapacity;
         } catch (error) {
           if (error instanceof Error && /capacity/i.test(error.message))
             capacity = true;
