@@ -26,6 +26,7 @@ from typing import Callable
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit, is_frontier,
                                 nearest_frontier, path_blocked, path_message, plan_path)
 from backend.occupancy import OccupancySnapshot
+from backend.exploration import ExploreSettings
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class NavSettings:
     progress_rad: float = .15
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     follower: FollowerConfig = field(default_factory=FollowerConfig)
+    exploration: ExploreSettings = field(default_factory=ExploreSettings)
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,8 @@ class RoverPose:
     yaw_rad: float
     age_s: float
     tracking: str
+    t_capture: float | None = None  # same-phone clock used only to order sensor observations
+    camera_yaw_offset: float = 0.  # measured mount yaw, supplied by app.rover_pose
 
 
 def pose_from_transform(transform, camera_yaw_rad: float = 0.) -> tuple[float, float, float]:
@@ -106,7 +110,13 @@ class Navigator:
         self._task: asyncio.Task | None = None
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
+        self.reset_exploration()
         self.goal: tuple[float, float] | None = None
+
+    def reset_exploration(self):
+        self.exploration_status = dict(phase='idle', reason=None, session_id=None, map_epoch=None,
+                                      observed_views=0, gained_cells=0, last_gain_cells=None,
+                                      gained_surface_voxels=0, last_gain_surface_voxels=None, target=None)
 
     @property
     def active(self) -> bool:
@@ -173,7 +183,12 @@ class Navigator:
     def _begin(self, kind, goal, initial, generation) -> None:
         self._cancel()
         self.kind, self.goal = kind, goal
-        self._task = asyncio.create_task(self._run(kind, goal, initial, generation))
+        self.reset_exploration()
+        if kind == 'explore':
+            from backend.explore_runner import run_exploration
+            self._task = asyncio.create_task(run_exploration(self, generation))
+        else:
+            self._task = asyncio.create_task(self._run(kind, goal, initial, generation))
 
     def _cancel(self) -> asyncio.Task | None:
         task, self._task = self._task, None
@@ -187,8 +202,10 @@ class Navigator:
             self._shown = points
             self._publish(path_message(points))
 
-    def halt(self) -> None:
+    def halt(self, reason=None) -> None:
         """Stop following and clear the dashboard path; called from the app's stop()."""
+        if self.kind == 'explore' and self.exploration_status['phase'] not in ('complete', 'blocked'):
+            self.exploration_status.update(phase='blocked', reason=reason or 'navigation_stopped', target=None)
         if self._cancel() is not None:
             self._show([])
 
@@ -203,6 +220,9 @@ class Navigator:
 
     def _finish(self, reason: str) -> None:
         logger.info('navigation ended: %s', reason)
+        if self.kind == 'explore':
+            self.exploration_status.update(phase='complete' if reason in ('scan_accessible_exhausted', 'scan_diminishing_returns') else 'blocked',
+                                           reason=reason, target=None)
         self._stop(reason)  # disarms, zero drive, and calls halt()
 
     async def _run(self, kind, goal, initial, generation):

@@ -134,3 +134,23 @@ Write it behind one Python function, `drive(v_mps, yaw_rate_rps)`, so nothing el
 - **Backend:** `tools/fake_phone.py` replays a recorded session (or random poses) into `/phone`.
 - **Dashboard:** `tools/fake_live.py` emits every `/live` message type with made-up objects and a moving pose.
 - **iOS:** until the backend is up, test against `websocat -s 8765`.
+
+### Experimental exploration status (additive)
+
+The experimental scan branch adds optional `health.exploration` to both `/health`
+and live `health`. Existing health safety fields retain their meaning. Consumers
+must ignore a malformed extension without discarding the core health message.
+
+`exploration` contains `phase` (`idle`, `selecting`, `moving`, `aligning`,
+`settling`, `scanning`, `complete`, `blocked`), nullable `reason`, nullable
+`session_id`/`map_epoch`, integer `observed_views`, `gained_cells`,
+`gained_surface_voxels`, nullable integer `last_gain_cells` and
+`last_gain_surface_voxels`, and nullable `target` `[x,z]`. Spatial status belongs
+only to its matching map scope. Stale telemetry cannot claim current movement.
+Terminal results can remain visible after disarming.
+
+Only `scan_accessible_exhausted` and `scan_diminishing_returns` identify a complete
+phase. The latter is explicitly a heuristic “Scan settled”; unseen areas may
+remain. All budget, clearance, sensing, cancellation and unresolved-view stops
+are partial. No field claims whole-room coverage. See `EXPLORATION.md` for the
+experimental stopping witness and physical observability limitations.

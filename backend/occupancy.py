@@ -86,6 +86,25 @@ def frame_evidence(positions) -> Evidence:
 
 
 @dataclass(frozen=True)
+class ScanObservation:
+    """One accepted frame's own calibration, pose, and in-bounds depth support.
+
+    t_capture belongs to the phone clock; only compare it to phone poses/captures.
+    Surface keys use the occupancy store's fixed world lattice, never cropped indices.
+    """
+    t_capture: float
+    frame_id: int
+    position: tuple[float, float, float]
+    camera_yaw: float
+    horizontal_fov: float
+    pitch: float
+    roll: float
+    surface_keys: tuple[int, ...]
+    in_bounds_samples: int
+    vertical_fov: float = math.pi / 2
+
+
+@dataclass(frozen=True)
 class OccupancySnapshot:
     """One session's classified evidence with the rover's readiness, for navigation.
 
@@ -103,6 +122,8 @@ class OccupancySnapshot:
     cells: np.ndarray | None
     floor_y: float | None
     free_at: np.ndarray | None = None  # latest actual floor observation, per world cell
+    observation: ScanObservation | None = None
+    surface_keys: np.ndarray | None = None  # immutable known 3D geometry for mission baseline
 
     @property
     def ready(self) -> bool:
@@ -191,6 +212,7 @@ class OccupancyGrid:
         self.capacity_lost = False  # new in-bounds evidence could not be retained
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.accepted_at = None
+        self.observation = None
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
@@ -210,7 +232,8 @@ class OccupancyGrid:
         """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
         self.commit(frame_evidence(positions), now)
 
-    def commit(self, evidence: Evidence, now: float, *, observed_at: float | None = None) -> None:
+    def commit(self, evidence: Evidence, now: float, *, observed_at: float | None = None,
+               observation: ScanObservation | None = None) -> None:
         """Fold one accepted frame in; `now` is a monotonic time in seconds.
 
         Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
@@ -220,6 +243,7 @@ class OccupancyGrid:
         with self._lock:
             self.dropped += evidence.outside
             self.accepted_at = now
+            self.observation = observation
             if not len(keys):
                 return
             at = np.searchsorted(self._keys, keys)
@@ -302,6 +326,7 @@ class OccupancyGrid:
         with self._lock:
             revision, accepted_at = self.revision, self.accepted_at
             capacity_lost = self.capacity_lost
+            observation = self.observation
             keys, hits, observed_at = self._keys.copy(), self._hits.copy(), self._observed_at.copy()
         picture = self._classify(keys, hits, motion=True)
         origin = cells = floor_y = free_at = None
@@ -322,9 +347,10 @@ class OccupancyGrid:
             blockers += ('no_floor',)
         if capacity_lost:
             blockers += ('motion_evidence_capacity',)
+        keys.setflags(write=False)
         return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
-                                 origin, CELL_M, cells, floor_y, free_at)
+                                 origin, CELL_M, cells, floor_y, free_at, observation, keys)
 
 
 def estimate_floor(levels: np.ndarray):

@@ -11,6 +11,8 @@ from typing import Protocol
 import httpx
 from PIL import Image
 
+from backend.nav_actions import NAV_ACTION_PROMPT
+
 
 class LabelProvider(Protocol):
     async def identify(self, jpeg: bytes, class_name: str) -> str | None:
@@ -112,8 +114,7 @@ ANSWER_RULES = (
     'evidence), frame_room {}, set_view {"mode": "2d" or "3d"}, undo {} (alone), download_view_snapshot {} '
     "(save an image of the current view), save_camera_frame {} (save the newest already received phone camera "
     "frame). If more than one object could match a reference, add no action and ask which one, using their "
-    "last-seen times. For a new photo use take_photo {}; to drive, go somewhere, explore or stop the car use "
-    "propose_navigation, propose_exploration or stop_navigation; the dashboard explains these are unavailable. "
+    "last-seen times. For a new photo use take_photo {}. " + NAV_ACTION_PROMPT + " "
     "The dashboard reports what actually happened, so never say an action is done. Reply in at "
     'most three short spoken sentences with no markdown, as JSON {"answer": string, "actions": '
     '[{"name": string, "args": object}]}, at most four actions; omit actions for questions.')
