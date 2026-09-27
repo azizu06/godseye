@@ -322,6 +322,10 @@ provenance, unchanged measured gates, API readiness, command bounds and continuo
 Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
+The prototype ignores unclassified ARKit mesh voxels within the estimated chassis
+and clearance envelope **behind** the forward-facing camera. Its own mount/body
+otherwise looks like a permanent nearby obstacle and can block Explore at the
+start. RGB-D observations and mesh ahead or beside the rover remain in occupancy.
 Navigation acceptance is independent of display extraction: at least 16 valid
 medium-or-high-confidence depth samples can update prototype occupancy with an
 empty display cloud. Sparse accepted geometry still needs a valid floor and the
@@ -383,5 +387,8 @@ the current-mesh cache was installed and verified on the paired iPhone 17 Pro.
 The identified ESP32-S3 application was backed up, flashed, independently
 digest-verified and reset. The combined backend was restarted from main, retaining
 the existing database and capture paths, and the live dashboard serves the updated
-Explore recovery logic. No nonzero hardware command was sent during deployment;
-the new detour behavior is verified in synthetic tests, not a physical hallway run.
+Explore recovery logic. In a subsequent supervised hallway run with the prototype
+self-mesh filter, Explore moved about 5.5 m by phone pose while the 3D map kept
+publishing, then paused near the pink stand with `start_blocked`. The operator
+stopped the run. This verifies forward movement and live mapping, not yet a
+complete physical pass around the stand.

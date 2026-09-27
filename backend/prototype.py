@@ -8,6 +8,8 @@ Dimensions must be supplied by the operator; measured calibration stays intact.
 import math
 from typing import Literal, ClassVar
 
+import numpy as np
+
 from backend.actuation import TimedMotorCommand
 from backend.calibration import RoverCalibration
 from backend.navigation import FollowerConfig
@@ -35,6 +37,27 @@ def prototype_geometry(length_m: float, width_m: float) -> PrototypeGeometry:
         camera_forward_m=length_m / 2, camera_left_m=width_m / 2,
         camera_yaw_rad=0.,  # Requires rear camera facing rover-forward.
     )
+
+
+def filter_prototype_self_mesh(points: np.ndarray, transform: np.ndarray,
+                               geometry: PrototypeGeometry) -> np.ndarray:
+    """Ignore ARKit mesh on the estimated chassis behind its forward-facing camera.
+
+    The mesh is unclassified and can include the phone mount or rover itself.
+    Current RGB-D evidence and all mesh ahead of or beside the chassis still reach
+    occupancy, so this cannot erase a sign in the direction of travel.
+    """
+    if len(points) == 0:
+        return points
+    relative = points - transform[:3, 3]
+    forward = relative @ -transform[:3, 2]
+    lateral = relative @ transform[:3, 0]
+    # Five centimeters covers the mesh voxel's position quantization.
+    rear_m = geometry.footprint_length_m + geometry.clearance_margin_m + .05
+    half_width_m = geometry.footprint_width_m / 2 + geometry.clearance_margin_m + .05
+    self_mesh = ((forward < 0) & (forward >= -rear_m) &
+                 (np.abs(lateral) <= half_width_m))
+    return points[~self_mesh]
 
 
 class PrototypeActuation:
