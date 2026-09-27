@@ -13,12 +13,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config-dir', type=Path, default=Path.home() / '.local/share/godseye/autonomy')
     parser.add_argument('--init', action='store_true')
+    parser.add_argument('--env-file', type=Path, default=Path(__file__).resolve().parents[1] / '.env',
+                        help='Server settings (default: repository-root .env); existing environment wins')
     parser.add_argument('--prototype', action='store_true', help='Uncalibrated prototype; never auto-arms')
     parser.add_argument('--estimated-length-m', type=float)
     parser.add_argument('--estimated-width-m', type=float)
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8765)
-    parser.add_argument('--weights', default=os.environ.get('GODSEYE_YOLO_WEIGHTS'))
+    parser.add_argument('--weights', help='Detector weights; defaults to GODSEYE_YOLO_WEIGHTS')
     args = parser.parse_args()
     folder = args.config_dir.expanduser().resolve()
     if args.init:
@@ -37,10 +39,15 @@ def main():
             print(f'Created {name}')
         print(f'Local configuration: {folder}. Fill only measured values; null fields prevent driving.')
         return
+    from dotenv import load_dotenv
+    load_dotenv(args.env_file.expanduser(), override=False)
+    if args.weights is None:
+        args.weights = os.environ.get('GODSEYE_YOLO_WEIGHTS')
     from backend.actuation import load_actuation
     from backend.calibration import load_calibration
     from backend.rover_relay import RelayCar
     from backend.app import create_app
+    from backend.voice import providers_from_env
     import uvicorn
     if args.prototype:
         if args.estimated_length_m is None or args.estimated_width_m is None:
@@ -53,7 +60,8 @@ def main():
         actuation = load_actuation(folder / 'actuation.json')
         geometry = load_calibration(folder / 'geometry.json')
     car = RelayCar((folder / 'pairing-key').read_text().strip(), actuation)
-    app = create_app(car=car, calibration=geometry, weights=args.weights)
+    app = create_app(car=car, calibration=geometry, weights=args.weights,
+                     voice_providers=providers_from_env())
     uvicorn.run(app, host=args.host, port=args.port, ws_max_size=8388608)
 
 

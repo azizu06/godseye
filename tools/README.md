@@ -47,6 +47,14 @@ all-null geometry/actuation profiles. Run without `--init` to serve the opt-in p
 relay; pass `--weights /absolute/path/to/yolo11n.pt` for the detector. Unknown
 measurements prevent driving. See [autonomy setup](../docs/AUTONOMY.md).
 
+The rover launcher loads server settings from the repository-root `.env` before
+creating the app, including the [voice provider settings](../backend/VOICE.md#live-configuration).
+Keep that gitignored file private (`chmod 600 .env`); provider keys belong only on
+the backend. `--env-file /path/to/settings.env` selects another file. Existing
+process environment values take precedence; `--weights` also overrides
+`GODSEYE_YOLO_WEIGHTS` from either source. A missing file is optional, and `--init`
+only creates local pairing/calibration files without loading provider settings.
+
 `python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy`
 checks the real ESP/Uno with Stop, sensor queries, an arm barrier and idle zeros;
 it sends no nonzero motor command. Disconnect the phone's BLE connection first.
