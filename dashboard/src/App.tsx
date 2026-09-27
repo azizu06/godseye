@@ -301,6 +301,7 @@ export default function App() {
         onGoal={(x, z) => void controller.navigate(x, z)}
         liveDetections={live}
         approachRoute={approachDrawing}
+        now={now}
         pickingRouteStart={pickingRouteStart && !panel}
         onRouteStart={approach.pickStart}
       />
@@ -437,10 +438,12 @@ export default function App() {
                 objects={mission.objects}
                 selected={selected}
                 onSelect={select}
+                now={now}
               />
               <p className="drawer-note">
-                Objects appear as they are observed. Select one to inspect its
-                evidence.
+                Every stored detection is listed here. The 3D view hides
+                low-evidence objects (under 2 frames or 50%) except possible
+                people; turn them on under Scene layers.
               </p>
             </section>
           )}
