@@ -22,7 +22,7 @@ export function operatorProxy(keyFile?: string): Plugin {
     if (
       key &&
       req.method === "POST" &&
-      /^\/(arm|stop|mode|manual|goal|device\/action)$/.test(path)
+      /^\/(arm|stop|mode|manual|goal|device\/action|nav\/confirm)$/.test(path)
     ) {
       // The key never reaches JavaScript, URLs, logs or browser storage.
       // Only an explicit same-origin JSON request can use this local pairing.

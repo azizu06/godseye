@@ -25,7 +25,7 @@ VITE_LIVE_URL=/live
 GODSEYE_BACKEND_URL=http://<phone-backend-IP>:8765
 ```
 
-Restart Vite after configuration changes. The phone keeps `ws://<phone-backend-IP>:8765/phone`; browsers use the dashboard laptop URL. The relay exposes `/live`, `/capture`, `/health`, `/autonomy`, `/device` and mission command routes to the configured backend. The iPhone adapter requires its pairing key for setup and motion commands; Stop remains available without it. Enable REST commands and enter the key in Connection settings, then use Rover controls for mounted-phone setup. Explicit pairing is remembered in session storage for the same tab and backend across reloads. Disabling REST commands clears it; changing either backend address does not inherit it. Arming and movement are never restored. Production hosting needs equivalent reverse-proxy routes. See [autonomy setup](../docs/AUTONOMY.md).
+Restart Vite after configuration changes. The phone keeps `ws://<phone-backend-IP>:8765/phone`; browsers use the dashboard laptop URL. The development and preview relay forwards an explicit set of existing dashboard routes: `/live`, `/capture`, `/health`, `/autonomy`, `/device`, mission commands, `/route`, `/voice` (including ask/confirm), `/nav` proposal/confirmation/cancel/move actions, `/events`, event audio preparation, and `/audio/<64-hex>.wav` playback. Other backend paths are not exposed. Request bodies (including raw microphone audio), response errors and audio range headers pass through unchanged. The iPhone adapter requires its pairing key for setup and motion commands; Stop remains available without it. Enable REST commands and enter the key in Connection settings, then use Rover controls for mounted-phone setup. Explicit pairing is remembered in session storage for the same tab and backend across reloads. Disabling REST commands clears it; changing either backend address does not inherit it. Arming and movement are never restored. Production hosting needs equivalent reverse-proxy routes. See [autonomy setup](../docs/AUTONOMY.md).
 
 RGB-D polling leaves **50 ms between completed jobs**, with one network/decode/fusion operation in flight. This is a scheduling target, not measured capture/display FPS. The preferred conditional `/capture/surface.bin` contains unchanged same-frame JPEG, raw depth and confidence bytes, excluding unrelated full-sensor sections. ETag/304 responses skip unchanged data. Older servers fall back to `/capture/status` plus rich or v1 frame packets; a native frame is preferred only when within 35 ms of the newest v1 capture. A failed fusion can retry the same capture.
 
@@ -61,11 +61,13 @@ rejections. The logging-only adapter retains its existing disabled-state checks.
 ### One-click rover startup from any dashboard browser
 
 Set server-only `GODSEYE_ROVER_KEY_FILE` alongside `GODSEYE_BACKEND_URL` in the
-ignored `.env.local`. Vite/preview injects pairing into same-origin JSON command
-requests; `/operator/status` exposes only whether pairing is configured. The key
+ignored `.env.local`. Vite/preview injects pairing into JSON command requests,
+including explicit `/nav/confirm` actions, only when the Origin host matches the
+dashboard Host. The existing gate does not compare schemes or trust forwarded-origin
+headers. `/operator/status` exposes only whether pairing is configured. The key
 never enters the client bundle, browser storage or URLs. This grants operator
 controls to browsers accessing this configured dashboard, so host it only on the
-intended operator network. Cross-origin command requests are rejected.
+intended operator network. Requests from other Origin hosts are rejected.
 
 A fresh browser automatically recognizes this server pairing. **Arm rover** calls
 `/arm?prepare=true`: start capture, find/connect the single available Bluetooth
