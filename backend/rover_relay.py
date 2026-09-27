@@ -219,14 +219,24 @@ class RelayCar:
         self.attach()
 
         async def sender():
+            clock = asyncio.get_running_loop().time
+            last_sent = clock()
             while True:
-                try:
-                    await asyncio.wait_for(self.wake.wait(), .1)
-                except asyncio.TimeoutError:
-                    await asyncio.wait_for(ws.send_json(dict(version=1, type='heartbeat')), .15)
+                remaining = .1 - (clock() - last_sent)
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(self.wake.wait(), remaining)
+                    except asyncio.TimeoutError:
+                        pass
                 self.wake.clear()
                 while (message := self.next_message()) is not None:
                     await asyncio.wait_for(ws.send_json(message), .15)
+                    last_sent = clock()
+                # Incoming permits wake the sender at 20 Hz. They are not
+                # outbound traffic and must never postpone the next heartbeat.
+                if clock() - last_sent >= .1:
+                    await asyncio.wait_for(ws.send_json(dict(version=1, type='heartbeat')), .15)
+                    last_sent = clock()
 
         async def receiver():
             while True:

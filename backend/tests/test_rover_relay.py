@@ -140,6 +140,66 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.car.health(), 'stale')
 
 
+class RelaySocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_continuous_phone_feedback_cannot_starve_server_heartbeats(self):
+        """Real sender/receiver tasks with the ESP's unsolicited 20 Hz permits.
+
+        A healthy, disarmed phone still needs outbound heartbeats. Its inbound
+        status must not keep resetting the server's heartbeat deadline.
+        """
+        class Socket:
+            headers = {'authorization': 'Bearer ' + KEY}
+
+            def __init__(self):
+                self.incoming = asyncio.Queue()
+                self.outgoing = asyncio.Queue()
+
+            async def accept(self): pass
+            async def close(self, code): pass
+            async def receive_text(self): return await self.incoming.get()
+            async def send_json(self, message): await self.outgoing.put(message)
+
+        ws = Socket()
+        car = RelayCar(KEY, fixture())
+        car.identity = lambda: ('capture', 1)
+        losses = []
+        car.on_loss = losses.append
+        serving = asyncio.create_task(car.serve(ws))
+
+        async def feedback():
+            seq = 0
+            while True:
+                seq += 1
+                await ws.incoming.put(json.dumps(dict(version=1, type='status', seq=seq,
+                    session_id='capture', map_epoch=1, permit=f'{seq:016X}',
+                    uno_age_ms=100., enabled=True)))
+                await asyncio.sleep(.05)
+
+        feeding = asyncio.create_task(feedback())
+        try:
+            self.assertEqual((await asyncio.wait_for(ws.outgoing.get(), .5))['type'], 'stop')
+            for _ in range(8):
+                message = await asyncio.wait_for(ws.outgoing.get(), .35)
+                self.assertEqual(message, dict(version=1, type='heartbeat'))
+            self.assertTrue(car.connected)
+            self.assertIsNone(car.armed_session)
+            self.assertGreater(car.last_status_seq, 8)
+            self.assertEqual(losses, [])
+            # Server heartbeats must not hide missing phone/rover feedback.
+            feeding.cancel()
+            await asyncio.gather(feeding, return_exceptions=True)
+            await asyncio.wait_for(serving, .7)
+            self.assertFalse(car.connected)
+            self.assertEqual(losses, ['rover_relay_lost'])
+        finally:
+            feeding.cancel()
+            await asyncio.gather(feeding, return_exceptions=True)
+            # Let the real receive deadline retire the connection. This also
+            # cleans up on a heartbeat assertion failure, without cancelling
+            # the sender at the same instant feedback wakes it.
+            await asyncio.wait_for(serving, 1.)
+
+
 class RelayHTTPTests(unittest.TestCase):
     def test_default_remains_logging_only(self):
         with TestClient(create_app(db_path=':memory:')) as client:

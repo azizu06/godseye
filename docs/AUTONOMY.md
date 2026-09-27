@@ -155,6 +155,13 @@ Setup can reconnect automatically after a network fault; it always stops the rov
 and retires laptop control first. It never resumes motion. The independent `/rover`
 link keeps its tighter freshness checks, even during camera startup.
 
+The `/rover` sender schedules heartbeats from the last outbound message. Incoming
+20 Hz ESP status must not reset that deadline; otherwise an idle, healthy phone
+times out waiting for the laptop. `RelaySocketTests` covers continuous status and
+independent disconnect on missing feedback. After this fix, the real phone stayed
+enabled for approximately 11 seconds before ARKit tracking loss stopped control;
+no movement was sent. This does not establish sustained network or driving readiness.
+
 The REST motion endpoints require the pairing key when the iPhone adapter is enabled.
 `GET /autonomy` explains readiness; its occupancy snapshot is computed off the event
 loop. Geometry clearance must cover measured stopping distance plus the command-age
