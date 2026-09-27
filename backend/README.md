@@ -479,8 +479,11 @@ there. Historical floor votes cannot outvote the hazard. The veto remains for th
 session; a later empty view does not prove the obstacle was removed. The visual
 map keeps its existing multi-hit/ratio policy, so its colors are not motion permission.
 
-Each retained floor voxel records the monotonic time of its actual accepted
-observation. Before every nonzero navigation command, the entire measured
+Each retained floor voxel records a fixed monotonic observation estimate taken
+at WebSocket receipt, subtracting the validated positive capture wall-clock age
+(up to the existing 250 ms ingress tolerance). A tolerated future phone clock
+never moves this estimate beyond receipt. Queuing and worker computation cannot
+renew it; commit time remains separate for map activity. Before every nonzero navigation command, the entire measured
 inflated footprint and sampled swept path must have floor evidence no older than
 `NavSettings.map_max_age_s` (currently 1 second, the existing sensing deadline).
 Fresh frames elsewhere, unchanged publication timestamps, and empty frames do not

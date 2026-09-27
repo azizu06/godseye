@@ -131,3 +131,70 @@ class ReadinessHTTPTests(unittest.TestCase):
             result = client.get('/autonomy').json()
             client.app.state.session = None
             self.assertIn('sensing_clearance_unknown', result['blockers'])
+
+class ReceiptAgeTests(unittest.TestCase):
+    def test_slow_mapping_cannot_rejuvenate_floor_freshness(self):
+        from dataclasses import replace
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        from backend.mapping import build_point_chunk
+        from backend.tests.test_occupancy import floor_frame
+        from backend.tests.test_map_transport import hello, wait_for
+        floor = plane(-1, 1, -1, 1, 0)
+        def slow(payload, session, epoch):
+            chunk = build_point_chunk(payload, session, epoch)
+            time.sleep(.7)
+            return replace(chunk, positions=floor, colors=np.zeros_like(floor))
+        with TestClient(create_app(':memory:', build_points=slow,
+                calibration=RoverCalibration.model_validate(TEST_CALIBRATION), capture_directory='')) as client:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('capture-age'))
+                wait_for(lambda: client.app.state.occupancy is not None)
+                grid = client.app.state.occupancy
+                for _ in range(3):
+                    grid.add(floor, time.monotonic()-3)
+                packet = floor_frame('capture-age', 1, 1.)
+                sent = time.monotonic()
+                phone.send_bytes(packet)
+                wait_for(lambda: client.app.state.map_stats['published'] >= 1)
+                time.sleep(max(0., sent+1.1-time.monotonic()))
+                snapshot = grid.map_snapshot()
+                self.assertFalse(snapshot.fresh_clearance(0, 0, time.monotonic(), 1.))
+                self.assertLessEqual(float(np.max(snapshot.free_at)), sent + .05)
+
+    def test_ingress_capture_age_is_subtracted_and_future_clock_does_not_extend_it(self):
+        from dataclasses import replace
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        from backend.mapping import build_point_chunk
+        from backend.tests.test_occupancy import floor_frame
+        from backend.tests.test_map_transport import hello, wait_for, fresh
+        floor = plane(-1, 1, -1, 1, 0)
+        def measured(payload, session, epoch):
+            chunk = build_point_chunk(payload, session, epoch)
+            return replace(chunk, positions=floor, colors=np.zeros_like(floor))
+        for wall_offset, age in ((-180, .18), (180, 0.)):
+            with self.subTest(wall_offset=wall_offset), TestClient(create_app(':memory:', build_points=measured,
+                    calibration=RoverCalibration.model_validate(TEST_CALIBRATION), capture_directory='')) as client:
+                with client.websocket_connect('/phone') as phone:
+                    phone.send_json(hello('capture-clock'))
+                    wait_for(lambda: client.app.state.occupancy is not None)
+                    grid = client.app.state.occupancy
+                    for _ in range(3):
+                        grid.add(floor, time.monotonic()-3)
+                    import json, struct
+                    raw = floor_frame('capture-clock')
+                    size = int.from_bytes(raw[:4], 'little')
+                    header = json.loads(raw[4:4+size])
+                    header['t_wall_ms'] = int(time.time()*1000)+wall_offset
+                    encoded = json.dumps(header).encode()
+                    packet = struct.pack('<I', len(encoded))+encoded+raw[4+size:]
+                    sent = time.monotonic()
+                    phone.send_bytes(packet)
+                    wait_for(lambda: client.app.state.map_stats['published'] >= 1)
+                    stamped = float(np.max(grid.map_snapshot().free_at))
+                    self.assertAlmostEqual(stamped, sent-age, delta=.06)
+                    # A replay with a new wall time is still the same sensor capture.
+                    phone.send_bytes(fresh(packet))
+                    wait_for(lambda: client.app.state.map_stats['discarded_order'] >= 1)
+                    self.assertEqual(float(np.max(grid.map_snapshot().free_at)), stamped)

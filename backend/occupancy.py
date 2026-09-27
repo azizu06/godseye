@@ -209,12 +209,13 @@ class OccupancyGrid:
         """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
         self.commit(frame_evidence(positions), now)
 
-    def commit(self, evidence: Evidence, now: float) -> None:
+    def commit(self, evidence: Evidence, now: float, *, observed_at: float | None = None) -> None:
         """Fold one accepted frame in; `now` is a monotonic time in seconds.
 
         Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
         """
         keys = evidence.keys
+        observation_time = now if observed_at is None else min(now, observed_at)
         with self._lock:
             self.dropped += evidence.outside
             self.accepted_at = now
@@ -223,7 +224,7 @@ class OccupancyGrid:
             at = np.searchsorted(self._keys, keys)
             seen = at < len(self._keys)
             seen[seen] = self._keys[at[seen]] == keys[seen]
-            self._observed_at[at[seen]] = now
+            self._observed_at[at[seen]] = observation_time
             self._hits[at[seen]] += 1  # keys are unique, so each voxel counts once per frame
             new, at = keys[~seen], at[~seen]
             room = max(0, self.max_voxels - len(self._keys))
@@ -233,7 +234,7 @@ class OccupancyGrid:
                 new, at = new[:room], at[:room]
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
-            self._observed_at = np.insert(self._observed_at, at, now)
+            self._observed_at = np.insert(self._observed_at, at, observation_time)
             self._dirty = True
             self.revision += 1
 

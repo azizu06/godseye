@@ -178,6 +178,7 @@ class MapUpdate:
     t_capture: float
     evidence: Evidence | None  # None when the occupancy computation failed
     chunk: PointChunk | None  # None when every point was sent recently
+    observed_at: float | None = None  # fixed receipt-clock estimate, never processing completion
 
 
 class LatestFrame:
@@ -187,9 +188,10 @@ class LatestFrame:
         self.item = None
         self.ready = asyncio.Event()
 
-    def put(self, payload):
+    def put(self, payload, *, received_at=None, observed_at=None):
         replaced = self.item is not None
-        self.item = (payload, time.monotonic())
+        received_at = time.monotonic() if received_at is None else received_at
+        self.item = (payload, received_at, received_at if observed_at is None else observed_at)
         self.ready.set()
         return replaced
 
@@ -509,7 +511,7 @@ def create_app(db_path: str | None = None, build_points=None,
             await mailbox.ready.wait()
             cadence = interval() if callable(interval) else interval
             await asyncio.sleep(max(0., last_start + cadence - time.monotonic()))
-            payload, received = mailbox.take()  # newest wins; older ones were replaced
+            payload, received, observed_at = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
@@ -529,6 +531,8 @@ def create_app(db_path: str | None = None, build_points=None,
                 stats['discarded_stale'] += 1
             else:
                 last_capture = result.t_capture
+                if isinstance(result, MapUpdate):
+                    result = replace(result, observed_at=observed_at)
                 try:
                     outcome = accept(result) or 'published'
                 except Exception:
@@ -587,7 +591,7 @@ def create_app(db_path: str | None = None, build_points=None,
         def accept(update):
             if update.evidence is not None:
                 try:
-                    grid.commit(update.evidence, time.monotonic())
+                    grid.commit(update.evidence, time.monotonic(), observed_at=update.observed_at)
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')
@@ -957,6 +961,7 @@ def create_app(db_path: str | None = None, build_points=None,
             last_pose_publish = -1.0
             while True:
                 message = await ws.receive()
+                received_at, received_wall_ms = time.monotonic(), time.time()*1000
                 if message['type'] == 'websocket.disconnect':
                     break
                 if app.state.phone is not owner:
@@ -976,7 +981,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     raise ValueError('pose/frame disagree about the same capture')
                 if len(seen) > POSE_HISTORY:
                     del seen[next(iter(seen))]
-                if abs(time.time()*1000 - pose.t_wall_ms) > 250:
+                if abs(received_wall_ms - pose.t_wall_ms) > 250:
                     if is_frame:
                         app.state.map_stats['discarded_wall_time'] += 1
                     else:
@@ -1012,9 +1017,10 @@ def create_app(db_path: str | None = None, build_points=None,
                 if is_frame:
                     app.state.capture.update(message['bytes'], pose.model_dump())
                 if is_frame and pose.tracking == 'normal' and pose.t_capture > app.state.tracking_lost_capture:
-                    if mailbox.put(message['bytes']):
+                    if mailbox.put(message['bytes'], received_at=received_at,
+                                   observed_at=received_at-max(0., received_wall_ms-pose.t_wall_ms)/1000):
                         app.state.map_stats['replaced'] += 1
-                    if app.state.detector is not None and detections.put(message['bytes']):
+                    if app.state.detector is not None and detections.put(message['bytes'], received_at=received_at):
                         app.state.detect_stats['replaced'] += 1
                 elif is_frame:
                     app.state.map_stats['discarded_tracking'] += 1
