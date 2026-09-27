@@ -218,6 +218,7 @@ class Navigator:
             self._show(initial.points)
         job = None
         progress = None  # (x, z, yaw, since) while motion is commanded
+        cleared_position = None  # previous checked pose, used to check swept motion
         try:
             while True:
                 now = time.monotonic()
@@ -289,6 +290,29 @@ class Navigator:
                             return self._finish('path_blocked')
 
                 if v or w:
+                    # Check the actual displacement since the last command as well
+                    # as the next commanded envelope. A pose jump cannot skip an
+                    # unseen strip. Every footprint, including a stationary turn,
+                    # needs fresh actual floor observations throughout.
+                    previous = cleared_position
+                    if previous is None:
+                        if not snapshot.fresh_clearance(x, z, now, s.map_max_age_s):
+                            return self._finish('sensing_clearance_unknown')
+                        previous = (x, z)
+                    distance = math.hypot(x-previous[0], z-previous[1])
+                    steps = max(1, math.ceil(distance / (snapshot.cell_m / 2)))
+                    if steps > 200:
+                        return self._finish('sensing_clearance_unknown')
+                    for i in range(1, steps+1):
+                        next_position = (previous[0] + (x-previous[0])*i/steps,
+                                         previous[1] + (z-previous[1])*i/steps)
+                        if not snapshot.fresh_clearance(*next_position, now, s.map_max_age_s):
+                            return self._finish('sensing_clearance_unknown')
+                    heading = yaw + w * period / 2
+                    destination = (x + v*math.sin(heading)*period, z + v*math.cos(heading)*period)
+                    if not snapshot.fresh_clearance(*destination, now, s.map_max_age_s):
+                        return self._finish('sensing_clearance_unknown')
+                    cleared_position = (x, z)
                     if progress is None or (math.hypot(x - progress[0], z - progress[1]) >= s.progress_m
                                             or abs(math.remainder(yaw - progress[2], math.tau)) >= s.progress_rad):
                         progress = (x, z, yaw, now)

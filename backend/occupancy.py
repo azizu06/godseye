@@ -102,6 +102,7 @@ class OccupancySnapshot:
     cell_m: float
     cells: np.ndarray | None
     floor_y: float | None
+    free_at: np.ndarray | None = None  # latest actual floor observation, per world cell
 
     @property
     def ready(self) -> bool:
@@ -141,6 +142,32 @@ class OccupancySnapshot:
         return bool(np.all(window[near] == FREE))
 
 
+    def fresh_clearance(self, x: float, z: float, now: float, max_age_s: float) -> bool:
+        """Fresh measured floor throughout the entire commanded footprint.
+
+        This includes stationary turns and inflation margins: continuous overlap
+        cannot freshen blind regions that could contain a newly placed obstacle.
+        Mounted cameras unable to observe this envelope must refuse motion.
+        """
+        if not self.traversable(x, z) or self.free_at is None:
+            return False
+        row, col = self._index(x, z)
+        reach = math.ceil(self.inflation_m / self.cell_m)
+        for r in range(row - reach, row + reach + 1):
+            for c in range(col - reach, col + reach + 1):
+                left, top = self.origin[0] + c * self.cell_m, self.origin[1] + r * self.cell_m
+                def distance2(px, pz):
+                    return max(left-px, px-left-self.cell_m, 0)**2 + max(top-pz, pz-top-self.cell_m, 0)**2
+                if distance2(x, z) > self.inflation_m**2:
+                    continue
+                if not (0 <= r < self.free_at.shape[0] and 0 <= c < self.free_at.shape[1]):
+                    return False
+                at = self.free_at[r, c]
+                if not np.isfinite(at) or not 0 <= now - at <= max_age_s:
+                    return False
+        return True
+
+
 class OccupancyGrid:
     """Evidence for one session/epoch. `add`, `commit`, `snapshot` and `message_if_due` are thread-safe.
 
@@ -161,12 +188,14 @@ class OccupancyGrid:
         self.calibration = calibration
         usable = calibration is not None and not calibration.blockers
         self.obstacle_from_m = calibration.obstacle_min_m - HEIGHT_MARGIN_M if usable else OBSTACLE_MIN_M
+        self.capacity_lost = False  # new in-bounds evidence could not be retained
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.accepted_at = None
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
         self._hits = np.empty(0, np.int32)
+        self._observed_at = np.empty(0, np.float64)
         self._dirty = False
         self._last_at = None
         self._last_picture = None
@@ -194,14 +223,17 @@ class OccupancyGrid:
             at = np.searchsorted(self._keys, keys)
             seen = at < len(self._keys)
             seen[seen] = self._keys[at[seen]] == keys[seen]
+            self._observed_at[at[seen]] = now
             self._hits[at[seen]] += 1  # keys are unique, so each voxel counts once per frame
             new, at = keys[~seen], at[~seen]
             room = max(0, self.max_voxels - len(self._keys))
             if len(new) > room:
+                self.capacity_lost = True
                 self.dropped += len(new) - room
                 new, at = new[:room], at[:room]
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
+            self._observed_at = np.insert(self._observed_at, at, now)
             self._dirty = True
             self.revision += 1
 
@@ -253,20 +285,30 @@ class OccupancyGrid:
         """Classified picture of all accepted evidence, with readiness; blocking like `snapshot`."""
         with self._lock:
             revision, accepted_at = self.revision, self.accepted_at
-            keys, hits = self._keys.copy(), self._hits.copy()
-        picture = classify(keys, hits, self.obstacle_from_m)
-        origin = cells = floor_y = None
+            capacity_lost = self.capacity_lost
+            keys, hits, observed_at = self._keys.copy(), self._hits.copy(), self._observed_at.copy()
+        picture = classify(keys, hits, self.obstacle_from_m, motion=True)
+        origin = cells = floor_y = free_at = None
         if picture is not None:
             col0, row0, cells, floor_y = picture
+            levels, columns = keys % _LEVELS, keys // _LEVELS
+            height = Y_MIN_M + (levels + .5) / _SLICES_PER_M - floor_y
+            floor = np.abs(height) <= FLOOR_TOL_M + _EPS
+            latest = np.full(_SIDE * _SIDE, -np.inf)
+            np.maximum.at(latest, columns[floor], observed_at[floor])
+            free_at = latest.reshape(_SIDE, _SIDE).T[row0:row0+cells.shape[0], col0:col0+cells.shape[1]].copy()
+            free_at.setflags(write=False)
             origin = ((col0 - _SIDE // 2) / _PER_M, (row0 - _SIDE // 2) / _PER_M)
             cells.setflags(write=False)
         calibration = self.calibration
         blockers = ('calibration_missing',) if calibration is None else calibration.blockers
         if picture is None:
             blockers += ('no_floor',)
+        if capacity_lost:
+            blockers += ('motion_evidence_capacity',)
         return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
-                                 origin, CELL_M, cells, floor_y)
+                                 origin, CELL_M, cells, floor_y, free_at)
 
 
 def estimate_floor(levels: np.ndarray):
@@ -291,7 +333,7 @@ def estimate_floor(levels: np.ndarray):
     return float(np.average(centers, weights=area[lo:hi]))
 
 
-def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M):
+def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M, *, motion=False):
     """(first column, first row, uint8 cells[rows=z, cols=x], floor_y) of the known area, or None."""
     if not len(keys):
         return None
@@ -308,7 +350,11 @@ def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTAC
                           minlength=_SIDE * _SIDE)
     state = np.zeros(_SIDE * _SIDE, np.uint8)
     state[free >= FREE_MIN_HITS] = 1
-    state[(blocked >= OCCUPIED_MIN_HITS) & (blocked >= OCCUPIED_FREE_RATIO * free)] = 2
+    # Motion must not let thousands of historic floor votes hide a new hazard.
+    # A high-confidence obstacle sample is a conservative veto for motion; the
+    # visual map retains its existing noise-resistant evidence policy.
+    obstacle = blocked > 0 if motion else ((blocked >= OCCUPIED_MIN_HITS) & (blocked >= OCCUPIED_FREE_RATIO * free))
+    state[obstacle] = 2
     grid = state.reshape(_SIDE, _SIDE).T  # [iz, ix]: row-major rows along +z, as the dashboard reads
     known = grid != 0
     rows, cols = np.flatnonzero(known.any(axis=1)), np.flatnonzero(known.any(axis=0))

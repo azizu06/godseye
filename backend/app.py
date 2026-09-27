@@ -376,6 +376,11 @@ def create_app(db_path: str | None = None, build_points=None,
         problem = map_problem(app.state.autonomy_map, (nav_settings or NavSettings()).map_max_age_s)
         if problem:
             reasons.append(problem)
+        else:
+            pose = rover_pose()
+            if pose is not None and not app.state.autonomy_map.fresh_clearance(
+                    pose.x, pose.z, time.monotonic(), (nav_settings or NavSettings()).map_max_age_s):
+                reasons.append('sensing_clearance_unknown')
         return list(dict.fromkeys(reasons))
 
     @app.get('/autonomy')

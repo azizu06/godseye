@@ -77,7 +77,8 @@ class FakeOccupancy:
             raise RuntimeError('snapshot failed')
         return OccupancySnapshot(('TEST', 1), self.revision, time.monotonic(),
                                  () if self.cells is not None else ('no_floor',), .18,
-                                 (0., 0.), CELL_M, self.cells, 0.)
+                                 (0., 0.), CELL_M, self.cells, 0.,
+                                 None if self.cells is None else np.full(self.cells.shape, time.monotonic()))
 
 
 class Rover:

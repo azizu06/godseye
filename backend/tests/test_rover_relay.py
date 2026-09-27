@@ -291,7 +291,7 @@ class RelayHTTPTests(unittest.TestCase):
                         self.assertTrue(all(p['lease_ms'] == 200 and 0 <= p['power'] <= 80 for p in commands))
                         source.frames = False  # poses and firmware feedback stay healthy
                         wait_for(lambda: not app.state.armed)
-                        self.assertEqual(app.state.stop_reason, 'sensing_stale')
+                        self.assertIn(app.state.stop_reason, ('sensing_stale', 'sensing_clearance_unknown'))
                         stopped = len([p for p in packets if p['type'] == 'command'])
                         time.sleep(.25)
                         self.assertEqual(stopped, len([p for p in packets if p['type'] == 'command']))
