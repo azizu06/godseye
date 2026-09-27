@@ -109,7 +109,7 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 | POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
 | POST | `/rescan` | none | Save a baseline and start the revisit |
-| POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` | Suggested walking approach to a remembered person; visualization only, never a goal or motion (additive, see `backend/README.md`) |
+| POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` | Suggested walking approach to a recently observed person; unavailable on stale/unsupported or changed evidence. Visualization only, never a goal or motion; history retained (additive, see `backend/README.md`) |
 | POST | `/ask` | `{ "question": "where's my backpack?" }` | Answer from saved objects (P2) |
 | GET | `/objects`, `/events`, `/health` | none | Current state |
 

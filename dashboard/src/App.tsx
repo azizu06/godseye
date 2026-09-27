@@ -207,7 +207,11 @@ export default function App() {
     // Recompute only for new detector output, when it turns stale, or for a new filter.
     [mission.detections, detectionsFresh, controls.classes],
   );
-  const approach = useApproachRoute(config.apiUrl, mission);
+  const approach = useApproachRoute(config.apiUrl, mission, {
+    ready: !stale && controller.mapConfirmed && mission.health?.phone === "ok",
+    sourceKey: JSON.stringify([config.source, config.wsUrl, config.apiUrl]),
+    now,
+  });
   const routeResult =
     "result" in approach.route ? approach.route.result : undefined;
   const approachDrawing =

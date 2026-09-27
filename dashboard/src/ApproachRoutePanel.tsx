@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import type { Vec2 } from "./protocol";
 import type { Mission } from "./state";
+import { objectStale } from "./objectDisplay";
 import {
   mapScope,
   reasonText,
@@ -11,7 +12,12 @@ import {
 
 export type RouteState =
   | { phase: "idle" }
-  | { phase: "picking"; objectId: string; mapKey: string | null }
+  | {
+      phase: "picking";
+      objectId: string;
+      mapKey: string | null;
+      result?: RouteResult;
+    }
   | {
       phase: "planning" | "ready";
       objectId: string;
@@ -25,33 +31,70 @@ export type RouteState =
  * start. Visualization only: it never sends a rover goal or motion. A new map,
  * new occupancy evidence or a moved person hides the route until it is rechecked.
  */
-export function useApproachRoute(apiUrl: string, mission: Mission) {
+export function useApproachRoute(
+  apiUrl: string,
+  mission: Mission,
+  { ready, sourceKey, now }: { ready: boolean; sourceKey: string; now: number },
+) {
   const [route, setRoute] = useState<RouteState>({ phase: "idle" });
+  const [selectedSource, setSelectedSource] = useState(sourceKey);
+  const [interruptedObjects, setInterruptedObjects] = useState<
+    Mission["objects"] | null
+  >(() => (ready ? null : mission.objects));
+  useEffect(() => {
+    // Remember the snapshot at loss of readiness, not snapshots arriving afterward.
+    // Reconnection health/occupancy alone cannot revive a route to retained history.
+    if (!ready) setInterruptedObjects(mission.objects);
+  }, [ready]);
+  const scopedRoute: RouteState =
+    route.phase !== "idle" &&
+    (route.mapKey !== mission.mapKey || selectedSource !== sourceKey)
+      ? { phase: "idle" }
+      : route;
   const person =
-    route.phase === "idle"
+    scopedRoute.phase === "idle"
       ? undefined
       : mission.objects.find(
-          (o) => o.id === route.objectId && o.class === "person",
+          (o) => o.id === scopedRoute.objectId && o.class === "person",
         );
+  const unavailable = !ready
+    ? "route_feed_unavailable"
+    : !person
+      ? "person_not_in_map"
+      : person.state === "not_found_on_rescan"
+        ? "person_not_found"
+        : person.state === "last_seen"
+          ? "person_unconfirmed"
+          : objectStale(person, now)
+            ? "person_stale"
+            : mission.objects === interruptedObjects
+              ? "person_unconfirmed"
+              : null;
   const personKey = person ? JSON.stringify(person.position) : null;
-  const start = "start" in route ? route.start : null;
+  const start = "start" in scopedRoute ? scopedRoute.start : null;
   const startKey = start ? start.join(",") : null;
-  const objectId = route.phase === "idle" ? null : route.objectId;
+  const objectId = scopedRoute.phase === "idle" ? null : scopedRoute.objectId;
   useEffect(() => {
     setRoute((r) =>
-      r.phase !== "idle" && r.mapKey !== mission.mapKey ? { phase: "idle" } : r,
+      r.phase !== "idle" &&
+      (r.mapKey !== mission.mapKey || selectedSource !== sourceKey)
+        ? { phase: "idle" }
+        : r,
     );
-  }, [mission.mapKey]);
+  }, [mission.mapKey, selectedSource, sourceKey]);
   useEffect(() => {
     if (!start || !objectId) return;
     const scope = mapScope(mission.mapKey);
-    if (!person || !scope) {
+    if (unavailable || !scope) {
       setRoute((r) =>
         "start" in r
           ? {
               ...r,
               phase: "ready",
-              result: { status: "unavailable", reason: "person_not_in_map" },
+              result: {
+                status: "unavailable",
+                reason: unavailable ?? "person_not_in_map",
+              },
             }
           : r,
       );
@@ -79,26 +122,40 @@ export function useApproachRoute(apiUrl: string, mission: Mission) {
     // Replan for new occupancy evidence, a moved person, map or start.
   }, [
     apiUrl,
+    sourceKey,
     mission.mapKey,
     mission.occupancy,
     objectId,
     personKey,
     startKey,
+    unavailable,
   ]);
   const begin = useCallback(
-    (id: string) =>
-      setRoute({ phase: "picking", objectId: id, mapKey: mission.mapKey }),
-    [mission.mapKey],
+    (id: string) => {
+      setSelectedSource(sourceKey);
+      setRoute({ phase: "picking", objectId: id, mapKey: mission.mapKey });
+    },
+    [mission.mapKey, sourceKey],
   );
   const pickStart = useCallback(
     (x: number, z: number) =>
       setRoute((r) =>
-        r.phase === "picking" ? { ...r, phase: "planning", start: [x, z] } : r,
+        r.phase === "picking" && !unavailable
+          ? { ...r, phase: "planning", start: [x, z] }
+          : r,
       ),
-    [],
+    [unavailable],
   );
   const clear = useCallback(() => setRoute({ phase: "idle" }), []);
-  return { route, person, begin, pickStart, clear };
+  // Hide unsupported results during render, before effect cleanup aborts the request.
+  const visibleRoute: RouteState =
+    scopedRoute.phase !== "idle" && unavailable
+      ? {
+          ...scopedRoute,
+          result: { status: "unavailable", reason: unavailable },
+        }
+      : scopedRoute;
+  return { route: visibleRoute, person, begin, pickStart, clear };
 }
 
 export function ApproachRouteCard({
@@ -135,7 +192,7 @@ export function ApproachRouteCard({
           <X size={14} />
         </button>
       </header>
-      {state.phase === "picking" && (
+      {state.phase === "picking" && !result && (
         <p>
           Click the entrance or start point on the floor. The route begins
           exactly where you click.

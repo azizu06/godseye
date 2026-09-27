@@ -30,6 +30,22 @@ test("an operator-started approach route to a person is drawn, rechecked on new 
   const otherPosts: string[] = [];
   await page.routeWebSocket("ws://localhost:9880/live", (ws) => {
     send = (value) => ws.send(JSON.stringify(value));
+    const health = () =>
+      send({
+        version: 1,
+        type: "health",
+        ...scope,
+        phone: "ok",
+        car: "down",
+        detector: "ok",
+        pose_age_ms: 10,
+        mode: "manual",
+        armed: false,
+        stop_reason: null,
+      });
+    health();
+    const timer = setInterval(health, 100);
+    ws.onClose(() => clearInterval(timer));
     send({
       version: 1,
       type: "objects",

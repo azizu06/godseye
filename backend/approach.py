@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from .navigation import FREE, OCCUPIED, Grid, PlannerConfig, plan_path
+from .navigation import FREE, OCCUPIED, Grid, PlannerConfig, plan_path, path_blocked
 
 # Demo clearance assumptions, reported with every route.
 WALKER_RADIUS_M = .25  # an upright responder needs a ~0.5 m wide passage
@@ -68,3 +68,24 @@ def approach_route(grid: Grid | None, start_xz, person_xz) -> dict:
     length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
     return dict(base, status='ok', points=points, approach=points[-1], length_m=round(length, 2))
 
+
+
+def route_still_clear(grid: Grid | None, person_xz, points) -> bool:
+    """Recheck a planned walking footprint using current observed map cells."""
+    return grid is not None and not path_blocked(_keep_out(grid, person_xz), points, CONFIG)
+
+
+PERSON_FRESH_S = 30.  # Matches the dashboard's existing object-evidence display window.
+
+
+def person_evidence_reason(person, now_wall_s):
+    """Evidence freshness only, never a claim that a walking route is safe."""
+    if person.get('state') == 'not_found_on_rescan':
+        return 'person_not_found'
+    if person.get('state') not in ('present', 'moved'):
+        return 'person_unconfirmed'
+    seen = person.get('last_seen')
+    if (not isinstance(seen, (int, float)) or not math.isfinite(seen)
+            or now_wall_s - seen > PERSON_FRESH_S):
+        return 'person_stale'
+    return None

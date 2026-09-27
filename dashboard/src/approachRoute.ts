@@ -21,6 +21,14 @@ export type RouteResult =
   | { status: "unavailable"; reason: string; assumptions?: RouteAssumptions };
 
 export const reasonText: Record<string, string> = {
+  route_feed_unavailable:
+    "live observations are unavailable; waiting for a confirmed current map",
+  person_unconfirmed: "the person is not currently confirmed by observations",
+  person_stale: "the person's last observation is out of date",
+  person_not_found: "the person was not found on the latest rescan",
+  person_changed: "the person's recorded location changed while planning",
+  route_evidence_changed: "the observed route changed while planning",
+  route_superseded: "a newer route selection replaced this request",
   no_observed_map: "no observed floor map yet",
   start_or_person_off_map: "start or person is outside the observed map",
   start_not_observed_free:

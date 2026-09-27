@@ -392,7 +392,23 @@ occupancy or a moved person and drops it on a map reset.
 An unavailable result replaces an earlier success. A `404` selection, a map reset,
 a newly published occupancy picture that differs from the cells it was planned on,
 and a sighting that moves, merges or removes the person all set it to `None`.
-A slower, older request never overwrites a newer selection. Tests:
+A slower, older request never overwrites a newer selection.
+
+Routes require a person whose current state is `present` or `moved` and whose
+last observation is at most 30 seconds old, matching the dashboard object-evidence
+window. A rescan not-found/unconfirmed state, expired observation, disconnect or
+map reset retires the current suggestion while preserving object history. This
+window is an evidence-display policy, not a safety certification. The backend
+rechecks the target and walking footprint after asynchronous planning: a newly
+blocked path is unavailable, while an unrelated occupancy change can retain a
+still-clear path with the new revision. A further concurrent change fails closed
+rather than retrying indefinitely. New unavailable reasons are `person_not_found`,
+`person_unconfirmed`, `person_stale`, `person_changed`, `route_superseded`, and
+`route_evidence_changed`. `map_changed` also covers a path invalidated during
+planning. The read-only route cache expires with the person evidence;
+`person_last_seen` is internal cache metadata, not an added required wire field.
+
+Tests:
 `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_approach -v`.
 
 ## Rescan and change events

@@ -109,7 +109,7 @@ def person_at(client, session, position):
         db.execute('INSERT OR IGNORE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,'
                    "tracking) VALUES(?,?,1,1,1000,'[]','normal')", session)
         found = [LocalizedDetection(Detection((0, 0, 1, 1), 'person', .9), position, 2., 9, *session, 1, 1.)]
-        return client.app.state.objects.record(session, 1, 1., found)[0].object_id
+        return client.app.state.objects.record(session, 1, time.time(), found)[0].object_id
     return client.portal.call(record)
 
 
@@ -160,7 +160,7 @@ class ApproachViewTests(unittest.TestCase):
             before = time.time() * 1000
             ok = self.route(client, session, person, [3., .5]).json()
             view = client.app.state.approach_view
-            self.assertEqual({k: v for k, v in view.items() if k != 't_wall_ms'}, ok)
+            self.assertEqual({k: v for k, v in view.items() if k not in ('t_wall_ms', 'person_last_seen')}, ok)
             self.assertLessEqual(before, view['t_wall_ms'])
             self.assertEqual((view['status'], view['assumptions']['verified']), ('ok', False))
             self.assertEqual((client.app.state.nav.path, client.get('/health').json()['armed']), ([], False))
@@ -200,7 +200,8 @@ class ApproachViewTests(unittest.TestCase):
             release.set()
             worker.join(5)
             view = client.app.state.approach_view
-        self.assertEqual(older[0].json()['start'], [.5, .5])  # the caller still gets its answer
+        self.assertEqual(older[0].json()['reason'], 'route_superseded')
+        self.assertNotIn('points', older[0].json())
         self.assertEqual((view['start'], view['status']), ([3., .5], newer['status']))
 
     def test_a_changed_published_occupancy_picture_retires_the_route(self):
@@ -242,6 +243,182 @@ class ApproachViewTests(unittest.TestCase):
             [moved] = next_of(live, 'detections')['detections']
             self.assertEqual(moved['object_id'], person['object_id'])
             self.assertIsNone(client.app.state.approach_view)
+
+class RouteEvidenceTests(unittest.TestCase):
+    def request(self, client, session, person):
+        return client.post('/route', json=dict(session_id=session[0], map_epoch=session[1],
+                                             object_id=person, start=[.5, .5]))
+
+    def delayed_request(self, client, session, person, change):
+        started, release = threading.Event(), threading.Event()
+        responses = []
+
+        def delayed(*args):
+            result = approach_route(*args)
+            started.set()
+            self.assertTrue(release.wait(5))
+            return result
+
+        with mock.patch('backend.app.approach_route', delayed):
+            worker = threading.Thread(target=lambda: responses.append(self.request(client, session, person)))
+            worker.start()
+            self.assertTrue(started.wait(5))
+            try:
+                change()
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        return responses[0]
+
+    def test_new_obstacle_during_first_plan_cannot_publish_blocked_route(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            grid = Grid2D(session, room())
+            client.app.state.occupancy = grid
+            person = person_at(client, session, (3., .4, 3.))
+
+            def changed():
+                # The returned initial path is diagonal through this new obstacle.
+                grid.cells = grid.cells.copy()
+                grid.cells[25:45, 25:45] = OCCUPIED
+                grid.revision += 1
+
+            result = self.delayed_request(client, session, person, changed).json()
+            self.assertEqual((result['status'], result['reason']), ('unavailable', 'map_changed'))
+            self.assertNotIn('points', result)
+            self.assertNotEqual((client.app.state.approach_view or {}).get('status'), 'ok')
+            self.assertEqual(self.request(client, session, person).json()['status'], 'ok')
+
+    def test_unrelated_obstacle_and_revision_change_does_not_starve_route(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            grid = Grid2D(session, room())
+            client.app.state.occupancy = grid
+            person = person_at(client, session, (3., .4, 3.))
+
+            def changed():
+                grid.cells = grid.cells.copy()
+                grid.cells[10:15, 65:70] = OCCUPIED
+                grid.revision += 1
+
+            result = self.delayed_request(client, session, person, changed).json()
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['occupancy_revision'], grid.revision)
+            self.assertEqual(client.app.state.approach_view['status'], 'ok')
+
+    def test_person_moving_or_not_found_during_plan_invalidates_result(self):
+        for state, position in [('present', '[3.5,0.4,3]'), ('not_found_on_rescan', '[3,0.4,3]')]:
+            with self.subTest(state=state), TestClient(create_app(':memory:', capture_directory='')) as client:
+                reset = client.post('/session').json()
+                session = (reset['session_id'], reset['map_epoch'])
+                client.app.state.occupancy = Grid2D(session, room())
+                person = person_at(client, session, (3., .4, 3.))
+
+                def changed():
+                    client.portal.call(lambda: client.app.state.db.execute(
+                        'UPDATE objects SET position_json=?,state=? WHERE id=?', (position, state, person)))
+
+                result = self.delayed_request(client, session, person, changed).json()
+                self.assertEqual(result['status'], 'unavailable')
+                self.assertNotIn('points', result)
+                self.assertNotEqual((client.app.state.approach_view or {}).get('status'), 'ok')
+                if state == 'not_found_on_rescan':
+                    self.assertEqual(self.request(client, session, person).json()['reason'], 'person_not_found')
+
+    def test_phone_disconnect_retires_cached_and_pending_route(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client, client.websocket_connect('/phone') as phone:
+            phone.send_json(hello('route-disconnect'))
+            wait_for(lambda: client.app.state.session == ('route-disconnect', 1))
+            session = ('route-disconnect', 1)
+            grid = client.app.state.occupancy
+            for now in (1., 2., 3.):
+                grid.add(plane(-2., 2., -2., 2., FLOOR_Y), now=now)
+            person = person_at(client, session, (1., FLOOR_Y + 1., 1.))
+            self.assertEqual(self.request(client, session, person).json()['status'], 'ok')
+
+            def disconnect():
+                phone.close()
+                wait_for(lambda: client.app.state.phone is None)
+                self.assertIsNone(client.app.state.approach_view)
+
+            result = self.delayed_request(client, session, person, disconnect).json()
+            self.assertEqual((result['status'], result['reason']),
+                             ('unavailable', 'route_evidence_changed'))
+            self.assertIsNone(client.app.state.approach_view)
+
+    def test_expired_person_is_unavailable_and_expired_cache_is_retired(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, room())
+            person = person_at(client, session, (3., .4, 3.))
+            self.assertEqual(self.request(client, session, person).json()['status'], 'ok')
+            client.app.state.approach_view['person_last_seen'] = time.time() - 31
+            wait_for(lambda: client.app.state.approach_view is None)
+            client.portal.call(lambda: client.app.state.db.execute(
+                'UPDATE objects SET last_seen=? WHERE id=?', (time.time() - 31, person)))
+            result = self.request(client, session, person).json()
+            self.assertEqual((result['status'], result['reason']), ('unavailable', 'person_stale'))
+
+    def test_target_age_uses_wall_seconds_and_exact_existing_thirty_second_bound(self):
+        from backend.approach import person_evidence_reason
+        self.assertIsNone(person_evidence_reason(dict(state='present', last_seen=1700000000.), 1700000030.))
+        self.assertEqual(person_evidence_reason(dict(state='present', last_seen=1700000000.),
+                                              1700000030.001), 'person_stale')
+        for value in (None, float('nan'), '1700000000'):
+            self.assertEqual(person_evidence_reason(dict(state='present', last_seen=value),
+                                                  1700000000.), 'person_stale')
+
+    def test_reset_during_plan_never_repopulates_previous_map_route(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, room())
+            person = person_at(client, session, (3., .4, 3.))
+            result = self.delayed_request(client, session, person, lambda: client.post('/session'))
+            self.assertEqual(result.status_code, 409)
+            self.assertIsNone(client.app.state.approach_view)
+
+    def test_change_after_second_snapshot_validation_cannot_publish(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            grid = Grid2D(session, room())
+            client.app.state.occupancy = grid
+            person = person_at(client, session, (3., .4, 3.))
+
+            def first_change():
+                grid.cells = grid.cells.copy()
+                grid.cells[10:15, 65:70] = OCCUPIED
+                grid.revision += 1
+
+            def validate_then_change(*args):
+                clear = approach_module.route_still_clear(*args)
+                self.assertTrue(clear)
+                # A third update races the final worker result after its snapshot.
+                grid.cells = grid.cells.copy()
+                grid.cells[25:45, 25:45] = OCCUPIED
+                grid.revision += 1
+                return clear
+
+            with mock.patch('backend.app.route_still_clear', validate_then_change):
+                result = self.delayed_request(client, session, person, first_change).json()
+            self.assertEqual((result['status'], result['reason']), ('unavailable', 'map_changed'))
+            self.assertNotIn('points', result)
+
+    def test_rescan_immediately_retires_cache_and_unconfirms_person(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, room())
+            person = person_at(client, session, (3., .4, 3.))
+            self.assertEqual(self.request(client, session, person).json()['status'], 'ok')
+            self.assertEqual(client.post('/rescan').status_code, 200)
+            self.assertIsNone(client.app.state.approach_view)
+            self.assertEqual(self.request(client, session, person).json()['reason'], 'person_unconfirmed')
 
 
 if __name__ == '__main__':
