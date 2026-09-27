@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -16,8 +17,9 @@ from PIL import Image
 
 from backend.app import create_app
 from backend.calibration import RoverCalibration
-from backend.landmarks import (MAX_FRAMES, STANDOFF_M, LandmarkError, LandmarkFrames, find_landmark, keep_frame,
-                               landmark_name, parse_hits, unproject)
+from backend.landmarks import (MAX_BYTES, MAX_FRAMES, MAX_LOCATE_FRAMES, STANDOFF_M, LandmarkError, LandmarkFrames,
+                               camera_pose, find_landmark, keep_frame, landmark_name, parse_hits, sample_frames,
+                               unproject)
 from backend.nav_actions import validate_nav_action
 from backend.navigator import NavSettings
 from backend.tests.test_voice import CLIP, WEBM, FakeAnswerer, FakeTranscriber, providers, seeded
@@ -48,23 +50,77 @@ class Clock:
 
 
 class FrameRingTests(unittest.TestCase):
-    def test_ring_is_bounded_sampled_and_reset_by_a_map_change(self):
+    def test_one_frame_per_second_until_full_then_only_new_coverage_and_a_map_change_clears(self):
         clock = Clock()
         ring = LandmarkFrames(clock)
         a, b = ('s', 1), ('s', 2)
-        for i in range(40):
-            self.assertTrue(ring.offer(a, synthetic(frame_id=i)))
-            self.assertFalse(ring.offer(a, synthetic(frame_id=1000 + i)))  # within a second: skipped
-            clock.t += 1.
+        for i in range(100):  # parked for 50 s: one kept per second until full, then nothing new
+            ring.offer(a, synthetic(frame_id=i))
+            clock.t += .5
         frames = ring.frames(a)
         self.assertEqual(len(frames), MAX_FRAMES)
-        self.assertEqual([f.frame_id for f in frames[:2]], [39, 38])  # newest first, oldest dropped
+        self.assertEqual(frames[0].frame_id, 78)  # newest first
+        self.assertTrue(ring.offer(a, synthetic(position=(2., 1., 0.), frame_id=500)))  # new ground, even when full
+        self.assertEqual(len(ring.frames(a)), MAX_FRAMES)
+        self.assertEqual(ring.frames(a)[0].frame_id, 500)
         self.assertEqual(ring.frames(b), [])  # another map never sees them, and they are dropped
         self.assertEqual(ring.frames(a), [])
+        self.assertEqual(ring.nbytes, 0)
         ring.offer(b, synthetic(frame_id=7))
         self.assertEqual([f.frame_id for f in ring.frames(b)], [7])
         ring.clear()
         self.assertEqual(ring.frames(b), [])
+
+    def test_coverage_eviction_keeps_early_distinct_places_over_parked_duplicates(self):
+        clock = Clock()
+        ring = LandmarkFrames(clock)
+        a = ('s', 1)
+        for i in range(20):  # corridor A, 1 m apart
+            self.assertTrue(ring.offer(a, synthetic(position=(float(i), 1., 0.), frame_id=i)))
+        for i in range(40):  # parked at its end for 40 s: fills the rest with near duplicates
+            clock.t += 1.
+            ring.offer(a, synthetic(position=(19., 1., 0.), frame_id=100 + i))
+        self.assertEqual(len(ring.frames(a)), MAX_FRAMES)
+        for j in range(20):  # corridor B, far from A: every frame is new coverage
+            self.assertTrue(ring.offer(a, synthetic(position=(0., 1., 10. + j), frame_id=200 + j)))
+        places = sorted({(round(f.transform[0, 3]), round(f.transform[2, 3])) for f in ring.frames(a)})
+        expected = sorted({(i, 0) for i in range(20)} | {(0, 10 + j) for j in range(20)})
+        self.assertEqual(places, expected)  # early places survive; only the parked duplicates went
+        # Turning in place counts as coverage too: 25 degrees or more from every kept heading.
+        turned = synthetic(position=(5., 1., 0.), rotation=YAW_90, frame_id=300)
+        self.assertTrue(ring.offer(a, turned))
+        self.assertFalse(ring.offer(a, synthetic(position=(5.1, 1., 0.), frame_id=301)))
+
+    def test_memory_bound_is_respected(self):
+        ring = LandmarkFrames(Clock())
+        one = keep_frame(synthetic()).nbytes
+        with patch('backend.landmarks.MAX_BYTES', one * 5 + 1):
+            for i in range(12):
+                ring.offer(('s', 1), synthetic(position=(float(i), 1., 0.), frame_id=i))
+            frames = ring.frames(('s', 1))
+            self.assertEqual(len(frames), 5)
+            self.assertLessEqual(ring.nbytes, one * 5 + 1)
+            self.assertEqual(ring.nbytes, sum(f.nbytes for f in frames))
+        # Without a patch, a full ring of real-size frames stays within the configured bound.
+        self.assertLessEqual(MAX_FRAMES * (200_000 + 5 * 256 * 256 + 256), MAX_BYTES)
+
+    def test_the_model_gets_the_newest_views_and_the_most_distinct_headings(self):
+        def at(yaw_deg, x=0.):
+            c, s_ = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
+            transform = np.eye(4)
+            transform[:3, :3] = [[c, 0, s_], [0, 1, 0], [-s_, 0, c]]
+            transform[0, 3] = x
+            return SimpleNamespace(transform=transform)
+        frames = [at(0) for _ in range(30)] + [at(yaw) for yaw in (90, 180, 270, 45, 135, 225)] + \
+            [at(0) for _ in range(4)]  # newest first
+        picked = sample_frames(frames)
+        self.assertEqual(len(picked), MAX_LOCATE_FRAMES)
+        self.assertTrue(all(p is f for p, f in zip(picked[:4], frames[:4])))
+        others = [round(math.degrees(camera_pose(f.transform)[2])) % 360 for f in picked[4:]]
+        self.assertEqual(len(set(others)), 4)
+        newest = round(math.degrees(camera_pose(frames[0].transform)[2])) % 360
+        self.assertNotIn(newest, others)  # the rest are other directions, not more of the same view
+        self.assertEqual(sample_frames(frames[:5]), frames[:5])
 
     def test_kept_frames_are_downscaled_with_matching_intrinsics(self):
         kept = keep_frame(synthetic(size=(1920, 1440)))
@@ -209,6 +265,7 @@ class VoiceLandmarkTests(unittest.TestCase):
             self.assertTrue(ring.frames(client.app.state.session))  # live phone frames are kept
             with ring._lock:
                 ring._frames.append(door)  # the newest kept frame is the one that shows it
+                ring._poses.append(camera_pose(door.transform))
             result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
             self.assertEqual(locator.calls[0][0], 'red door')
             self.assertEqual(len(result['actions']), 1, result)

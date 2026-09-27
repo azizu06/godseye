@@ -148,8 +148,8 @@ the shown map and absent until its producer sets it:
 ## Named landmarks
 
 A request to go to something that is not a stored object ("go to the door", "the red chair")
-becomes `propose_landmark`; the backend looks for it in up to 8 recent downscaled camera
-frames of this map with one extra Gemini call and, when found with reliable depth, replies
+becomes `propose_landmark`; the backend looks for it in up to 8 downscaled camera frames
+kept for coverage of this map (the newest and the most distinct views) with one extra Gemini call and, when found with reliable depth, replies
 with an ordinary point card (NAV_ACTIONS.md Named landmarks). Unlike the text-only answer, this
 call sends images; they are held in memory only, never logged or stored, and dropped on a map
 change. It needs no configuration beyond the existing voice settings, and counts as one
