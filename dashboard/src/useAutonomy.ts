@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 export interface AutonomyReadiness {
   version: 1;
   adapter: "logging" | "iphone";
+  profile?: "prototype" | "measured";
+  warnings?: string[];
   ready: boolean;
   blockers: string[];
 }

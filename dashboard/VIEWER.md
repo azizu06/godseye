@@ -53,6 +53,11 @@ Unit coverage includes native depth holes, planar/color preservation, incrementa
 
 Run `node dashboard/tools/benchmark-retained-map.mjs` from the repository root after installing dashboard dependencies to compare against main at `ed940f8` (or pass another baseline ref). The fixture accumulates 100 batches of 1,200 disconnected triangles, below capacity, and requires identical final geometry and colors. On the development Mac, median integration/update preparation was 197.5 ms before and 12.5 ms after; p95 was 473.7 ms before and 32.7 ms after. Worker payloads totaled 509.0 MB before and 10.1 MB after. These are synthetic CPU and transfer measurements, not end-to-end FPS.
 
+For the paired iPhone adapter, Arm sends an explicit request whenever commands
+are enabled and no command is pending. It does not duplicate backend readiness
+gates using delayed viewer telemetry; `/arm` checks current readiness and reports
+rejections. The logging-only adapter retains its existing disabled-state checks.
+
 ## Experimental Explore status
 
 An optional `health.exploration` extension reports the backend scan phase beside the existing Explore controls in the Rover controls drawer, with the stop reason and actual stable-view/surface-voxel counts. The minimal spatial canvas is unchanged. Counts are observations, not room coverage or a completion percentage. `scan_diminishing_returns` displays “Scan settled” and explains that recent reachable views added little new detail; this is a heuristic stopping point, not exhaustive coverage. Only `scan_accessible_exhausted` displays “Accessible scan done”; blocked or budget-limited scans remain partial, and unseen areas may remain even after accessible viewpoints are exhausted. Stale health, mismatched map identity, missing extensions and disarmed active phases never claim current motion. This presentation does not arm, dispatch or resume a scan.

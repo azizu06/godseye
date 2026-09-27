@@ -741,3 +741,16 @@ phone integration or dashboard rendering.
 See [AUDIO.md](AUDIO.md) for offline-by-default synthesis, bounded audio playback,
 restart-safe deduplication, deterministic tone demo, and the separate live-provider
 spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
+
+### Explicit uncalibrated prototype
+
+The operator may opt into `tools.run_rover_backend --prototype` with explicit
+estimated chassis dimensions. It uses the phone manual-control default PWM with continuous commands; it does
+not fill or certify measured calibration files.
+Live map/floor, tracking, feedback and authentication gates remain in effect.
+See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
+
+Within an AR map, occupancy retains the last observed floor height when the
+height histogram temporarily loses its floor peak. Current obstacle/free evidence
+is reclassified at that height; sensing timestamps are not refreshed by this cache.
+A new valid estimate can update it, and a new map epoch starts without a cached floor.

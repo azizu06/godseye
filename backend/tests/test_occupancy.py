@@ -491,3 +491,26 @@ class LateMappingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FloorPersistenceTests(unittest.TestCase):
+    def test_observed_floor_survives_peak_loss_but_obstacles_and_freshness_still_update(self):
+        grid = OccupancyGrid(SESSION)
+        feed(grid, plane(-1, 1, -1, 1, FLOOR_Y))
+        first = grid.map_snapshot()
+        self.assertIsNotNone(first.floor_y)
+        original_time = first.accepted_at
+        with mock.patch('backend.occupancy.estimate_floor', return_value=None):
+            # Height memory does not pretend another sensor frame arrived.
+            self.assertEqual(grid.map_snapshot().accepted_at, original_time)
+            feed(grid, box(.3, .6, .3, .6, FLOOR_Y, FLOOR_Y + .4))
+            current = grid.map_snapshot()
+            self.assertEqual(current.floor_y, first.floor_y)
+            self.assertNotIn('no_floor', current.blockers)
+            self.assertEqual(current.cell(.45, .45), 2)
+            self.assertIsNotNone(grid.snapshot()[2])
+            self.assertIsNotNone(grid.message_if_due(10.))
+            # A new AR epoch cannot inherit another map's floor height.
+            reset = OccupancyGrid((SESSION[0], 2))
+            feed(reset, plane(-1, 1, -1, 1, FLOOR_Y))
+            self.assertIn('no_floor', reset.map_snapshot().blockers)
