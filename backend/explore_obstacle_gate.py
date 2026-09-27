@@ -94,7 +94,12 @@ class ExploreObstacleGate:
         elif observation.depth_known and not observation.path_blocked:
             self._clear_streak += 1
             self._confirm_streak = 0
-        # else: unknown/missing/stale depth -- neither confirms nor clears.
+        else:
+            # Missing evidence cannot spend a hold earned by an earlier clear
+            # view. Keep the obstacle yield, but require a fresh clear streak
+            # and hold before resuming once depth becomes usable again.
+            self._clear_streak = 0
+            self._clear_hold_started_at = None
 
         resumed = False
         if not self._yielding:

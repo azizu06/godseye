@@ -92,6 +92,24 @@ class SustainedClearResumeTests(unittest.TestCase):
 
 
 class StaleUnknownNeverProvesClearTests(unittest.TestCase):
+    def test_unknown_after_clear_streak_cannot_spend_an_old_resume_hold(self):
+        gate = ExploreObstacleGate()
+        gate.decide(IMMINENT, 0.)
+        for t in (.1, .2, .3):
+            self.assertTrue(gate.decide(CLEAR, t).yielding)
+        # The old clear hold elapsed, but today's corridor evidence is missing.
+        missing = gate.decide(UNKNOWN_BLOCKED_LABEL, 1.31)
+        self.assertTrue(missing.yielding)
+        self.assertFalse(missing.resumed_this_tick)
+        # One new clear sample cannot reuse the previous streak or hold either.
+        self.assertTrue(gate.decide(CLEAR, 1.4).yielding)
+        self.assertTrue(gate.decide(CLEAR, 1.5).yielding)
+        self.assertTrue(gate.decide(CLEAR, 1.6).yielding)
+        self.assertTrue(gate.decide(CLEAR, 2.31).yielding)
+        resumed = gate.decide(CLEAR, 2.61)
+        self.assertFalse(resumed.yielding)
+        self.assertTrue(resumed.resumed_this_tick)
+
     def test_unknown_depth_while_yielding_never_resumes(self):
         gate = ExploreObstacleGate()
         for i in range(3):
