@@ -146,7 +146,7 @@ A missing detector stays down; the setup controls still work, but driving stays 
    app foregrounded; remote control keeps the display awake. A locked/background app
    cannot capture camera data.
 2. Open the dashboard. Press **Escape → Connection settings**, enable REST commands,
-   and enter the same key. The key and command permission do not survive reload.
+   and enter the same key. This tab remembers the key and command permission across reloads for the same backend. Disable REST commands to forget them. Arming and movement are never restored.
 3. Open **Rover controls → Mounted phone** to observe setup or change it. If no rover
    has been saved, select **GodsEye-Rover-D022** there. After Stop or a control loss,
    click **Enable laptop control** in this panel; recovery does not silently restore

@@ -191,7 +191,8 @@ export function Settings({
                 placeholder="Required for the iPhone rover adapter"
               />
               <small>
-                Kept in this tab until reload. Use the same key on the phone.
+                Remembered in this tab across reloads. Disable REST commands to
+                forget it. Use the same key on the phone.
               </small>
             </label>
           )}

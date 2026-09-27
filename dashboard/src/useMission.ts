@@ -23,6 +23,11 @@ import {
   type ConnectionConfig,
 } from "./transport";
 
+import {
+  restoreControlPairing,
+  rememberControlPairing,
+} from "./controlPairing";
+
 export function useMission() {
   const [cloud] = useState(() => new PointCloudStore());
   const pointWorker = useRef<CloudWorker | null>(null);
@@ -45,9 +50,23 @@ export function useMission() {
     },
     [],
   );
-  const [config, setConfig] = useState<ConnectionConfig>(initialConfig);
+  const [config, setConfig] = useState<ConnectionConfig>(() => {
+    const initial = initialConfig();
+    try {
+      return restoreControlPairing(initial, window.sessionStorage);
+    } catch {
+      return initial;
+    }
+  });
   const autonomy = useAutonomy(config.apiUrl);
-  useEffect(() => updateFeedUrl(config), [config]);
+  useEffect(() => {
+    updateFeedUrl(config);
+    try {
+      rememberControlPairing(config, window.sessionStorage);
+    } catch {
+      /* Storage blocked. */
+    }
+  }, [config]);
   const [mission, setMission] = useState(emptyMission);
   const [connection, setConnection] = useState("connecting");
   const [mapConfirmed, setMapConfirmed] = useState(false);
