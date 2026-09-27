@@ -315,6 +315,20 @@ class RelayAuthorizationTests(unittest.TestCase):
             self.assertEqual(client.post('/nav/propose', json=dict(SESSION, action=dict(
                 id='a', name='stop_navigation', args={}))).status_code, 409)  # no active map, not 401
 
+    def test_the_uncalibrated_prototype_profile_is_named_on_every_suggestion(self):
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        from backend.prototype import PrototypeActuation
+        from backend.rover_relay import RelayCar
+        key = 'ONLY_A_TEST_KEY_NOT_A_REAL_ROVER_KEY'
+        with TestClient(create_app(db_path=':memory:', car=RelayCar(key, PrototypeActuation()))) as client:
+            session = client.post('/session').json()
+            proposal = client.post('/nav/propose', json=dict(
+                session_id=session['session_id'], map_epoch=1,
+                action=dict(id='a', name='stop_navigation', args={}))).json()
+            self.assertTrue(any('Uncalibrated prototype' in w for w in proposal['execution']['autonomy_warnings']))
+            self.assertIn('rover_relay_disconnected', proposal['execution']['autonomy_blockers'])
+
 
 if __name__ == '__main__':
     unittest.main()

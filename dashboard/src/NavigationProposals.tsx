@@ -277,6 +277,15 @@ function ProposalCard({
               {block.reason}
             </p>
           )}
+          {phase.proposal.execution.warnings.map((warning) => (
+            <p
+              key={warning}
+              className="nav-proposal-reason"
+              data-testid="nav-proposal-warning"
+            >
+              {warning}
+            </p>
+          ))}
           {phase.proposal.execution.autonomyMessage && (
             <p
               className="nav-proposal-note"

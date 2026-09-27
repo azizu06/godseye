@@ -44,6 +44,8 @@ export interface NavProposal {
     message: string | null;
     /** Why the autonomous adapter (GET /autonomy) cannot drive yet, for context only. */
     autonomyMessage: string | null;
+    /** Profile caveats, e.g. the uncalibrated prototype's. */
+    warnings: string[];
   };
   expiresInS: number | null;
 }
@@ -131,6 +133,12 @@ export function parseProposal(data: unknown): NavProposal | null {
       reason: text(execution.reason, 64),
       message: text(execution.message),
       autonomyMessage: text(execution.autonomy_message),
+      warnings: Array.isArray(execution.autonomy_warnings)
+        ? execution.autonomy_warnings
+            .map((w) => text(w))
+            .filter((w): w is string => w !== null)
+            .slice(0, 3)
+        : [],
     },
     expiresInS: Number.isFinite(v.expires_in_s)
       ? (v.expires_in_s as number)

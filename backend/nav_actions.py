@@ -301,13 +301,14 @@ class Cancel(_Strict):
 
 
 def register_nav_action_routes(app, proposals: NavProposals, *, active_session, snapshot, pose, objects,
-                               execution, readiness, begin_goal, select_explore):
+                               execution, readiness, begin_goal, select_explore, warnings=lambda: []):
     """Proposal routes over the app's own safeguards; none of them can arm.
 
     `snapshot()` (blocking) is the navigation map, `pose()` the fresh rover pose or None,
     `objects(session)` the stored objects. `execution(kind)` is why the proposal cannot be
     confirmed right now (a health hazard, or 'arm_required' for a destination), else None;
-    `readiness()` lists the autonomous adapter's blockers (`GET /autonomy`), shown for context.
+    `readiness()` lists the autonomous adapter's blockers (`GET /autonomy`) and `warnings()` its
+    profile caveats (the uncalibrated prototype's); both are shown for context only.
     `begin_goal(x, z)` is `/goal`'s own plan-and-follow path (409s and disarms on failure);
     `select_explore()` stops and selects explore mode, disarmed.
     """
@@ -316,7 +317,8 @@ def register_nav_action_routes(app, proposals: NavProposals, *, active_session, 
     def described(reason):
         blockers = list(readiness())
         return dict(available=reason is None, reason=reason, message=reason_text(reason),
-                    autonomy_blockers=blockers, autonomy_message=reason_text(blockers[0]) if blockers else None)
+                    autonomy_blockers=blockers, autonomy_message=reason_text(blockers[0]) if blockers else None,
+                    autonomy_warnings=list(warnings()))
 
     async def check(kind, args, session):
         found = await asyncio.to_thread(

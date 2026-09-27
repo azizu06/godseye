@@ -887,7 +887,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app, proposals, active_session=lambda: app.state.session,
         snapshot=map_snapshot, pose=lambda: app.state.nav.fresh_pose(),
         objects=lambda session: app.state.objects.snapshot(session, limit=None),
-        execution=execution, readiness=autonomy_blockers, begin_goal=begin_goal, select_explore=select_explore)
+        execution=execution, readiness=autonomy_blockers,
+        warnings=lambda: list(getattr(relay.actuation, 'warnings', ())) if relay else [], begin_goal=begin_goal, select_explore=select_explore)
 
     @app.post('/rescan')
     async def rescan():

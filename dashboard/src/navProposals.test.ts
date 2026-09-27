@@ -79,6 +79,19 @@ describe("parseProposal", () => {
       target: { className: "backpack", position: [0.8, 0.9] },
     });
   });
+  it("keeps the prototype profile's caveats", () => {
+    const parsed = parseProposal({
+      ...ready,
+      execution: {
+        ...ready.execution,
+        autonomy_warnings: ["Uncalibrated prototype: estimated chassis.", 7],
+      },
+    });
+    expect(parsed!.execution.warnings).toEqual([
+      "Uncalibrated prototype: estimated chassis.",
+    ]);
+    expect(parseProposal(ready)!.execution.warnings).toEqual([]);
+  });
   it("rejects a ready proposal it could not confirm", () => {
     expect(parseProposal({ ...ready, proposal_id: null })).toBeNull();
     expect(parseProposal({ ...ready, destination: null })).toBeNull();
