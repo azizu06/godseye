@@ -149,6 +149,19 @@ def recoverable_start(snapshot, x, z, extra_margin_m):
                 and obstacle_clearance_m(snapshot, x, z) >= snapshot.inflation_m - extra_margin_m)
 
 
+def start_clearance_diagnostics(snapshot, x, z, extra_margin_m):
+    """Report the exact start guard without granting a new motion permission."""
+    clearance = obstacle_clearance_m(snapshot, x, z)
+    clear = snapshot.traversable(x, z)
+    recoverable = recoverable_start(snapshot, x, z, extra_margin_m)
+    return dict(can_start=clear or recoverable, traversable=clear, recoverable=recoverable,
+                camera_cell=snapshot.cell(x, z),
+                nearest_occupied_m=clearance if math.isfinite(clearance) else None,
+                inflation_m=snapshot.inflation_m,
+                footprint_bound_m=max(0., snapshot.inflation_m-extra_margin_m),
+                reason=None if clear or recoverable else 'start_blocked')
+
+
 def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
     if not all(math.isfinite(v) for v in (x, z, next_x, next_z)):
         return False
@@ -320,8 +333,7 @@ class Navigator:
         if problem:
             return 'plan', snapshot, goal, PlanResult([], problem)
         grid, config = planning_grid(snapshot, self.settings)
-        if not (snapshot.traversable(*start) or
-                recoverable_start(snapshot, *start, self.settings.start_recovery_margin_m)):
+        if not start_clearance_diagnostics(snapshot, *start, self.settings.start_recovery_margin_m)['can_start']:
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         heading = yaw if explore_yaw is None else explore_yaw
 

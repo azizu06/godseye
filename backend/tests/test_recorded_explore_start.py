@@ -13,7 +13,7 @@ import unittest
 
 import numpy as np
 
-from backend.navigator import Navigator, NavSettings, obstacle_clearance_m, recoverable_start, recovery_step_allowed
+from backend.navigator import Navigator, NavSettings, obstacle_clearance_m, recoverable_start, recovery_step_allowed, start_clearance_diagnostics
 from backend.occupancy import OccupancySnapshot
 from backend.prototype import PrototypeActuation, prototype_geometry
 
@@ -35,6 +35,11 @@ class RecordedExploreStartTests(unittest.TestCase):
                 x, _, z = record['position']
                 self.assertAlmostEqual(geometry.inflation_m, .4250805640305154)
                 self.assertAlmostEqual(obstacle_clearance_m(snapshot, x, z), expected_clearance)
+                diagnostic = start_clearance_diagnostics(snapshot, x, z, .1524)
+                self.assertFalse(diagnostic['can_start'])
+                self.assertEqual(diagnostic['reason'], 'start_blocked')
+                self.assertAlmostEqual(diagnostic['nearest_occupied_m'], expected_clearance)
+                self.assertAlmostEqual(diagnostic['footprint_bound_m'], .27268056403051544)
                 self.assertFalse(snapshot.traversable(x, z))
                 self.assertFalse(recoverable_start(snapshot, x, z, .1524))
                 self.assertFalse(recovery_step_allowed(snapshot, x, z, x-.01, z, .1524))

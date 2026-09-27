@@ -308,7 +308,8 @@ shortcutting, to leave room for steering around obstacle corners. Medium-or-high
 obstacle after two distinct views see through its former footprint.
 If the prototype starts inside obstacle clearance (including retained mesh of
 its own body behind a front-mounted phone), Explore may snap a route toward
-nearby clear space and move outward. Its camera cell must be unoccupied. Each
+nearby clear space and move outward only outside the conservative footprint
+bound without the extra margin. Its camera cell must be unoccupied. Each
 sampled step must preserve or increase distance to every overlapping obstacle
 and enter no new obstacle clearance region. Geometry is retained, not cleared
 or labeled as the rover. Measured mode is unchanged.
@@ -484,3 +485,6 @@ The regression is `backend.tests.test_explore_obstacle_gate` (unknown-after-hold
 and repeated-sample interruption cases). The corrected helper is now wired into `/explore/resume` clearance acceptance;
 this fix does not establish the cause or physical resolution of
 the recorded pink-stand stop above. That physical pass remains unverified.
+
+`GET /autonomy.navigation_start` exposes that exact start guard and distances
+before a run. Sensor/adapter `ready` alone is not a promise of route clearance.

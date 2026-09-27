@@ -47,7 +47,7 @@ from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env,
 from backend.occupancy import (CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S,
                                DepthView, Evidence, OccupancyGrid, depth_view, frame_evidence)
 from backend.navigation import Grid, path_message
-from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
+from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem, start_clearance_diagnostics
 from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
@@ -484,6 +484,13 @@ def create_app(db_path: str | None = None, build_points=None,
     async def autonomy_readiness():
         reasons = autonomy_blockers()
         current = health()
+        snapshot, pose = map_snapshot(), rover_pose()
+        start = None
+        if (snapshot is not None and pose is not None and pose.tracking == 'normal'
+                and pose.age_s <= app.state.nav.settings.pose_max_age_s
+                and map_problem(snapshot, app.state.nav.settings.map_max_age_s) is None):
+            start = start_clearance_diagnostics(snapshot, pose.x, pose.z,
+                                               app.state.nav.settings.start_recovery_margin_m)
         reasons.extend(f'{part}_{current[part]}' for part in ('phone', 'detector') if current[part] != 'ok')
         return dict(version=1, adapter='iphone' if relay else 'logging',
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
@@ -495,7 +502,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     generation=app.state.motion.generation,
                     exploration=app.state.nav.exploration.stats(),
                     navigation_wait_reason=current['navigation_wait_reason'],
-                    explore_yield=app.state.explore_yield,
+                    explore_yield=app.state.explore_yield, navigation_start=start,
                     manual_control=manual_capabilities(relay.actuation, app.state.motion.limits) if relay else None,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
@@ -1213,6 +1220,8 @@ def create_app(db_path: str | None = None, build_points=None,
     async def release_explore(body: ExploreResume):
         check_explore_generation(body.generation)
         if (reason := hazard()) is not None:
+            app.state.obstacle_gate.decide(PathObservation(False, False), time.monotonic(),
+                                           external_hold=True, external_reason=reason)
             raise HTTPException(409, reason)
         decision = app.state.obstacle_gate.decide(yield_observation(), time.monotonic())
         if not decision.yielding:

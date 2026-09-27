@@ -913,26 +913,26 @@ a completed long side leg, that leg sets the bearing for the next branch.
 In an open room, Explore favors reachable frontiers bordering larger unmapped
 areas; it keeps forward hallway priority only when both corridor walls are seen.
 If the prototype starts inside obstacle clearance, it can follow a snapped
-route outward from an unoccupied camera cell. Each sampled step must preserve
+route outward from an unoccupied camera cell only when the conservative
+footprint bound without the extra margin is already clear. Each sampled step must preserve
 or increase distance to every overlapping obstacle and enter no new obstacle
-clearance region. This also permits escape from retained body/mount mesh behind
-a front-mounted phone; no occupied geometry is deleted to enable the route.
+clearance region. It does not permit departure through occupied geometry inside the footprint.
+No occupied geometry is deleted to enable a route.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
 
-An explicit Explore arm latches mission intent before checking readiness; even a
-temporarily refused first arm keeps `/autonomy.auto_requested` true. Motors still
-require fresh sensing, transport feedback, and the Stop/Arm acknowledgement barrier.
-No frontier or no path pauses the current run and checks again; a no-progress stop,
-disconnect, or failed arm waits at least one second after stopping/failing before
-another ready attempt. There is only one arm attempt at a time. The dashboard keeps
-confirmed Explore intent after a failed arm and displays that Explore is resuming.
-Selecting Explore mode alone never arms or starts automatic recovery.
+An explicit Explore arm requests one generation. Motors require fresh sensing,
+transport feedback and the Stop/Arm acknowledgement barrier. No frontier/no path
+holds zero and checks again in-session. Stop, failed arm, no-progress, invalid
+tracking, disconnect and prolonged stale evidence clear mission intent; another
+explicit arm is required. There is no automatic rearm. A bounded prototype input
+gap can recover in-session only while the existing generation remains valid.
+Hardware-free lifecycle checks: `python -m unittest backend.tests.test_explore_yield backend.tests.test_prototype -v`.
 
-Dashboard Stop, control disable, capture stop, rover disconnect, or an explicit
-mode choice cancels that intent and any pending recovery; late acknowledgements
-cannot arm it again. Backend shutdown drains recovery and stops motion. Intent is
-held only for the current backend process, so restart requires another explicit arm.
-Hardware-free lifecycle coverage: `python -m unittest backend.tests.test_persistent_explore -v`.
+`GET /autonomy.navigation_start` reports the current planner start decision,
+nearest occupied-cell distance, configured camera-disc inflation and conservative
+footprint bound. `ready` is sensor/adapter readiness; it does not promise a clear
+start or reachable route. A free forward ray is insufficient when this start
+footprint overlaps occupied cells. No geometry is erased to make it start.
 
 Within an AR map, occupancy retains the last observed floor height when the
 height histogram temporarily loses its floor peak. Current obstacle/free evidence
