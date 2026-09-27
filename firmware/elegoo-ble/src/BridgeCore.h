@@ -74,7 +74,17 @@ class BridgeCore {
       return true;
     }
     if (!online) return false;
-    if (motion.present) {
+    // A continuously-refilled armed-idle motion frame must not starve the
+    // feedback query indefinitely (data/godseye-voice-qa/explore-03/
+    // uno-link-diagnosis.md): once a query has waited QUERY_FAIRNESS_MS,
+    // it wins this one UART slot over an otherwise-eligible fresh motion
+    // frame. Stop, staleness/lateness braking and permit/session checks
+    // above are unconditional and run every call regardless of this; a
+    // motion frame delayed by this is re-checked for staleness next call
+    // exactly as before, so nothing here weakens those invariants.
+    const bool queryStarving =
+        query.present && uint32_t(now - query.received) >= QUERY_FAIRNESS_MS;
+    if (motion.present && !queryStarving) {
       out = motion;
       motion = Frame{};
       lastDrive = now;
@@ -89,6 +99,11 @@ class BridgeCore {
     }
     return false;
   }
+
+  // Comfortably under the phone's 2.5 s feedback watchdog
+  // (ios/App/RoverController.swift), well above one ESP permit interval
+  // (50 ms) so ordinary motion cadence is essentially unaffected.
+  static constexpr uint32_t QUERY_FAIRNESS_MS = 250;
 
  private:
   bool online = false, stopPending = true, moving = false;
