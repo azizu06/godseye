@@ -1,3 +1,4 @@
+import type { DepthObservation } from "./depthRetirement";
 /** Observed triangle geometry in ARKit world meters, never an inferred room shell. */
 export interface SurfacePatch {
   id: string;
@@ -21,6 +22,8 @@ export interface CapturedSurface extends SurfacePatch {
   mapEpoch: number;
   frameId: number;
   capturedAt: number;
+  /** Worker-local native evidence, omitted from retained texture previews. */
+  depthObservation?: DepthObservation;
   depthWidth?: number;
   depthHeight?: number;
   projection?: {

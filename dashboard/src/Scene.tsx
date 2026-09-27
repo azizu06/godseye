@@ -850,16 +850,31 @@ export default function Scene(props: SceneProps) {
   const bounds = useMemo(() => {
     const box = new THREE.Box3();
     const point = new THREE.Vector3();
-    const arrays = [
-      props.cloud.positions.subarray(0, props.cloud.count * 3),
-      ...props.surfaces.map((patch) => patch.positions),
-      ...(props.persistentSurface ? [props.persistentSurface.positions] : []),
-    ];
-    for (const positions of arrays)
-      for (let i = 0; i < positions.length; i += 3)
+    for (let i = 0; i < props.cloud.count * 3; i += 3)
+      box.expandByPoint(
+        point.set(
+          props.cloud.positions[i],
+          props.cloud.positions[i + 1],
+          props.cloud.positions[i + 2],
+        ),
+      );
+    for (const patch of [
+      ...props.surfaces,
+      ...(props.persistentSurface ? [props.persistentSurface] : []),
+    ]) {
+      const seen = new Uint8Array(patch.positions.length / 3);
+      for (const index of patch.indices) {
+        if (seen[index]) continue;
+        seen[index] = 1;
         box.expandByPoint(
-          point.set(positions[i], positions[i + 1], positions[i + 2]),
+          point.set(
+            patch.positions[index * 3],
+            patch.positions[index * 3 + 1],
+            patch.positions[index * 3 + 2],
+          ),
         );
+      }
+    }
     return box.isEmpty() ? null : box.getBoundingSphere(new THREE.Sphere());
   }, [props.mission.mapKey, frame, hasGeometry]);
   const liveCount = props.cloud.count;
@@ -1089,6 +1104,12 @@ export default function Scene(props: SceneProps) {
                     ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · adaptive grid up to ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
                     : props.surfaceReason}
               </div>
+            )}
+            {props.cloud.retirementCapacity && (
+              <p className="surface-status" role="status">
+                Moving-object cleanup limit reached · some old points remain
+                until a new session
+              </p>
             )}
             <div className="scene-stat">
               <span>

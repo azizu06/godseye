@@ -46,7 +46,9 @@ export function useMission() {
   const ingestCaptured = useCallback(
     (points: CapturedPoints, restore = false) => {
       if (restore) pointWorker.current?.restoreCoverage();
-      pointWorker.current?.ingestCaptured(points);
+      return (
+        pointWorker.current?.ingestCaptured(points) ?? Promise.resolve(false)
+      );
     },
     [],
   );

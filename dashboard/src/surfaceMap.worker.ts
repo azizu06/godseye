@@ -1,3 +1,5 @@
+import { DepthContradiction, type DepthObservation } from "./depthRetirement";
+import { MAX_SURFACE_PATCHES } from "./surfaceStore";
 import { SurfaceKeyframes, type SurfaceViewpoint } from "./surfaceKeyframes";
 import {
   bakeSurfaceColors,
@@ -13,6 +15,12 @@ const map = new PersistentSurfaceMap();
 const keyframes = new SurfaceKeyframes();
 let coverageEpoch = 0;
 let capacity = false;
+let previousDepth: DepthObservation | undefined;
+let completedCapture = -Infinity;
+let recentGeometry: CapturedSurface[] = [];
+let recentCursor = 0;
+let recentFaces = new Map<string, number>();
+
 self.onmessage = async (
   event: MessageEvent<{
     id: number;
@@ -24,10 +32,15 @@ self.onmessage = async (
     expiresAt?: number;
     trackingLostCapture?: number;
     latest?: number;
+    retainedSurfaceIds?: string[];
   }>,
 ) => {
   const { id } = event.data;
   let bitmap: ImageBitmap | undefined;
+  const priorDepth = previousDepth;
+  const priorCursor = recentCursor;
+  const priorFaces = new Map(recentFaces);
+  let rollbackRetirement: (() => void) | undefined;
   try {
     if (event.data.buffer) {
       const surface = decodeCaptureSurface(event.data.buffer, true);
@@ -36,7 +49,10 @@ self.onmessage = async (
           event.data.expectedMap && Date.now() <= (event.data.expiresAt ?? 0);
       if (surface.capturedAt <= (event.data.trackingLostCapture ?? -1))
         throw Error("Capture predates tracking loss");
-      if (surface.capturedAt <= (event.data.latest ?? -Infinity)) {
+      if (
+        surface.capturedAt <= (event.data.latest ?? -Infinity) ||
+        surface.capturedAt <= completedCapture
+      ) {
         const delta = map.takeDelta();
         self.postMessage(
           { id, delta, cellM: map.cellM, coverageEpoch, capacity },
@@ -87,12 +103,30 @@ self.onmessage = async (
       context.translate(0, canvas.height);
       context.scale(1, -1);
       context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const { depthObservation: _depth, ...displaySurface } = surface;
       const recent: CapturedSurface = {
-        ...surface,
+        ...displaySurface,
         ...compact,
         jpeg: undefined,
         image: canvas.transferToImageBitmap(),
       };
+      // Only the UI knows whether a preview was accepted. Keep its acknowledged
+      // geometry plus this one pending preview; an aborted preview cannot evict it.
+      const retainedIds = new Set(
+        (
+          event.data.retainedSurfaceIds ??
+          recentGeometry.map((patch) => patch.id)
+        ).slice(-MAX_SURFACE_PATCHES),
+      );
+      recentGeometry = recentGeometry.filter((patch) =>
+        retainedIds.has(patch.id),
+      );
+      if (compact.indices.length)
+        recentGeometry.push({
+          ...displaySurface,
+          ...compactSurface(surface),
+          jpeg: undefined,
+        });
       const previewPoints = {
         ...points,
         positions: points.positions.slice(),
@@ -121,11 +155,82 @@ self.onmessage = async (
         cameraPosition: surface.cameraPosition,
         cameraForward: surface.cameraForward,
       };
+      const currentDepth = surface.depthObservation!;
+      let retirement: DepthObservation[] | undefined;
+      if (
+        previousDepth &&
+        previousDepth.sessionId === currentDepth.sessionId &&
+        previousDepth.mapEpoch === currentDepth.mapEpoch &&
+        previousDepth.capturedAt > (event.data.trackingLostCapture ?? -1) &&
+        previousDepth.capturedAt < currentDepth.capturedAt
+      )
+        retirement = [previousDepth, currentDepth];
+      if (
+        !previousDepth ||
+        currentDepth.capturedAt > previousDepth.capturedAt ||
+        previousDepth.sessionId !== currentDepth.sessionId ||
+        previousDepth.mapEpoch !== currentDepth.mapEpoch
+      )
+        previousDepth = currentDepth;
+      const retiredSurfaces: { id: string; indices: Uint32Array }[] = [];
+      let nextRecent = recentGeometry;
+      let removed = 0;
+      if (retirement) {
+        if (!valid()) throw Error("RGB-D expired before retirement");
+        const evidence = new DepthContradiction(retirement);
+        const undo = map.retirementCheckpoint();
+        removed = map.retire(evidence);
+        if (removed) rollbackRetirement = undo;
+        // Texture proof is also bounded/off-thread; each old patch resumes at its saved face.
+        nextRecent = [...recentGeometry];
+        const deadline = performance.now() + 24;
+        for (let visited = 0; visited < recentGeometry.length; visited++) {
+          const index = recentCursor % recentGeometry.length;
+          recentCursor = (index + 1) % recentGeometry.length;
+          const patch = recentGeometry[index];
+          if (patch.capturedAt >= evidence.before) continue;
+          const faces = patch.indices.length / 3,
+            removedFaces = new Set<number>();
+          let cursor = recentFaces.get(patch.id) ?? 0;
+          for (let seen = 0; seen < faces; seen++) {
+            if (seen % 64 === 0 && performance.now() >= deadline) break;
+            const face = cursor % faces;
+            cursor = (face + 1) % faces;
+            const a = patch.indices[face * 3],
+              b = patch.indices[face * 3 + 1],
+              c = patch.indices[face * 3 + 2];
+            if (
+              evidence.triangle(
+                patch.positions.subarray(a * 3, a * 3 + 3),
+                patch.positions.subarray(b * 3, b * 3 + 3),
+                patch.positions.subarray(c * 3, c * 3 + 3),
+              )
+            )
+              removedFaces.add(face);
+          }
+          if (removedFaces.size) {
+            const next = patch.indices.filter(
+              (_, i) => !removedFaces.has(Math.floor(i / 3)),
+            );
+            nextRecent[index] = { ...patch, indices: next };
+            retiredSurfaces.push({ id: patch.id, indices: next.slice() });
+            cursor %= Math.max(1, next.length / 3);
+          }
+          recentFaces.set(patch.id, cursor);
+          if (performance.now() >= deadline) break;
+        }
+        nextRecent = nextRecent.filter((patch) => patch.indices.length);
+        const retainedIds = new Set(nextRecent.map((patch) => patch.id));
+        recentFaces = new Map(
+          [...recentFaces].filter(([id]) => retainedIds.has(id)),
+        );
+        points.retirement = retirement;
+      }
       // Capacity is re-evaluated per view: bounded coarsening lets later views
       // in, and a saturated map rejects them cheaply without new work.
       if (
         observation.indices.length &&
-        keyframes.shouldIntegrate(observation)
+        (removed > 0 || keyframes.shouldIntegrate(observation))
       ) {
         try {
           const colored = bakeSurfaceColors(observation, pixels);
@@ -134,17 +239,30 @@ self.onmessage = async (
           if (accepted.reset) coverageEpoch++;
           if (accepted.retained)
             points.covered = retainedCoverage(surface, accepted.retained);
+          if (removed) keyframes.clear();
           keyframes.remember(observation);
           capacity = map.atCapacity;
         } catch (error) {
-          if (error instanceof Error && /capacity/i.test(error.message))
+          if (error instanceof Error && /capacity/i.test(error.message)) {
             capacity = true;
-          else throw error;
+            if (removed) keyframes.clear();
+          } else throw error;
         }
       }
+      recentGeometry = nextRecent;
+      map.commitRetirement();
+      completedCapture = surface.capturedAt;
       const delta = map.takeDelta();
       self.postMessage(
-        { id, delta, cellM: map.cellM, points, coverageEpoch, capacity },
+        {
+          id,
+          delta,
+          cellM: map.cellM,
+          points,
+          coverageEpoch,
+          capacity,
+          retiredSurfaces,
+        },
         {
           transfer: [
             delta.positions.buffer,
@@ -153,6 +271,7 @@ self.onmessage = async (
             points.positions.buffer,
             points.colors.buffer,
             ...(points.covered ? [points.covered.buffer] : []),
+            ...retiredSurfaces.map((patch) => patch.indices.buffer),
           ],
         },
       );
@@ -172,6 +291,10 @@ self.onmessage = async (
       self.postMessage({ id, patch: map.snapshot(), cellM: map.cellM });
     }
   } catch (error) {
+    rollbackRetirement?.();
+    previousDepth = priorDepth;
+    recentCursor = priorCursor;
+    recentFaces = priorFaces;
     self.postMessage({
       id,
       error: error instanceof Error ? error.message : "Map integration failed",
