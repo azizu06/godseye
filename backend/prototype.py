@@ -83,11 +83,23 @@ class PrototypeActuation:
         'PWM 60–180 for forward travel and arcs, PWM 60 for pivots; speed and stopping distance are unverified.',
     )
 
-    def __init__(self, max_pwm=180, *, variable_arc_pwm=False):
+    cruise_pwm = None  # default mapping; set only by the explicit faster-cruise option
+
+    def __init__(self, max_pwm=180, *, variable_arc_pwm=False, cruise_pwm=None):
         if type(max_pwm) is not int or not 1 <= max_pwm <= 180:
             raise ValueError('prototype max PWM must be an integer in [1, 180]')
         self.max_pwm = max_pwm
         self.variable_arc_pwm = variable_arc_pwm
+        if cruise_pwm is not None:
+            # 180 is the installed phone/ESP autonomous ceiling, and max_pwm stays
+            # the all-direction ceiling. 60 or less would not be faster.
+            if type(cruise_pwm) is not int or not 60 < cruise_pwm <= max_pwm:
+                raise ValueError('prototype cruise PWM must be an integer above 60 and at most the max PWM')
+            self.cruise_pwm = cruise_pwm
+            self.warnings = PrototypeActuation.warnings + (
+                f'Faster uncalibrated cruise: forward/arc PWM up to {cruise_pwm} on clear, fresh map; '
+                'reduced toward baseline near obstacles, unknown floor, aging map and arrival. '
+                'Stopping distance at this power is unmeasured.',)
 
     def follower(self):
         return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
@@ -105,6 +117,8 @@ class PrototypeActuation:
             # Published b03 phone rejects the new optional inner_power field.
             # Keep its exact command contract unless the paired update is explicit.
             power = min(self.max_pwm, round(60 + 120 * max(0., (v_mps - .15) / .05)))
+            if v_mps:
+                power = self._faster(v_mps, power)
             if v_mps and abs(yaw_rate_rps) >= .15:
                 return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, power)
             return TimedMotorCommand(3 if v_mps else (1 if yaw_rate_rps > 0 else 2), power)
@@ -113,7 +127,7 @@ class PrototypeActuation:
         # Smooth the requested duty from approach to cruise without boosting
         # power when steering crosses the straight/arc threshold. This is an
         # uncalibrated PWM policy, not an estimate of actual motor response.
-        power = min(self.max_pwm, round(60 + 120 * max(0., min(1., (v_mps - .05) / .15))))
+        power = self._faster(v_mps, min(self.max_pwm, round(60 + 120 * max(0., min(1., (v_mps - .05) / .15)))))
         # Preserve small steering requests instead of switching between straight
         # and one fixed sharp arc. At the yaw request limit the inner wheel gets
         # half power; gentler bends keep both wheels closer to cruise. This is
@@ -123,3 +137,16 @@ class PrototypeActuation:
             return TimedMotorCommand(3, power)
         return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, power,
                                  inner_power=max(power // 2, inner))
+
+    def _faster(self, v_mps, power):
+        """Forward/arc duty under the explicit faster-cruise option; never below default.
+
+        Nominal requests at or below 0.10 m/s keep baseline power. That is the
+        Explore floor near obstacles and aging sensing, below its unknown-floor
+        cap, and where arrival slowing ends. Power reaches `cruise_pwm` at the
+        0.15 nominal cruise. This is an uncalibrated duty choice, not a speed.
+        """
+        if self.cruise_pwm is None:
+            return power
+        boost = round(60 + (self.cruise_pwm - 60) * max(0., min(1., (v_mps - .1) / .05)))
+        return min(self.max_pwm, max(power, boost))
