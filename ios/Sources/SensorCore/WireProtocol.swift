@@ -64,7 +64,7 @@ public enum WireProtocol {
     public static func bundle(pose: [String: Any], jpeg: Data, intrinsics: [Float],
                               width: Int = 960, height: Int = 720,
                               depth: Data, confidence: Data, depthWidth: Int,
-                              depthHeight: Int) throws -> Data {
+                              depthHeight: Int, floor: [String: Any]? = nil) throws -> Data {
         guard (1...8192).contains(width), (1...8192).contains(height),
               (1...4096).contains(depthWidth), (1...4096).contains(depthHeight),
               width * depthHeight == height * depthWidth,
@@ -76,6 +76,10 @@ public enum WireProtocol {
         }
         var header = pose
         header["type"] = "frame"
+        if let floor {
+            header["version"] = 2
+            header["floor"] = floor
+        }
         header["image"] = ["width": width, "height": height, "jpeg_len": jpeg.count,
                            "intrinsics": intrinsics, "orientation": "landscape_right"]
         header["depth"] = ["width": depthWidth, "height": depthHeight,

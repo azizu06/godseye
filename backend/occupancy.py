@@ -76,6 +76,7 @@ class Evidence:
     outside: int  # points outside the grid bounds
     camera_y: float | None = None  # same-frame ARKit camera height, when available
     camera_xz: tuple[float, float] | None = None
+    floor_y: float | None = None  # Same-frame classified ARKit floor anchor (v2).
 
 
 @dataclass(frozen=True)
@@ -174,7 +175,8 @@ def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, seco
 
 
 def frame_evidence(positions, *, camera_y: float | None = None,
-                   camera_xz: tuple[float, float] | None = None) -> Evidence:
+                   camera_xz: tuple[float, float] | None = None,
+                   floor_y: float | None = None) -> Evidence:
     """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
     p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     with np.errstate(invalid='ignore'):
@@ -186,7 +188,7 @@ def frame_evidence(positions, *, camera_y: float | None = None,
     keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                      + iy[inside].astype(np.int64))
     keys.setflags(write=False)
-    return Evidence(keys, int(len(p) - inside.sum()), camera_y, camera_xz)
+    return Evidence(keys, int(len(p) - inside.sum()), camera_y, camera_xz, floor_y)
 
 
 @dataclass(frozen=True)
@@ -339,9 +341,12 @@ class OccupancyGrid:
                     self._keys, self._hits = self._keys[keep], self._hits[keep]
             if evidence.camera_y is not None and math.isfinite(evidence.camera_y):
                 self._camera_y = evidence.camera_y
+                if (evidence.floor_y is not None and math.isfinite(evidence.floor_y)
+                        and .05 <= evidence.camera_y - evidence.floor_y <= 1.5):
+                    self._floor_y = evidence.floor_y
                 # A flat-terrain rover's floor is below its camera. Prefer the
                 # plane in a fresh frame over a ceiling dominating old voxels.
-                if getattr(self.calibration, 'unknown_traversable', False):
+                if getattr(self.calibration, 'unknown_traversable', False) and evidence.floor_y is None:
                     candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
                     if candidate is not None and candidate < evidence.camera_y:
                         if self._floor_y is None or candidate <= self._floor_y + .15:
