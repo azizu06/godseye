@@ -1,11 +1,12 @@
 """Voice-suggested navigation as proposals that only a human confirmation can act on.
 
-The answer model may suggest `propose_navigation`, `propose_exploration` or
-`stop_navigation`. Nothing here trusts that output to move anything: an entry is
-checked against a strict schema, a proposal is validated against the active map with
-the rover planner, and only `/nav/confirm` (a human action in the dashboard) hands a
-validated destination to the same goal path as `/goal`, or selects explore mode, which
-still needs a deliberate `/arm`. See NAV_ACTIONS.md.
+The answer model may suggest `propose_navigation`, `propose_exploration`,
+`stop_navigation` or a short `propose_move`. Nothing here trusts that output to move
+anything: an entry is checked against a strict schema, a proposal is validated against the
+active map with the rover planner (a move against its unit limits), and only `/nav/confirm`
+(a human action in the dashboard) hands a validated destination to the same goal path as
+`/goal`, selects explore mode, which still needs a deliberate `/arm`, or starts one measured
+move in manual mode after a deliberate arm (backend/moves.py). See NAV_ACTIONS.md.
 """
 from __future__ import annotations
 
@@ -18,7 +19,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-NAV_ACTION_NAMES = ('propose_navigation', 'propose_exploration', 'stop_navigation')
+from backend.moves import LIMITS_TEXT, MoveRequest, request_problem
+
+NAV_ACTION_NAMES = ('propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move')
 MAX_COORD_M = 50.  # the occupancy grid covers 10 m around the origin; this only rejects nonsense
 
 # Instruction lines for the answer model (backend/labels.py). The model names an object only by
@@ -30,7 +33,11 @@ NAV_ACTION_PROMPT = (
     '"class": name} when exactly one exists), or {"target": "point", "x": meters, "z": meters} only for '
     'coordinates the user said; propose_exploration {}; stop_navigation {}. They only put a suggestion '
     'on screen for a person to confirm: never say the rover is moving, and never mention speed, arming '
-    'or steering.')
+    'or steering. For one short manual move the user states with a number and unit: propose_move '
+    '{"direction": "forward", "amount": number, "unit": "cm" | "m" | "in"} or {"direction": "left" | '
+    '"right", "amount": number, "unit": "deg"}, with the number and unit exactly as said. Never guess a '
+    'missing unit, convert units or split a request into several moves; if the unit, number or direction '
+    'is unclear or it is backward, propose nothing and ask.')
 
 
 class _Strict(BaseModel):
@@ -60,12 +67,26 @@ class NoArgs(_Strict):
     pass
 
 
-ARG_MODELS = {'propose_navigation': NavigationArgs, 'propose_exploration': NoArgs, 'stop_navigation': NoArgs}
+class MoveArgs(_Strict):
+    """One forward distance (cm, m or in) or one in-place turn (deg), as said; limits are checked apart."""
+    direction: Literal['forward', 'left', 'right']
+    amount: float = Field(gt=0, le=1000)
+    unit: Literal['cm', 'm', 'in', 'deg']
+
+    @model_validator(mode='after')
+    def unit_matches(self):
+        if (self.direction == 'forward') == (self.unit == 'deg'):
+            raise ValueError('forward needs cm, m or in; a turn needs deg')
+        return self
+
+
+ARG_MODELS = {'propose_navigation': NavigationArgs, 'propose_exploration': NoArgs, 'stop_navigation': NoArgs,
+              'propose_move': MoveArgs}
 
 
 class NavAction(_Strict):
     id: str = Field(min_length=1, max_length=64)
-    name: Literal['propose_navigation', 'propose_exploration', 'stop_navigation']
+    name: Literal['propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move']
     args: dict
 
 
@@ -124,6 +145,10 @@ REASON_TEXT = {
     'search_limit': 'Route search gave up before finding a path.',
     'out_of_bounds': 'That spot is outside the mapped area.',
     'explore_complete': 'No reachable unexplored boundary remains.',
+    # bounded manual moves (backend/moves.py)
+    'move_out_of_range': 'Only ' + LIMITS_TEXT + ' can be suggested.',
+    'move_arm_required': 'Arm the rover to confirm; the dashboard switches it to Standard for this one move.',
+    'move_in_progress': 'Another move is still running.',
     # execution readiness
     'arm_required': 'Arm the rover to confirm; the dashboard switches it to navigate mode.',
     'car_down': 'The car adapter reports down; the default adapter only logs. ' + _UNVERIFIED,
@@ -145,7 +170,13 @@ MAP_SELECTION = 'Choose the destination yourself by clicking the floor on the ma
 
 
 def reason_text(reason: str | None) -> str | None:
-    return None if reason is None else REASON_TEXT.get(reason, reason.replace('_', ' ').capitalize() + '.')
+    if reason is None:
+        return None
+    if reason.startswith('actuation_') and reason.endswith('_unmeasured'):
+        name = reason[len('actuation_'):-len('_unmeasured')].replace('_', ' ')
+        return (f'The rover actuation profile has no measured {name}, so no motor power can be chosen. '
+                'Fill actuation.json from real measurements, or explicitly start the labeled uncalibrated prototype.')
+    return REASON_TEXT.get(reason, reason.replace('_', ' ').capitalize() + '.')
 
 
 def approach_point(grid, config, start_xz, target_xz, *, min_m: float, max_m: float = APPROACH_MAX_M):
@@ -202,11 +233,12 @@ def _length(points):
 class Proposal:
     id: str
     action_id: str
-    kind: str  # 'destination' or 'exploration'
+    kind: str  # 'destination', 'exploration' or 'move'
     session: tuple
     created: float
     destination: tuple | None = None
     target: dict | None = None
+    move: MoveRequest | None = None
 
 
 class NavProposals:
@@ -301,21 +333,23 @@ class Cancel(_Strict):
 
 
 def register_nav_action_routes(app, proposals: NavProposals, *, active_session, snapshot, pose, objects,
-                               execution, readiness, begin_goal, select_explore, warnings=lambda: []):
+                               execution, readiness, begin_goal, select_explore, begin_move,
+                               warnings=lambda: []):
     """Proposal routes over the app's own safeguards; none of them can arm.
 
     `snapshot()` (blocking) is the navigation map, `pose()` the fresh rover pose or None,
     `objects(session)` the stored objects. `execution(kind)` is why the proposal cannot be
-    confirmed right now (a health hazard, or 'arm_required' for a destination), else None;
-    `readiness()` lists the autonomous adapter's blockers (`GET /autonomy`) and `warnings()` its
-    profile caveats (the uncalibrated prototype's); both are shown for context only.
-    `begin_goal(x, z)` is `/goal`'s own plan-and-follow path (409s and disarms on failure);
-    `select_explore()` stops and selects explore mode, disarmed.
+    confirmed right now (a health hazard, or an arm requirement), else None; `readiness(kind)`
+    lists the adapter's blockers for that kind (`GET /autonomy`'s, or only the manual ones for a
+    move) and `warnings()` its profile caveats (the uncalibrated prototype's); both are shown for
+    context only. `begin_goal(x, z)` is `/goal`'s own plan-and-follow path (409s and disarms on
+    failure); `select_explore()` stops and selects explore mode, disarmed; `begin_move(request,
+    proposal_id)` starts one measured move while armed in manual mode (409 otherwise).
     """
     from fastapi import HTTPException
 
-    def described(reason):
-        blockers = list(readiness())
+    def described(reason, kind):
+        blockers = list(readiness(kind))
         return dict(available=reason is None, reason=reason, message=reason_text(reason),
                     autonomy_blockers=blockers, autonomy_message=reason_text(blockers[0]) if blockers else None,
                     autonomy_warnings=list(warnings()))
@@ -336,22 +370,27 @@ def register_nav_action_routes(app, proposals: NavProposals, *, active_session, 
         if action is None:
             raise HTTPException(422, 'Not a valid navigation action')
         kind = dict(propose_navigation='destination', propose_exploration='exploration',
-                    stop_navigation='stop')[action['name']]
+                    stop_navigation='stop', propose_move='move')[action['name']]
         response = dict(version=1, proposal_id=None, action_id=action['id'], name=action['name'], kind=kind,
                         session_id=session[0], map_epoch=session[1], hardware_verified=False)
         if kind == 'stop':  # stopping needs no validation; the dashboard's Stop is always available
             return dict(response, status='ready', reason=None, message='Stop the rover.',
-                        execution=described(None))
-        reason, details = await check(kind, action['args'], session)
+                        execution=described(None, kind))
+        move = details = None
+        if kind == 'move':  # no map or route: only the unit limits; the phone's pose measures it
+            move = MoveRequest(**action['args'])
+            reason, details = request_problem(move), dict(move=move.describe())
+        else:
+            reason, details = await check(kind, action['args'], session)
         response.update(details, status='unavailable' if reason else 'ready', reason=reason,
                         message=reason_text(reason) if reason else None,
-                        execution=described(execution(kind)))
+                        execution=described(execution(kind), kind))
         if reason in ('no_clear_approach', 'target_not_confirmed', 'target_not_found'):
             response['alternative'] = MAP_SELECTION
         if reason is None:
             proposal = Proposal(uuid4().hex, action['id'], kind, session, proposals.clock(),
                                 destination=tuple(details['destination']) if kind == 'destination' else None,
-                                target=details.get('target'))
+                                target=details.get('target'), move=move)
             proposals.add(proposal)
             response.update(proposal_id=proposal.id, expires_in_s=PROPOSAL_TTL_S)
         return response
@@ -372,6 +411,8 @@ def register_nav_action_routes(app, proposals: NavProposals, *, active_session, 
             if reason:
                 raise HTTPException(409, reason)
             return dict(select_explore(), proposal_id=proposal.id, next='arm')
+        if proposal.kind == 'move':
+            return dict(version=1, proposal_id=proposal.id, move=begin_move(proposal.move, proposal.id))
         target = proposal.target
         if target['kind'] == 'object':
             now = next((o for o in objects(proposal.session) if o['id'] == target['object_id']), None)

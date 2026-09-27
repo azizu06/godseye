@@ -4,6 +4,7 @@ import {
   currentOffers,
   navAction,
   offerNavigationActions,
+  parseMove,
   parseProposal,
   resetOffers,
   type CardContext,
@@ -178,5 +179,97 @@ describe("voice reply parsing (dashboardActions.parseActions)", () => {
       { target: "point", x: 1, z: 99 },
     ])
       expect(parseActions([{ ...go, args }])).toBeNull();
+  });
+});
+
+describe("bounded moves", () => {
+  const moveReady = {
+    version: 1,
+    proposal_id: "pm",
+    kind: "move",
+    status: "ready",
+    reason: null,
+    message: null,
+    move: {
+      direction: "forward",
+      amount: 20,
+      unit: "cm",
+      label: "forward 20 cm (0.20 m)",
+      limits: "one forward move of 5 to 50 centimeters",
+    },
+    expires_in_s: 30,
+    execution: {
+      available: false,
+      reason: "move_arm_required",
+      message: "Arm.",
+    },
+  };
+  it("keeps only a stated distance or turn with its own unit", () => {
+    const move = (args: object) =>
+      navAction({ id: "m", name: "propose_move", args });
+    expect(
+      move({ direction: "forward", amount: 20, unit: "cm" }),
+    ).not.toBeNull();
+    expect(move({ direction: "left", amount: 30, unit: "deg" })).not.toBeNull();
+    for (const args of [
+      { direction: "forward", amount: 20 },
+      { direction: "forward", amount: 20, unit: "deg" },
+      { direction: "right", amount: 20, unit: "cm" },
+      { direction: "backward", amount: 20, unit: "cm" },
+      { direction: "forward", amount: "20", unit: "cm" },
+      { direction: "forward", amount: 0, unit: "cm" },
+      { direction: "forward", amount: 20, unit: "cm", speed: 1 },
+    ])
+      expect(move(args)).toBeNull();
+  });
+  it("reads a move proposal and refuses one without its summary", () => {
+    expect(parseProposal(moveReady)?.move?.label).toBe(
+      "forward 20 cm (0.20 m)",
+    );
+    expect(parseProposal({ ...moveReady, move: undefined })).toBeNull();
+  });
+  it("needs a deliberate arm outside Explore before a move can be confirmed", () => {
+    const offer = {
+      key: "k",
+      mapKey: ctx.mapKey!,
+      action: { id: "m", name: "propose_move" as const, args: {} },
+    };
+    const proposal = parseProposal(moveReady)!;
+    expect(confirmBlock(offer, proposal, 1000, ctx)).toBeNull();
+    expect(
+      confirmBlock(offer, proposal, 1000, { ...ctx, canDrive: false })?.reason,
+    ).toContain("Arm for this move");
+    expect(
+      confirmBlock(offer, proposal, 1000, { ...ctx, mode: "explore" })?.reason,
+    ).toContain("Leave Explore");
+  });
+  it("reports only a finished move's measured sentence", () => {
+    const base = {
+      move_id: "m1",
+      proposal_id: "pm",
+      requested_unit: "m",
+      achieved: 0.08,
+      text: null,
+    };
+    expect(
+      parseMove({ version: 1, move: { ...base, status: "running" } }),
+    ).toMatchObject({
+      status: "running",
+      achieved: 0.08,
+      text: null,
+    });
+    expect(
+      parseMove({
+        version: 1,
+        move: { ...base, status: "stopped", text: "Stopped after 0.08 m." },
+      }),
+    ).toMatchObject({ status: "stopped", text: "Stopped after 0.08 m." });
+    expect(
+      parseMove({ version: 1, move: { ...base, status: "completed" } }),
+    ).toBeNull();
+    expect(parseMove({ version: 1, move: null })).toBeNull();
+    expect(
+      parseMove({ version: 1, move: { ...base, status: "teleported" } }),
+    ).toBeNull();
   });
 });

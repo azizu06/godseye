@@ -5,8 +5,8 @@ Off by default: without configured providers `GET /voice` reports
 `{"version":1,"status":"unavailable"}`, `POST /voice/ask` returns 503 before reading
 audio, and the dashboard shows "Voice Q&A unavailable on this backend." Besides
 answers it can change this dashboard's view (see Dashboard actions) and put a rover
-destination, exploration or stop suggestion on screen for a person to confirm
-([NAV_ACTIONS.md](NAV_ACTIONS.md)). It never arms, drives or steers the car itself,
+destination, exploration, stop or short measured move suggestion on screen for a person
+to confirm ([NAV_ACTIONS.md](NAV_ACTIONS.md)). It never arms, drives or steers the car itself,
 certifies an area as clear, recognizes people, or invents routes or destinations.
 
 ## Data flow
@@ -69,7 +69,7 @@ matches). Accepted actions get fresh server ids and are returned as
 
 Anything else rejects every action and replaces the answer with a fixed, spoken reason
 (`action_error`: `invalid`, `ambiguous` "Which one?", `not_found`, or `unsupported`).
-`propose_navigation`, `propose_exploration` and `stop_navigation` must stand alone and
+`propose_navigation`, `propose_exploration`, `stop_navigation` and `propose_move` must stand alone and
 only become confirmation cards (see [NAV_ACTIONS.md](NAV_ACTIONS.md)); `take_photo` is
 `unsupported` because the phone offers no remote capture (use **High-res photo** on the
 phone). Object labels are data: they cannot add names, classes or objects.

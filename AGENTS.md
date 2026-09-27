@@ -23,7 +23,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
 - Click-to-talk voice Q&A (ElevenLabs STT -> grounded Gemini -> ElevenLabs TTS), grounding bounds, `voice_extras` seam, typed dashboard `actions` (allowlist) and live opt-in: `backend/VOICE.md`.
-- Voice rover suggestions (destination/explore/stop) become single-use confirmation cards over `/goal` and explore, never direct actuation: `backend/NAV_ACTIONS.md`.
+- Voice rover suggestions (destination/explore/stop/bounded move) become single-use confirmation cards over `/goal`, explore or one pose-measured Standard move (never timed), never direct actuation; manual-move readiness is separate from autonomy/map readiness: `backend/NAV_ACTIONS.md`.
 - Playwright reuses any server on its port (default 5173, often a live demo): set `GODSEYE_DASHBOARD_TEST_PORT` to a free port.
 
 ## Maintaining this file

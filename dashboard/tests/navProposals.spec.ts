@@ -13,6 +13,8 @@ async function fakeRover(
     car?: string;
     propose?: (body: any) => unknown;
     voice?: object[];
+    /** Extra fake routes; return undefined to fall through. */
+    extra?: (path: string, body: any) => unknown;
   } = {},
 ) {
   if (opts.voice) await fakeMicrophone(page);
@@ -70,6 +72,8 @@ async function fakeRover(
       /* the voice clip is audio, not JSON */
     }
     state.calls.push({ path, body });
+    const extra = opts.extra?.(path, body);
+    if (extra !== undefined) return route.fulfill({ json: extra });
     if (path === "/voice")
       return route.fulfill({
         json: { version: 1, status: opts.voice ? "ready" : "unavailable" },
@@ -403,4 +407,149 @@ test("a spoken request becomes a confirmation card, never a drive command", asyn
   });
   for (const path of ["/arm", "/mode", "/goal", "/nav/confirm", "/manual"])
     expect(count(rover, path)).toBe(0);
+});
+
+test("a spoken move is armed for and confirmed by a person, then reports the measured result", async ({
+  page,
+}) => {
+  let polls = 0;
+  const move = (
+    status: string,
+    achieved: number | null,
+    text: string | null,
+  ) => ({
+    version: 1,
+    move: {
+      version: 1,
+      move_id: "m-1",
+      proposal_id: "p-move",
+      status,
+      reason: status === "running" ? null : "move_complete",
+      direction: "forward",
+      amount: 20,
+      unit: "cm",
+      label: "forward 20 cm (0.20 m)",
+      quantity: "distance",
+      requested: 0.2,
+      requested_unit: "m",
+      achieved,
+      measured: achieved !== null,
+      text,
+    },
+  });
+  const rover = await fakeRover(page, {
+    voice: [
+      {
+        version: 1,
+        session_id: "nav-room",
+        map_epoch: 1,
+        status: "ok",
+        question: "Move forward 20 centimeters",
+        answer: "Moving forward now.",
+        evidence: { objects: 0, changes: 0 },
+        speech: null,
+        actions: [
+          {
+            id: "srv-move",
+            name: "propose_move",
+            args: { direction: "forward", amount: 20, unit: "cm" },
+          },
+        ],
+        confirm: "token-move",
+      },
+    ],
+    propose: (body) => ({
+      version: 1,
+      proposal_id: "p-move",
+      action_id: body.action.id,
+      name: "propose_move",
+      kind: "move",
+      session_id: body.session_id,
+      map_epoch: body.map_epoch,
+      status: "ready",
+      reason: null,
+      message: null,
+      move: {
+        direction: "forward",
+        amount: 20,
+        unit: "cm",
+        label: "forward 20 cm (0.20 m)",
+        quantity: "distance",
+        requested: 0.2,
+        requested_unit: "m",
+        limits:
+          "one forward move of 5 to 50 centimeters, or one left or right turn of 10 to 90 degrees",
+      },
+      expires_in_s: 30,
+      execution: {
+        available: false,
+        reason: "move_arm_required",
+        message:
+          "Arm the rover to confirm; the dashboard switches it to Standard for this one move.",
+      },
+      hardware_verified: false,
+    }),
+    extra: (path) => {
+      if (path === "/nav/move") {
+        polls += 1;
+        return polls < 3
+          ? move("running", polls === 1 ? null : 0.08, null)
+          : move(
+              "completed",
+              0.21,
+              "Moved forward 0.21 m of the requested 20 cm, measured by phone tracking.",
+            );
+      }
+      if (path === "/nav/move/speak")
+        return { version: 1, move_id: "m-1", speech: { status: "error" } };
+      if (path === "/nav/confirm")
+        return {
+          version: 1,
+          proposal_id: "p-move",
+          move: move("running", null, null).move,
+        };
+      return undefined;
+    },
+  });
+  await closeWorkspace(page);
+  await page.getByRole("button", { name: "Ask Scout", exact: true }).click();
+  await page.waitForTimeout(450);
+  await page.getByRole("button", { name: "Stop and send" }).click();
+  const card = page.getByTestId("nav-proposal");
+  await expect(card).toContainText("Move forward 20 cm");
+  await expect(card).toContainText("forward 20 cm (0.20 m)");
+  await expect(card).toContainText("No obstacle check");
+  const confirm = card.getByRole("button", { name: "Confirm move" });
+  await expect(confirm).toBeDisabled();
+  // Speech only put it on screen: nothing armed, selected or moved.
+  await expect
+    .poll(() => rover.calls.find((c) => c.path === "/voice/confirm")?.body)
+    .toEqual({
+      token: "token-move",
+      text: "I put that suggestion on screen. Nothing moves unless you confirm it there.",
+    });
+  for (const path of ["/arm", "/mode", "/nav/confirm", "/manual"])
+    expect(count(rover, path)).toBe(0);
+
+  await card.getByRole("button", { name: "Arm for this move" }).click();
+  await expect.poll(() => rover.armed).toBe(true);
+  expect(rover.mode).toBe("manual");
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(card.getByTestId("nav-proposal-result")).toHaveText(
+    "Moved forward 0.21 m of the requested 20 cm, measured by phone tracking.",
+  );
+  expect(count(rover, "/nav/confirm")).toBe(1);
+  expect(rover.calls.find((c) => c.path === "/nav/confirm")!.body).toEqual({
+    proposal_id: "p-move",
+    session_id: "nav-room",
+    map_epoch: 1,
+  });
+  // The measured sentence is spoken once, only after the move ended; never a drive or steer command.
+  await expect.poll(() => count(rover, "/nav/move/speak")).toBe(1);
+  expect(rover.calls.find((c) => c.path === "/nav/move/speak")!.body).toEqual({
+    move_id: "m-1",
+  });
+  expect(polls).toBeGreaterThanOrEqual(3);
+  for (const path of ["/manual", "/goal"]) expect(count(rover, path)).toBe(0);
 });
