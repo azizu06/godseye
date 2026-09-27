@@ -13,6 +13,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config-dir', type=Path, default=Path.home() / '.local/share/godseye/autonomy')
     parser.add_argument('--init', action='store_true')
+    parser.add_argument('--prototype', action='store_true', help='Uncalibrated prototype; never auto-arms')
+    parser.add_argument('--estimated-length-m', type=float)
+    parser.add_argument('--estimated-width-m', type=float)
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--weights', default=os.environ.get('GODSEYE_YOLO_WEIGHTS'))
@@ -39,8 +42,17 @@ def main():
     from backend.rover_relay import RelayCar
     from backend.app import create_app
     import uvicorn
-    car = RelayCar((folder / 'pairing-key').read_text().strip(), load_actuation(folder / 'actuation.json'))
-    geometry = load_calibration(folder / 'geometry.json')
+    if args.prototype:
+        if args.estimated_length_m is None or args.estimated_width_m is None:
+            parser.error('--prototype requires explicit estimated length and width in meters')
+        from backend.prototype import PrototypeActuation, prototype_geometry
+        actuation = PrototypeActuation()
+        geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
+        print('UNCALIBRATED PROTOTYPE: PWM 60 matches phone manual default; no timed runs or forced pauses.', flush=True)
+    else:
+        actuation = load_actuation(folder / 'actuation.json')
+        geometry = load_calibration(folder / 'geometry.json')
+    car = RelayCar((folder / 'pairing-key').read_text().strip(), actuation)
     app = create_app(car=car, calibration=geometry, weights=args.weights)
     uvicorn.run(app, host=args.host, port=args.port, ws_max_size=8388608)
 

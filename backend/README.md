@@ -741,3 +741,11 @@ phone integration or dashboard rendering.
 See [AUDIO.md](AUDIO.md) for offline-by-default synthesis, bounded audio playback,
 restart-safe deduplication, deterministic tone demo, and the separate live-provider
 spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
+
+### Explicit uncalibrated prototype
+
+The operator may opt into `tools.run_rover_backend --prototype` with explicit
+estimated chassis dimensions. It uses the phone manual-control default PWM with continuous commands; it does
+not fill or certify measured calibration files.
+Live map/floor, tracking, feedback and authentication gates remain in effect.
+See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).

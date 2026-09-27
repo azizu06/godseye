@@ -29,8 +29,8 @@ from backend.drive import LoggingCar
 from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
-from backend.frame_bundle import FrameValidationError, validate_rigid_transform
-from backend.mapping import (MappingError, PointChunk, build_point_chunk, points_message,
+from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
+from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_to_points, points_message,
                              points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.detections import classes_from_env, detections_message, overlay_classes
@@ -220,7 +220,8 @@ def create_app(db_path: str | None = None, build_points=None,
     detector reports it can emit.
 
     `calibration` (backend.calibration.RoverCalibration) is the measured rover
-    geometry; without a complete, verified one the map is never motion-ready.
+    geometry, or an explicitly selected PrototypeGeometry with operator estimates.
+    Missing geometry still prevents motion; prototype mode is labeled uncalibrated.
 
     `car` is the drive adapter (`backend.drive`); the default only logs and
     reports the car down, so /arm stays refused. Only the 20 Hz pump sends motion.
@@ -384,6 +385,8 @@ def create_app(db_path: str | None = None, build_points=None,
         current = health()
         reasons.extend(f'{part}_{current[part]}' for part in ('phone', 'detector') if current[part] != 'ok')
         return dict(version=1, adapter='iphone' if relay else 'logging',
+                    profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
+                    warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
@@ -558,12 +561,21 @@ def create_app(db_path: str | None = None, build_points=None,
         so occupancy evidence keeps accumulating when nothing new is published.
         """
         dense = any(listener.dense for listener in tuple(app.state.listeners))
-        candidates = (build_point_chunk(payload, session_id=session_id, map_epoch=map_epoch,
-                                       max_points=max(point_settings.samples, DENSE_MAX_POINTS))
-                      if dense and custom_builder is None else build_points(payload, session_id, map_epoch))
+        if custom_builder is None:
+            frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
+            samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
+            candidates = depth_to_points(frame, max_points=samples)
+            # Carpet commonly has medium LiDAR confidence. Prototype navigation
+            # accumulates that evidence across frames; displayed points retain
+            # their existing high-confidence policy. Decode the JPEG only once.
+            evidence_points = (depth_to_points(frame, max_points=max(samples, 6000), min_confidence=1).positions
+                               if getattr(calibration, 'depth_confidence', 2) == 1 else candidates.positions)
+        else:
+            candidates = build_points(payload, session_id, map_epoch)
+            evidence_points = candidates.positions
         evidence = None
         try:
-            evidence = frame_evidence(candidates.positions)
+            evidence = frame_evidence(evidence_points)
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')

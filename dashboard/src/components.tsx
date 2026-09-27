@@ -608,6 +608,15 @@ export function OperatorControls({
               ? "iPhone · Bluetooth rover"
               : "Rover motion is not connected"}
           </strong>
+          {autonomy.profile === "prototype" && (
+            <p>
+              <strong>Uncalibrated prototype</strong>
+              <br />
+              Estimated geometry; motor power matches the phone manual default.
+              Keep the rover in an open area and use Stop if it turns the wrong
+              way.
+            </p>
+          )}
           <p>
             {autonomy.ready ? "Ready for explicit arming." : "Before driving:"}
           </p>

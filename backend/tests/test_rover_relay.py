@@ -248,8 +248,15 @@ class RelayHTTPTests(unittest.TestCase):
         The real ESP parser/watchdog has separate host sanitizer tests. No
         measurements from this fixture describe the physical rover.
         """
-        car = RelayCar(KEY, fixture())
         geometry = RoverCalibration.model_validate(dict(TEST_CALIBRATION, clearance_margin_m=.15))
+        self.rehearse_rgbd(fixture(), geometry)
+
+    def test_prototype_rgbd_goal_and_stale_sensing_stop(self):
+        from backend.prototype import PrototypeActuation, prototype_geometry
+        self.rehearse_rgbd(PrototypeActuation(), prototype_geometry(.24, .14))
+
+    def rehearse_rgbd(self, actuation, geometry):
+        car = RelayCar(KEY, actuation)
         app = create_app(db_path=':memory:', car=car, calibration=geometry,
                          detector=EmptyDetector(), capture_directory='')
         headers = {'Authorization': 'Bearer ' + KEY}
