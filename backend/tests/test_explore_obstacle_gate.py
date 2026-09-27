@@ -118,6 +118,39 @@ class SessionChangeTests(unittest.TestCase):
         self.assertTrue(gate.decide(BLOCKED, 1.3).yielding)
 
 
+class UnknownBreaksResumeHoldRegressionTests(unittest.TestCase):
+    """Regression for the integration owner's reproduced defect in dbf6097:
+    3 CLEAR ticks starting the hold, then a single later UNKNOWN tick, must
+    not let elapsed wall time alone complete the resume."""
+
+    def test_unknown_after_hold_started_does_not_resume(self):
+        gate = ExploreObstacleGate(GateConfig(resume_clear_frames=3, resume_hold_s=1.0))
+        for i in range(3):
+            gate.decide(BLOCKED, i * 0.1)
+        self.assertTrue(gate.decide(BLOCKED, 0.3).yielding)
+
+        gate.decide(CLEAR, 1.0)
+        gate.decide(CLEAR, 1.1)
+        gate.decide(CLEAR, 1.2)  # clear streak of 3 reached, hold starts at 1.2
+
+        # A later UNKNOWN tick must break the streak/hold, not silently let
+        # the already-elapsed 1.1s (2.3 - 1.2) complete the resume.
+        broke = gate.decide(UNKNOWN_BLOCKED_LABEL, 2.3)
+        self.assertTrue(broke.yielding)
+        self.assertFalse(broke.resumed_this_tick)
+
+        # A fresh, complete clear streak plus hold is still required to resume.
+        t = 2.4
+        for _ in range(3):
+            gate.decide(CLEAR, t)
+            t += 0.1
+        still_holding = gate.decide(CLEAR, t)
+        self.assertTrue(still_holding.yielding)
+        resumed = gate.decide(CLEAR, t + 1.0)
+        self.assertFalse(resumed.yielding)
+        self.assertTrue(resumed.resumed_this_tick)
+
+
 class FaultAndOperatorStopPrecedenceTests(unittest.TestCase):
     def test_external_hold_forces_yield_regardless_of_clear_evidence(self):
         gate = ExploreObstacleGate()

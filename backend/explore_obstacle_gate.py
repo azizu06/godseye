@@ -27,6 +27,13 @@ class PathObservation:
     path-blocking evidence, and missing depth is not proof of clearance.
     ``imminent`` marks evidence severe enough (e.g. a very close in-corridor
     reading) to require an immediate pause, bypassing the confirm debounce.
+
+    Callers must present one ``decide()`` tick per genuinely new sensor
+    observation. Re-presenting the same reading (e.g. because the caller
+    polls faster than the sensor updates) would over-count it as multiple
+    distinct confirming/clearing views; per-frame identity for de-duplicating
+    that case is being coordinated with the integration owner and is not yet
+    part of this contract.
     """
 
     path_blocked: bool
@@ -94,7 +101,13 @@ class ExploreObstacleGate:
         elif observation.depth_known and not observation.path_blocked:
             self._clear_streak += 1
             self._confirm_streak = 0
-        # else: unknown/missing/stale depth -- neither confirms nor clears.
+        else:
+            # Unknown/missing/stale depth is not proof of clearance: it must
+            # not merely be skipped over while an already-running resume hold
+            # keeps ticking on elapsed wall time alone. It breaks any
+            # in-progress clear streak and hold outright.
+            self._clear_streak = 0
+            self._clear_hold_started_at = None
 
         resumed = False
         if not self._yielding:
