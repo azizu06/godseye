@@ -42,6 +42,7 @@ PLAN_STOP_REASONS = {
     'out_of_bounds': 'out_of_bounds',
     'start_blocked': 'start_blocked',
 }
+FRONTIER_RESELECT_REASONS = frozenset({'no_path', 'goal_occupied', 'goal_unknown'})
 RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode it needs armed
 
 
@@ -366,11 +367,12 @@ class Navigator:
                     if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
                         goal = farther
         result = plan_path(grid, start, goal, config)
-        if explore and result.reason == 'no_path':
+        if explore and result.reason in FRONTIER_RESELECT_REASONS:
             self.exploration.reject(snapshot.session, goal)
-            # A new wall can disconnect an otherwise free implicit frontier.
-            # First try its detour above; only proven unreachability permits a
-            # different reachable frontier, with one bounded retry on this map.
+            # An implicit frontier may disconnect or lose route-cell clearance
+            # even while its exact point remains clear. Retire that target,
+            # refresh the exclusion mask, and try one other reachable frontier.
+            target_mask = self.exploration.targets(snapshot, grid)
             replacement = next_frontier()
             if replacement is None:
                 return 'explore_complete', snapshot
@@ -576,11 +578,13 @@ class Navigator:
                     if outcome_kind == 'plan':
                         _, _, next_goal, result = outcome
                         if not result.ok:
-                            if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
+                            if explore and result.reason in FRONTIER_RESELECT_REASONS | {'start_blocked', 'search_limit'}:
+                                if result.reason in FRONTIER_RESELECT_REASONS:
+                                    self.exploration.reject(snapshot.session, next_goal)
                                 if next_goal is not None and result.reason == 'no_path':
                                     visited.append(next_goal)
                                     visited = visited[-64:]
-                                goal = follower = progress = None
+                                goal = self.goal = follower = progress = None
                                 last_plan = now - s.replan_s + .5
                                 fast_corridor = False
                                 self.waiting_reason = result.reason

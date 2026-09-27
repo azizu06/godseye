@@ -948,3 +948,18 @@ mounted phone observes the whole rover footprint. It covers a clear detour to th
 same frontier, a new wall disconnecting a still-free frontier, stationary fresh
 sensing versus real loss, current-mesh clearance recovery, and late plan rejection
 after Stop/reset/disconnect or an arm-generation change. It sends no hardware commands.
+
+### Invalid Explore frontier recovery
+
+An implicit Explore frontier rejected as `goal_occupied`, `goal_unknown` or
+`no_path` is retired for that geometry. Planning tries one other reachable
+frontier with an updated exclusion mask. If no valid route is ready, Explore
+holds zero and retries in the existing generation; it does not use Navigate's
+terminal `destination_blocked`/`destination_unknown` result for an internal
+frontier. Explicit Navigate destinations retain those terminal semantics, and
+operator Stop or sensing/control faults remain authoritative. Collision
+inflation and command rollout checks are unchanged.
+
+Regression: `python -m unittest backend.tests.test_frontier_goal_recovery -v`.
+The Explore04 fixture uses a recorded map/start plus an explicitly synthetic
+one-cell obstruction; the original log does not contain the final internal map.
