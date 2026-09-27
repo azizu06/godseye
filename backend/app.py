@@ -16,6 +16,7 @@ import time
 from typing import Literal
 from uuid import uuid4
 
+import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
@@ -31,7 +32,7 @@ from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
 from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_to_points, points_message,
-                             points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
+                             points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.mission_entry import load_entry, record_entry
@@ -141,10 +142,12 @@ class Confidence(Input):
 
 
 class Frame(Pose):
+    version: Literal[1, 2]
     type: Literal['frame']
     image: Image
     depth: Depth
     confidence: Confidence
+    floor: dict | None = None
 
 
 def decode_frame(data: bytes) -> Frame:
@@ -669,6 +672,11 @@ def create_app(db_path: str | None = None, build_points=None,
             # their existing high-confidence policy. Decode the JPEG only once.
             evidence_points = (depth_to_points(frame, max_points=max(samples, 6000), min_confidence=1).positions
                                if getattr(calibration, 'depth_confidence', 2) == 1 else candidates.positions)
+            # ARKit's classified floor plane survives glossy surfaces whose
+            # scene-depth confidence is zero. Rasterize it into sparse free
+            # evidence at a bounded rate; observed obstacle voxels still win.
+            if frame.floor is not None and frame.frame_id % 5 == 0:
+                evidence_points = np.concatenate((evidence_points, floor_plane_points(frame)))
         else:
             candidates = build_points(payload, session_id, map_epoch)
             evidence_points = candidates.positions
@@ -677,7 +685,8 @@ def create_app(db_path: str | None = None, build_points=None,
             evidence = frame_evidence(evidence_points,
                                       camera_y=frame.transform[1, 3] if custom_builder is None else None,
                                       camera_xz=(frame.transform[0, 3], frame.transform[2, 3])
-                                      if custom_builder is None else None)
+                                      if custom_builder is None else None,
+                                      floor_y=frame.floor.y if custom_builder is None and frame.floor else None)
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')

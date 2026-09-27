@@ -37,6 +37,15 @@ def main():
         np.testing.assert_allclose(points.colors, pixels[[0, 0, 1], [2, 3, 0]] / 255.)
         print("Swift binary fixture accepted by both backend decoders; calibration, pixels, and identity match.")
         print("Swift RGB + depth projects to independently calculated world points with matching colors.")
+        floor_payload = Path(str(output) + '.floor.bin').read_bytes()
+        floor_transport = decode_frame(floor_payload)
+        floor_frame = parse_frame_bundle(floor_payload, session_id="swift-contract-fixture",
+                                         map_epoch=3, pose=pose)
+        assert floor_transport.version == 2 and floor_frame.floor is not None
+        assert floor_frame.floor.y == .8
+        np.testing.assert_array_equal(floor_frame.floor.polygon,
+                                      [[1, -4], [3, -4], [3, -2], [1, -2]])
+        print('Swift v2 classified-floor bundle accepted by both backend decoders.')
         capture = decode_rich(Path(str(output) + '.capture').read_bytes())
         assert capture.header['session_id'] == 'swift-contract-fixture'
         assert capture.header['map_epoch'] == 3 and capture.header['frame_id'] == 18

@@ -1,4 +1,4 @@
-"""Pure decoder for the frozen docs/INTERFACES.md v1 frame bundle."""
+"""Pure decoder for the frozen v1 bundle and opt-in v2 ARKit floor evidence."""
 from dataclasses import dataclass
 import io
 import json
@@ -14,6 +14,12 @@ class FrameValidationError(ValueError):
 
 
 @dataclass(frozen=True)
+class FloorPlane:
+    y: float
+    polygon: np.ndarray  # world-space (x, z), counterclockwise or clockwise
+
+
+@dataclass(frozen=True)
 class FrameBundle:
     session_id: str
     map_epoch: int
@@ -25,6 +31,7 @@ class FrameBundle:
     image: Image.Image
     depth: np.ndarray
     confidence: np.ndarray
+    floor: FloorPlane | None = None
 
 
 def _integer(value, name, minimum=0):
@@ -76,7 +83,7 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
         header = json.loads(payload[4:4 + header_len].decode('utf-8'))
         if not isinstance(header, dict):
             raise FrameValidationError('header must be an object')
-        if type(header['version']) is not int or header['version'] != 1 or header['type'] != 'frame':
+        if type(header['version']) is not int or header['version'] not in (1, 2) or header['type'] != 'frame':
             raise FrameValidationError('unsupported frame version/type')
         if not isinstance(header['session_id'], str) or not header['session_id']:
             raise FrameValidationError('invalid session_id')
@@ -91,8 +98,34 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
         if header['tracking'] != 'normal':
             raise FrameValidationError('tracking is not normal')
         transform = validate_rigid_transform(header['transform'])
+        floor = None
+        if header['version'] == 2:
+            raw = header['floor']
+            if not isinstance(raw, dict) or set(raw) != {'y', 'polygon'}:
+                raise FrameValidationError('invalid floor plane')
+            y = _number(raw['y'], 'floor y')
+            vertices = raw['polygon']
+            if not isinstance(vertices, list) or not 3 <= len(vertices) <= 64:
+                raise FrameValidationError('floor polygon must have 3–64 vertices')
+            if any(not isinstance(vertex, list) or len(vertex) != 2 for vertex in vertices):
+                raise FrameValidationError('invalid floor polygon vertex')
+            polygon = np.array([[_number(v, 'floor polygon coordinate') for v in vertex]
+                                for vertex in vertices], dtype=float)
+            span = polygon.max(axis=0) - polygon.min(axis=0)
+            area = abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], -1))
+                       - np.dot(polygon[:, 1], np.roll(polygon[:, 0], -1))) / 2
+            if (not .05 <= transform[1, 3] - y <= 1.5 or np.any(np.abs(polygon) > 100_000)
+                    or np.any(span > 20.) or area < .04):
+                raise FrameValidationError('floor plane is outside the camera/room bounds')
+            polygon.setflags(write=False)
+            floor = FloorPlane(float(y), polygon)
+        elif 'floor' in header:
+            raise FrameValidationError('v1 frame cannot carry floor evidence')
         if pose is not None:
-            for key in ('version', 'session_id', 'map_epoch', 'frame_id', 't_capture', 'transform', 'tracking'):
+            # A v1 pose precedes both v1 and v2 bundles from the same ARFrame.
+            if pose.get('version') != 1:
+                raise FrameValidationError('alignment reference must be a v1 pose')
+            for key in ('session_id', 'map_epoch', 'frame_id', 't_capture', 'transform', 'tracking'):
                 if pose.get(key) != header[key]:
                     raise FrameValidationError(f'pose/frame alignment mismatch: {key}')
             if pose.get('type') != 'pose':
@@ -135,6 +168,6 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
         for array in (transform, intrinsics, depths, confidences):
             array.setflags(write=False)
         return FrameBundle(header['session_id'], epoch, frame_id, capture, wall,
-                           transform, intrinsics, rgb, depths, confidences)
+                           transform, intrinsics, rgb, depths, confidences, floor)
     except (KeyError, TypeError, UnicodeError, json.JSONDecodeError, UnidentifiedImageError, Image.DecompressionBombError, OSError, OverflowError, RecursionError) as exc:
         raise FrameValidationError(f'malformed frame bundle: {exc}') from exc

@@ -233,6 +233,12 @@ only when the picture changed:
   produces no grid; tested on synthetic floors and boxes only
   (`backend/tests/test_occupancy.py`, `backend/tests/test_occupancy_retirement.py`).
 
+When the iPhone reports a v2 frame with an ARKit plane anchor classified as
+floor, the backend rasterizes the anchor polygon near the camera into free
+5 cm cells. This keeps floor mapping possible when a glossy surface gives
+low-confidence depth. LiDAR obstacle evidence still overrides those cells;
+the plane does not establish whether a sign or person has moved out of view.
+
 ## Rover calibration and the navigation map
 
 Occupancy is safe to plan motion on only once the rover's own geometry is
