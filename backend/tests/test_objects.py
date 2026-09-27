@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -287,3 +288,35 @@ class LiveObjectTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class IndoorClassFilterTests(unittest.TestCase):
+    def test_default_indoor_set_drops_outdoor_classes(self):
+        from backend.detector import INDOOR_CLASSES, detector_classes_from_env
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('GODSEYE_DETECTOR_CLASSES', None)
+            classes = detector_classes_from_env()
+        self.assertIs(classes, INDOOR_CLASSES)
+        self.assertIn('person', classes)
+        self.assertIn('chair', classes)
+        for junk in ('elephant', 'banana', 'giraffe', 'car', 'toilet'):
+            self.assertNotIn(junk, classes)
+
+    def test_env_all_and_custom_list(self):
+        from backend.detector import detector_classes_from_env
+        with mock.patch.dict(os.environ, {'GODSEYE_DETECTOR_CLASSES': 'all'}):
+            self.assertIsNone(detector_classes_from_env())
+        with mock.patch.dict(os.environ, {'GODSEYE_DETECTOR_CLASSES': 'person, chair'}):
+            self.assertEqual(detector_classes_from_env(), frozenset({'person', 'chair'}))
+
+    def test_snapshot_hides_stored_objects_outside_visible_classes(self):
+        db = sqlite3.connect(':memory:')
+        db.executescript(Path(__file__).parents[1].joinpath('schema.sql').read_text())
+        db.execute("INSERT INTO sessions (session_id, map_epoch, created_at_ms) VALUES ('s', 1, 0)")
+        for i, name in enumerate(('person', 'elephant', 'chair')):
+            db.execute('INSERT INTO objects (id, session_id, map_epoch, class, position_json, identity_confidence, '
+                       "first_seen, last_seen, observations, state) VALUES (?, 's', 1, ?, '[0,0,0]', .9, ?, ?, 1, 'present')",
+                       (f'o{i}', name, i, i))
+        shown = ObjectMemory(db, visible_classes=frozenset({'person', 'chair'})).snapshot(('s', 1))
+        self.assertEqual(sorted(o['class'] for o in shown), ['chair', 'person'])
+        self.assertEqual(len(ObjectMemory(db).snapshot(('s', 1))), 3)

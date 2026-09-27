@@ -93,9 +93,11 @@ def associate(tracks, found, radius_m=MATCH_RADIUS_M):
 
 
 class ObjectMemory:
-    def __init__(self, db, radius_m=MATCH_RADIUS_M):
+    def __init__(self, db, radius_m=MATCH_RADIUS_M, visible_classes=None):
         self.db = db
         self.radius_m = radius_m
+        # Hides stored objects of other classes (e.g. recorded before a detector class filter).
+        self.visible_classes = visible_classes
 
     def record(self, session, frame_id, seen_at, found) -> list[Sighting]:
         """Persist one frame's detections; return one Sighting each (empty: nothing changed).
@@ -192,7 +194,8 @@ class ObjectMemory:
                      confidence=round(confidence, 3), first_seen=first, last_seen=last,
                      observations=count, state=state, identity=identities.get(object_id,
                          dict(label=None, status='unavailable', reason='not_requested', source=None)))
-                for object_id, name, position, confidence, first, last, count, state in rows]
+                for object_id, name, position, confidence, first, last, count, state in rows
+                if self.visible_classes is None or name in self.visible_classes]
 
     def latest_session(self):
         """The most recently created session/epoch, so reads survive a backend restart."""
