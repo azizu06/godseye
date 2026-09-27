@@ -176,7 +176,7 @@ The spatial view fills the viewport by default.
 Preserve Spatial Memory, Object Intelligence, and Recent Activity in expandable panels over the map.
 Necessary controls stay within the spatial window, with configuration available on demand.
 Standard exposes both keyboard steering and click-to-navigate; Explore is the other UI mode.
-Up advances immediately along the rover’s current heading. Down requests a 180° turn, and Left/Right request a 90° turn before advancing. Capture the rover-relative target once per new direction press; camera orbit and held-key repeat must not retarget motion.
+The circular joystick and arrow keys share one held manual controller. Up advances, Left/Right turn, and Down reverses only when advertised by the backend. Pointer release, focus loss, disabled controls and unmount end the gesture. Manual takeover requires an already armed backend and a matching motion generation; it never implicitly arms or resumes Explore.
 Read [DISCOVERY.md](DISCOVERY.md) for the accepted behavior, input handoff, and retention requirements.
 
 ## Review and delivery

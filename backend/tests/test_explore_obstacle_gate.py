@@ -92,6 +92,24 @@ class SustainedClearResumeTests(unittest.TestCase):
 
 
 class StaleUnknownNeverProvesClearTests(unittest.TestCase):
+    def test_unknown_after_clear_streak_cannot_spend_an_old_resume_hold(self):
+        gate = ExploreObstacleGate()
+        gate.decide(IMMINENT, 0.)
+        for t in (.1, .2, .3):
+            self.assertTrue(gate.decide(CLEAR, t).yielding)
+        # The old clear hold elapsed, but today's corridor evidence is missing.
+        missing = gate.decide(UNKNOWN_BLOCKED_LABEL, 1.31)
+        self.assertTrue(missing.yielding)
+        self.assertFalse(missing.resumed_this_tick)
+        # One new clear sample cannot reuse the previous streak or hold either.
+        self.assertTrue(gate.decide(CLEAR, 1.4).yielding)
+        self.assertTrue(gate.decide(CLEAR, 1.5).yielding)
+        self.assertTrue(gate.decide(CLEAR, 1.6).yielding)
+        self.assertTrue(gate.decide(CLEAR, 2.31).yielding)
+        resumed = gate.decide(CLEAR, 2.61)
+        self.assertFalse(resumed.yielding)
+        self.assertTrue(resumed.resumed_this_tick)
+
     def test_unknown_depth_while_yielding_never_resumes(self):
         gate = ExploreObstacleGate()
         for i in range(3):
@@ -152,6 +170,25 @@ class UnknownBreaksResumeHoldRegressionTests(unittest.TestCase):
 
 
 class DistinctEvidenceFrameDedupTests(unittest.TestCase):
+    def test_interruption_invalidates_clear_credit_even_for_repeated_sample(self):
+        for external_hold in (False, True):
+            with self.subTest(external_hold=external_hold):
+                gate = ExploreObstacleGate()
+                gate.decide(IMMINENT, 0.)
+                for i, t in enumerate((.1, .2, .3), 1):
+                    gate.decide(PathObservation(False, True, frame_id=i), t)
+                # A sample can become stale, or a separate fault can interrupt
+                # an otherwise usable sample. Each invalidates clear proof.
+                interrupted = gate.decide(PathObservation(False, external_hold, frame_id=3),
+                                          1.31, external_hold=external_hold)
+                self.assertTrue(interrupted.yielding)
+                self.assertFalse(interrupted.resumed_this_tick)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=4), 1.4).yielding)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=5), 1.5).yielding)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=6), 1.6).yielding)
+                resumed = gate.decide(PathObservation(False, True, frame_id=7), 2.61)
+                self.assertTrue(resumed.resumed_this_tick)
+
     def test_repeated_clear_frame_id_does_not_advance_clear_streak_or_hold(self):
         gate = ExploreObstacleGate(GateConfig(resume_clear_frames=3, resume_hold_s=1.0))
         for i in range(3):
@@ -187,18 +224,6 @@ class DistinctEvidenceFrameDedupTests(unittest.TestCase):
         resumed = gate.decide(PathObservation(path_blocked=False, depth_known=True, frame_id="c3"), t + 1.0)
         self.assertFalse(resumed.yielding)
         self.assertTrue(resumed.resumed_this_tick)
-
-    def test_a_clear_frame_that_becomes_stale_breaks_the_hold(self):
-        gate = ExploreObstacleGate()
-        gate.decide(IMMINENT, 0.)
-        for i, now in enumerate((1., 1.1, 1.2)):
-            gate.decide(PathObservation(False, True, frame_id=i), now)
-        self.assertTrue(gate.decide(PathObservation(False, False, frame_id=2), 2.3).yielding)
-        # Dedup must not preserve the old clearance hold through staleness.
-        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=3), 2.4).yielding)
-        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=4), 2.5).yielding)
-        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=5), 2.6).yielding)
-        self.assertFalse(gate.decide(PathObservation(False, True, frame_id=6), 3.7).yielding)
 
     def test_reset_clears_frame_dedup_state(self):
         gate = ExploreObstacleGate(GateConfig(pause_confirm_frames=1))

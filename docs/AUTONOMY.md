@@ -190,8 +190,11 @@ A missing detector stays down; the setup controls still work, but driving stays 
    choice stops on a genuine fault and requires a new explicit Arm after readiness recovers.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
-   Explore starts planning upon explicit arm. Manual PWM driving stays on the phone;
-   the laptop arms Standard only for one confirmed, pose-measured voice move
+   Explore starts planning upon explicit arm. The dashboard joystick can take over
+   an already-armed rover without rearming; release keeps Standard and never resumes
+   Explore automatically. Select Standard and explicitly Arm to start directly in
+   manual control. Pairing, supported adapter rates, fresh sensing and physical
+   footprint checks still apply. Standard also supports a confirmed, pose-measured voice move
    ([backend/NAV_ACTIONS.md](../backend/NAV_ACTIONS.md), Bounded moves).
 5. **STOP ROVER** stops the backend and sends an independent phone-side Stop through
    the setup channel. Stop remains available without REST enable or a pairing key.
@@ -471,3 +474,13 @@ clearance. These classified maps lack voxel height/confidence/current-return
 provenance, so they cannot distinguish self returns from real obstacles. Do not
 clear cells, shrink margins or force departure to bypass this decision. The
 regression `backend.tests.test_recorded_explore_start` preserves that guard.
+### Advisory obstacle gate: clear-evidence interruption fixed
+
+Software status: **fixed** in `backend/explore_obstacle_gate.py`. Unknown/stale
+depth and external holds invalidate the saved clear streak and resume timer,
+including when stale evidence keeps the same frame ID. A fresh distinct clear
+sequence must qualify again; duplicate usable frames still cannot advance it.
+The regression is `backend.tests.test_explore_obstacle_gate` (unknown-after-hold
+and repeated-sample interruption cases). The corrected helper is now wired into `/explore/resume` clearance acceptance;
+this fix does not establish the cause or physical resolution of
+the recorded pink-stand stop above. That physical pass remains unverified.

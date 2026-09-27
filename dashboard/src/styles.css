@@ -3688,3 +3688,122 @@ input[type="checkbox"] {
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
+
+.joystick-flight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+.joystick-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: 150px;
+}
+.rover-joystick {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 126px;
+  height: 126px;
+  padding: 0;
+  border: 1px solid #456174;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    #223e4a 0 25%,
+    #142935 26% 60%,
+    #1b3442 61% 63%,
+    #0d1d29 64%
+  );
+  box-shadow:
+    inset 0 1px 8px #0008,
+    0 5px 22px #0004;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+  color: #8bb4c6;
+}
+.rover-joystick:active {
+  cursor: grabbing;
+}
+.rover-joystick:focus-visible {
+  outline: 2px solid #72dccc;
+  outline-offset: 4px;
+}
+.rover-joystick:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.joystick-axis {
+  position: absolute;
+  background: #7599a526;
+  pointer-events: none;
+}
+.joystick-axis.horizontal {
+  height: 1px;
+  width: 75%;
+}
+.joystick-axis.vertical {
+  width: 1px;
+  height: 75%;
+}
+.joystick-mark {
+  position: absolute;
+  font: 22px var(--sans);
+  pointer-events: none;
+}
+.joystick-mark.forward {
+  top: 1px;
+}
+.joystick-mark.reverse {
+  bottom: 1px;
+}
+.joystick-mark.left {
+  left: 7px;
+}
+.joystick-mark.right {
+  right: 7px;
+}
+.joystick-thumb {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid #7da6b4;
+  background: linear-gradient(140deg, #507685, #244551);
+  box-shadow: 0 3px 8px #0007;
+  pointer-events: none;
+}
+.ready .joystick-thumb {
+  border-color: #67dac8;
+}
+.joystick-thumb span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #b9d3dc;
+}
+.joystick-hint {
+  color: #9ab0bc;
+  font: 9px var(--mono);
+  text-align: center;
+  max-width: 150px;
+  text-shadow: 0 1px 3px #000;
+}
+@media (max-width: 600px) {
+  .minimal-workspace .joystick-flight {
+    top: 58px;
+    right: 12px;
+  }
+  .joystick-control {
+    width: 132px;
+  }
+  .rover-joystick {
+    width: 116px;
+    height: 116px;
+  }
+}

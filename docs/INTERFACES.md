@@ -166,7 +166,7 @@ at zero awaiting new map evidence. It does not replace `stop_reason`.
 | POST | `/explore/yield` | `{ "generation": 1, "reason": "person_path_crossing" / "person_clearance_unknown" / "obstacle_wait" }` | Authenticated in-session zero-motion hold; requires armed Explore and matching generation |
 | POST | `/explore/resume` | `{ "generation": 1 }` | Authenticated clearance observation; returns `yielding`/`resumed`. Requires 3 distinct clear samples plus 1 s hold; unknown/stale breaks it. Replans in the same generation, cannot arm or release a Stop/fault |
 | POST | `/mode` | `{ "mode": "manual" / "navigate" / "explore" }` | Stops first, then switches |
-| POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
+| POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0, "expected_generation"?: integer, "takeover"?: boolean, "release"?: boolean }` | Already-armed held joystick control; zero takeover/release manage generation ownership (backend README). Renews every 100 ms; lease expiry zeroes motion |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
 | POST | `/rescan` | none | Save a baseline and start the revisit |
 | POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z], "purpose"?: "selected" / "recon" }` | Suggested walking approach to a recently observed person; unavailable on stale/unsupported or changed evidence. Visualization only, never a goal or motion; history retained (additive, see `backend/README.md`) |
@@ -216,3 +216,5 @@ Stop or another run clears these diagnostics. Existing optional
 `health.navigation_wait_reason` uses `scan_settling` / `scan_capturing` during the
 idle hold; safety/navigation reasons take priority. This adds no command or phone
 wire fields and changes no selected-destination behavior.
+
+Dashboard joystick ownership is additive: health exposes `motion_generation`. Physical relay requests require the matching `expected_generation`; an explicit zero `takeover: true` returns a new generation while preserving the already-armed relay session. Neutral zero retains the gesture; zero `release: true` retires it. `/autonomy.manual_control` exposes supported forward/reverse/yaw magnitude ranges (or null) and `arcs`. No phone/ESP protocol or implicit Arm is added.

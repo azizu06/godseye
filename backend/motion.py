@@ -127,6 +127,17 @@ class Motion:
         self.desired = None
         self.zero()
 
+    def takeover(self, generation):
+        """Retire the previous controller without rearming the car's drive session."""
+        if not self.active or generation != self.generation:
+            return None
+        self.generation += 1
+        self.desired = None
+        if not self.zero():
+            self.stop('car_error')
+            return None
+        return self.generation
+
     def zero(self):
         """True once the car accepted an explicit zero.
 

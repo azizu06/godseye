@@ -686,28 +686,34 @@ export function OperatorControls({
           <span className="eyebrow">CONTROL MODE</span>
           <div className="segmented mode-tabs">
             {(physical
-              ? (["navigate", "explore"] as const)
+              ? (["standard", "navigate", "explore"] as const)
               : (["standard", "explore"] as const)
             ).map((mode) => (
               <button
                 key={mode}
                 aria-pressed={
                   mode === "standard"
-                    ? !!health && health.mode !== "explore"
+                    ? !!health &&
+                      (physical
+                        ? health.mode === "manual"
+                        : health.mode !== "explore")
                     : health?.mode === mode
                 }
                 disabled={!available || !!pending || stale}
                 className={
                   (
                     mode === "standard"
-                      ? !!health && health.mode !== "explore"
+                      ? !!health &&
+                        (physical
+                          ? health.mode === "manual"
+                          : health.mode !== "explore")
                       : health?.mode === mode
                   )
                     ? "active"
                     : ""
                 }
                 onClick={() => {
-                  if (mode !== "standard" || health?.mode === "explore")
+                  if (mode !== "standard" || health?.mode !== "manual")
                     void command("/mode", {
                       mode: mode === "standard" ? "manual" : mode,
                     });
@@ -723,7 +729,7 @@ export function OperatorControls({
           </div>
           <p>
             {physical
-              ? "Arm starts capture and connects rover control automatically. Explore is the default; choose Navigate to drive to a mapped destination."
+              ? "Arm checks phone and rover readiness. Standard enables manual control; Navigate follows a mapped destination; Explore scans autonomously."
               : health?.mode === "explore"
                 ? "Exploration requires backend support"
                 : "Arrow keys to steer · click the map to navigate"}
@@ -733,17 +739,13 @@ export function OperatorControls({
           <div className="drive-pad">
             {control("Move forward", <ArrowUp size={17} />, "up")}
             <div>
-              {control("Turn left and move", <ArrowLeft size={17} />, "left")}
+              {control("Turn left", <ArrowLeft size={17} />, "left")}
               <span>
                 <Navigation size={15} />
               </span>
-              {control(
-                "Turn right and move",
-                <ArrowRight size={17} />,
-                "right",
-              )}
+              {control("Turn right", <ArrowRight size={17} />, "right")}
             </div>
-            {control("Turn around and move", <ArrowDown size={17} />, "down")}
+            {control("Move backward", <ArrowDown size={17} />, "down")}
           </div>
         )}
         <div className="arm-control">
@@ -759,7 +761,13 @@ export function OperatorControls({
                   ? !(config.roverKey || config.serverPaired)
                   : !allHealthy))
             }
-            onClick={() => void command(canStop ? "/stop" : "/arm")}
+            onClick={() =>
+              void command(
+                canStop ? "/stop" : "/arm",
+                undefined,
+                health?.mode === "manual",
+              )
+            }
           >
             {canStop ? (
               <Square size={12} fill="currentColor" />
