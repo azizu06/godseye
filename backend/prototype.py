@@ -40,12 +40,14 @@ def prototype_geometry(length_m: float, width_m: float) -> PrototypeGeometry:
 
 
 def filter_prototype_self_mesh(points: np.ndarray, transform: np.ndarray,
-                               geometry: PrototypeGeometry) -> np.ndarray:
-    """Ignore ARKit mesh on the estimated chassis behind its forward-facing camera.
+                               geometry: PrototypeGeometry, *, intrinsics: np.ndarray | None = None,
+                               image_size: tuple[int, int] | None = None) -> np.ndarray:
+    """Ignore near ARKit mesh that cannot be checked by the current camera.
 
-    The mesh is unclassified and can include the phone mount or rover itself.
-    Current RGB-D evidence and all mesh ahead of or beside the chassis still reach
-    occupancy, so this cannot erase a sign in the direction of travel.
+    The mesh is unclassified and can include the phone mount or a departed
+    person. ARKit may keep anchors beside the rover after their surface leaves.
+    Retain distant room geometry and anything currently in the camera image;
+    current RGB-D evidence is independent of this filter.
     """
     if len(points) == 0:
         return points
@@ -57,6 +59,17 @@ def filter_prototype_self_mesh(points: np.ndarray, transform: np.ndarray,
     half_width_m = geometry.footprint_width_m / 2 + geometry.clearance_margin_m + .05
     self_mesh = ((forward < 0) & (forward >= -rear_m) &
                  (np.abs(lateral) <= half_width_m))
+    if intrinsics is not None and image_size is not None:
+        camera = relative @ transform[:3, :3]
+        optical = -camera[:, 2]
+        width, height = image_size
+        with np.errstate(divide='ignore', invalid='ignore'):
+            u = intrinsics[0, 0] * camera[:, 0] / optical + intrinsics[0, 2]
+            v = -intrinsics[1, 1] * camera[:, 1] / optical + intrinsics[1, 2]
+        in_view = ((optical > .05) & (u >= 0) & (u < width) &
+                   (v >= 0) & (v < height))
+        near = np.linalg.norm(relative[:, (0, 2)], axis=1) <= geometry.inflation_m + .05
+        self_mesh |= near & ~in_view
     return points[~self_mesh]
 
 

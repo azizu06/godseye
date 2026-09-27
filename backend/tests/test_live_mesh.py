@@ -7,6 +7,7 @@ import numpy as np
 from backend.frame_bundle import FrameValidationError, parse_frame_bundle
 from backend.mapping import floor_plane_points
 from backend.occupancy import FREE, OCCUPIED, OccupancyGrid, frame_evidence
+from backend.navigator import recoverable_start
 from backend.prototype import prototype_geometry, filter_prototype_self_mesh
 from backend.tests.test_localization import bundle, fixture
 
@@ -28,6 +29,36 @@ class LiveMeshTests(unittest.TestCase):
         kept = filter_prototype_self_mesh(frame.mesh_points, frame.transform,
                                           prototype_geometry(.2286, .127))
         np.testing.assert_allclose(kept, [[.6, 2.1, 3.], [1.2, 2.1, 3.4]])
+
+    def test_near_out_of_view_mesh_does_not_block_a_clear_live_camera(self):
+        frame = parse_frame_bundle(mesh_bundle([[16, 42, 60], [24, 42, 65],
+                                                [24, 42, 70]]),
+                                   session_id='synthetic', map_epoch=2)
+        kept = filter_prototype_self_mesh(frame.mesh_points, frame.transform,
+                                          prototype_geometry(.2286, .127),
+                                          intrinsics=frame.intrinsics,
+                                          image_size=frame.image.size)
+        # The near sideways mesh anchor is outside today's camera image. A
+        # forward sign and a farther wall remain navigation obstacles.
+        np.testing.assert_allclose(kept, [[.8, 2.1, 3.], [1.2, 2.1, 3.5]])
+
+    def test_departed_side_mesh_no_longer_blocks_prototype_start(self):
+        frame = parse_frame_bundle(mesh_bundle([[19, 42, 63]]),
+                                   session_id='synthetic', map_epoch=2)
+        geometry = prototype_geometry(.2286, .127)
+        floor = frame_evidence(floor_plane_points(frame), camera_y=2.,
+                               camera_xz=(1., 3.), floor_y=frame.floor.y)
+        filtered = filter_prototype_self_mesh(frame.mesh_points, frame.transform,
+                                               geometry, intrinsics=frame.intrinsics,
+                                               image_size=frame.image.size)
+        for mesh, expected in ((frame.mesh_points, False), (filtered, True)):
+            with self.subTest(filtered=expected):
+                grid = OccupancyGrid(('synthetic', 2), calibration=geometry)
+                for now in (1., 2., 3.):
+                    grid.commit(floor, now, mesh_keys=frame_evidence(mesh).keys)
+                snapshot = grid.map_snapshot()
+                self.assertEqual(snapshot.traversable(1., 3.), expected)
+                self.assertEqual(recoverable_start(snapshot, 1., 3., .1524), expected)
 
     def test_v3_decodes_bounded_world_voxels(self):
         frame = parse_frame_bundle(mesh_bundle([[20, 42, 60]]),

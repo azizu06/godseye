@@ -323,9 +323,10 @@ Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
 The prototype ignores unclassified ARKit mesh voxels within the estimated chassis
-and clearance envelope **behind** the forward-facing camera. Its own mount/body
-otherwise looks like a permanent nearby obstacle and can block Explore at the
-start. RGB-D observations and mesh ahead or beside the rover remain in occupancy.
+and clearance envelope **behind** the forward-facing camera. It also excludes
+nearby mesh outside the current camera image: ARKit can retain a departed person's
+mesh anchor beside the rover after current depth sees open space. Current RGB-D,
+visible forward mesh, and farther room mesh remain in navigation occupancy.
 Navigation acceptance is independent of display extraction: at least 16 valid
 medium-or-high-confidence depth samples can update prototype occupancy with an
 empty display cloud. Sparse accepted geometry still needs a valid floor and the
