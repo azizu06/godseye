@@ -68,7 +68,9 @@ test("point-only feed is visible with controls off, survives reconnect, and fram
   await expect(status).toContainText("localhost:9876");
   await expect(status).toContainText("3 live points");
   await expect(status).toContainText("No RGB-D capture received");
+  await panel(page, "Rover controls");
   await expect(page.getByRole("button", { name: "Arm rover" })).toBeDisabled();
+  await closeWorkspace(page);
   await page.keyboard.press("ArrowUp");
   await page.locator("canvas").click({ position: { x: 650, y: 400 } });
   await page.getByRole("button", { name: "Frame scan", exact: true }).click();
@@ -193,9 +195,11 @@ for (const version of [1, 2])
     const status = page.getByTestId("viewport-status");
     await expect(status).toContainText("Rendering delayed RGB + depth");
     await expect(status).not.toContainText("0 surface triangles");
+    await panel(page, "Rover controls");
     await expect(
       page.getByRole("button", { name: "Arm rover" }),
     ).toBeDisabled();
+    await closeWorkspace(page);
     age = 16000;
     await expect(status).toContainText("RGB-D capture too old");
     await expect(status).not.toContainText("0 surface triangles");

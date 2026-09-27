@@ -27,7 +27,7 @@ class ActuationTests(unittest.TestCase):
     def test_interpolates_only_inside_measured_range_and_keeps_timed_bound(self):
         model = fixture()
         command = model.command(.1, 0.)
-        self.assertEqual((command.direction, command.pwm, command.lease_ms), (3, 40, 200))
+        self.assertEqual((command.direction, command.pwm, command.lease_ms), (3, 40, 1500))
         self.assertEqual(model.command(0., .3).direction, 1)
         self.assertEqual(model.command(0., -.3).direction, 2)
         self.assertIsNone(model.command(0., 0.))

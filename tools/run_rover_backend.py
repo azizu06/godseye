@@ -48,7 +48,7 @@ def main():
         from backend.prototype import PrototypeActuation, prototype_geometry
         actuation = PrototypeActuation()
         geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
-        print('UNCALIBRATED PROTOTYPE: PWM 60 matches phone manual default; no timed runs or forced pauses.', flush=True)
+        print('UNCALIBRATED PROTOTYPE: PWM 60 ordinary, PWM 180 open straight cruise; actual speed unmeasured.', flush=True)
     else:
         actuation = load_actuation(folder / 'actuation.json')
         geometry = load_calibration(folder / 'geometry.json')

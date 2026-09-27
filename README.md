@@ -69,4 +69,4 @@ Run the hardware-free tests:
 - [Frozen v1 interface contract](docs/INTERFACES.md) — the authority for existing message formats and coordinates.
 - [Preliminary technical spec](docs/spec-v0.1.md) — earlier design context; the interface contract takes precedence.
 
-The interface contract describes intended integration; the backend and tools docs describe what works today.
+The interface contract describes intended integration; the backend and tools docs describe what works today

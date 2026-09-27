@@ -9,6 +9,7 @@ from backend.prototype import PrototypeActuation, prototype_geometry
 from backend.calibration import RoverCalibration
 from backend.rover_relay import RelayCar
 from backend.motion import DriveCommand
+from backend.navigation import PurePursuit
 
 
 class PrototypeTests(unittest.TestCase):
@@ -33,6 +34,9 @@ class PrototypeTests(unittest.TestCase):
         car = RelayCar('TEST_KEY_NOT_REAL_01234567890123456789', PrototypeActuation())
         app = create_app(db_path=':memory:', car=car, calibration=prototype_geometry(.24, .14), capture_directory='')
         with TestClient(app) as client:
+            self.assertEqual(app.state.motion.limits.max_speed_mps, .2)
+            self.assertEqual(app.state.nav.settings.replan_s, 3.)
+            self.assertEqual(app.state.nav.settings.pose_max_age_s, 1.)
             status = client.get('/autonomy').json()
             self.assertEqual(status['profile'], 'prototype')
             self.assertTrue(status['warnings'])
@@ -108,11 +112,25 @@ class PrototypeTests(unittest.TestCase):
         profile = PrototypeActuation()
         for v, w, direction in [(.05, 0., 3), (0., .2, 1), (0., -.2, 2)]:
             command = profile.command(v, w)
-            self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 200))
+            self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 1500))
         self.assertIsNone(profile.command(0., 0.))
         self.assertIsNone(profile.stopping_distance_m)
         for v, w in [(-.01, 0.), (.21, 0.), (.01, .1), (0., .51), (math.nan, 0.)]:
             with self.assertRaises(ValueError): profile.command(v, w)
+
+    def test_open_straight_cruise_has_more_power_than_slow_approach_or_pivot(self):
+        profile = PrototypeActuation()
+        self.assertEqual(profile.command(.05, 0.).pwm, 60)
+        self.assertEqual(profile.command(0., .5).pwm, 60)
+        self.assertEqual(profile.command(.15, 0.).pwm, 60)
+        self.assertEqual(profile.command(.2, 0.).pwm, 180)
+
+    def test_small_heading_noise_does_not_trigger_alternating_pivots(self):
+        path = [(0., 0.), (0., 3.)]
+        profile = PrototypeActuation().follower()
+        for yaw in (-.2, .2):
+            self.assertEqual(PurePursuit(path, profile).step(0., .5, yaw).status, 'follow')
+        self.assertEqual(PurePursuit(path, profile).step(0., .5, .5).status, 'rotate')
 
     def test_continuous_commands_have_no_added_pause_or_run_limit(self):
         now = [10.]
@@ -129,5 +147,5 @@ class PrototypeTests(unittest.TestCase):
             car.send(DriveCommand(session_id=session, seq=seq, v_mps=.15, yaw_rate_rps=0.,
                                   issued_at_ms=round(now[0]*1000), valid_for_ms=250))
             packet = car.next_message()
-            self.assertEqual((packet['power'], packet['lease_ms']), (60, 200))
+            self.assertEqual((packet['power'], packet['lease_ms']), (60, 1500))
             self.assertEqual(car.armed_session, session.upper())

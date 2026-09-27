@@ -144,10 +144,10 @@ class BridgeCore {
       return;
     }
     if (!doc["S"].is<uint32_t>() || !doc["D1"].is<int>() || !doc["D2"].is<int>() ||
-        !doc["T"].is<int>() || doc["T"].as<int>() != 200) { reject(); return; }
+        !doc["T"].is<int>() || doc["T"].as<int>() != 1500) { reject(); return; }
     int direction = doc["D1"], power = doc["D2"];
     const bool nonzero = direction != 0 || power != 0;
-    if (nonzero && (direction < 1 || direction > 4 || power < 1 || power > 80)) {
+    if (nonzero && (direction < 1 || direction > 4 || power < 1 || power > 180)) {
       reject(); return;
     }
     const uint32_t sequence = doc["S"];
@@ -165,7 +165,7 @@ class BridgeCore {
     StaticJsonDocument<256> canonical;
     canonical["H"] = nonzero ? "M" : "S";
     canonical["N"] = nonzero ? 2 : 100;
-    if (nonzero) { canonical["D1"] = direction; canonical["D2"] = power; canonical["T"] = 200; }
+    if (nonzero) { canonical["D1"] = direction; canonical["D2"] = power; canonical["T"] = 1500; }
     serializeJson(canonical, motion.bytes, sizeof(motion.bytes));
   }
 

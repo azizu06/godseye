@@ -9,7 +9,7 @@ final class AutonomyWireTests: XCTestCase {
     }
     func drive(_ changes: [String: Any] = [:]) throws -> AutonomyCommand {
         var fields: [String: Any] = ["version": 1, "type": "command", "session": session,
-            "permit": permit, "seq": 1, "direction": 3, "power": 40, "lease_ms": 200]
+            "permit": permit, "seq": 1, "direction": 3, "power": 40, "lease_ms": 1500]
         fields.merge(changes) { _, new in new }
         return try decode(fields)
     }
@@ -25,18 +25,19 @@ final class AutonomyWireTests: XCTestCase {
         let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: packet) as? [String: Any])
         XCTAssertEqual(fields["N"] as? Int, 202)
         XCTAssertEqual(fields["C"] as? String, permit)
-        XCTAssertEqual(fields["T"] as? Int, 200)
+        XCTAssertEqual(fields["T"] as? Int, 1500)
         XCTAssertEqual(fields["H"] as? String, session)
         XCTAssertLessThan(packet.count, 192)
+        XCTAssertEqual(try drive(["power": 180]).power, 180)
         let idle = try drive(["direction": 0, "power": 0])
         XCTAssertEqual(idle.type, .command)
         XCTAssertEqual(try stop().packet, try ElegooWire.stop(id: "0123ABCD"))
     }
 
     func testMalformedUnboundedAndArbitraryCommandsRejected() throws {
-        for change: [String: Any] in [["power": 81], ["direction": 5], ["direction": 0],
+        for change: [String: Any] in [["power": 181], ["direction": 5], ["direction": 0],
             ["seq": 0], ["seq": -1], ["seq": 4294967296 as UInt64], ["seq": true],
-            ["lease_ms": 201], ["permit": "fedcba9876543210"], ["session": "OLD"],
+            ["lease_ms": 200], ["permit": "fedcba9876543210"], ["session": "OLD"],
             ["raw": "N=3"], ["version": 2], ["type": "raw"]] {
             XCTAssertThrowsError(try drive(change), "\(change)")
         }
@@ -66,7 +67,7 @@ final class AutonomyWireTests: XCTestCase {
         let arm = try arm()
         XCTAssertTrue(gate.accept(arm, now: 20.1))
         gate.sawPermit(permit, now: 20.15)
-        XCTAssertFalse(gate.fresh(arm, now: 20.201))
+        XCTAssertFalse(gate.fresh(arm, now: 20.501))
         XCTAssertFalse(gate.fresh(arm, now: 19.9))
     }
 
@@ -90,7 +91,7 @@ final class AutonomyWireTests: XCTestCase {
         XCTAssertTrue(gate.accept(try arm(), now: 40))
         XCTAssertTrue(gate.armed(session))
         gate.sawPermit(permit, now: 40.01)
-        XCTAssertTrue(gate.discardExpiredMovement(try drive(), now: 40.22))
+        XCTAssertTrue(gate.discardExpiredMovement(try drive(), now: 40.52))
         XCTAssertEqual(gate.armedSession, session)
         XCTAssertFalse(gate.discardExpiredMovement(try drive(), now: 40.23), "No replays")
         XCTAssertFalse(gate.discardExpiredMovement(try arm(), now: 40.23), "Never bypass arm freshness")

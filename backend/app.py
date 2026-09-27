@@ -40,7 +40,8 @@ from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
                            scout_position)
-from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.occupancy import (CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S,
+                               DepthView, Evidence, OccupancyGrid, depth_view, frame_evidence)
 from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
 from backend.nav_actions import NavProposals, register_nav_action_routes
@@ -181,6 +182,9 @@ class MapUpdate:
     t_capture: float
     evidence: Evidence | None  # None when the occupancy computation failed
     chunk: PointChunk | None  # None when every point was sent recently
+    depth: DepthView | None = None
+    retirement_keys: object = None
+    retirement_cursor: int | None = None
 
 
 class LatestFrame:
@@ -237,7 +241,11 @@ def create_app(db_path: str | None = None, build_points=None,
     relay = car if isinstance(car, RelayCar) else None
     device = DeviceRelay(relay.authorized) if relay is not None else None
     if relay is not None and not relay.actuation.blockers:
-        nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower())
+        nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower(),
+                               replan_s=3. if getattr(relay.actuation, 'prototype', False)
+                               else (nav_settings or NavSettings()).replan_s,
+                               pose_max_age_s=1. if getattr(relay.actuation, 'prototype', False)
+                               else (nav_settings or NavSettings()).pose_max_age_s)
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
     nav_settings = nav_settings or NavSettings()
     proposals = NavProposals(nav_settings)  # voice navigation proposals awaiting a human confirmation
@@ -287,7 +295,10 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.arm_request_token = None
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
-        app.state.motion = Motion(car, motion_check, stop, limits=motion_limits or MotionLimits())
+        limits = motion_limits or (MotionLimits(max_speed_mps=.2)
+                                   if relay is not None and getattr(relay.actuation, 'prototype', False)
+                                   else MotionLimits())
+        app.state.motion = Motion(car, motion_check, stop, limits=limits)
         if relay is not None:
             relay.identity = lambda: app.state.session
             relay.on_loss = stop
@@ -477,7 +488,8 @@ def create_app(db_path: str | None = None, build_points=None,
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
         phone = 'down' if app.state.phone is None else 'stale'
-        if age is not None and age <= 250 and app.state.pose.tracking == 'normal':
+        if (age is not None and age <= nav_settings.pose_max_age_s * 1000
+                and app.state.pose.tracking == 'normal'):
             phone = 'ok'
         detector = 'down'
         if app.state.detector is not None:
@@ -517,7 +529,7 @@ def create_app(db_path: str | None = None, build_points=None,
     def prototype_pause_reason():
         """Only explicit prototype Explore may wait for recoverable input gaps.
 
-        The motor lease still expires after 200 ms; this preserves the arm session,
+        The ESP command-loss timer still expires after a sustained gap; this preserves the arm session,
         not motion. Disconnect, capture mismatch and hard map obstacles still stop.
         """
         if not persistent_explore():
@@ -643,8 +655,10 @@ def create_app(db_path: str | None = None, build_points=None,
         so occupancy evidence keeps accumulating when nothing new is published.
         """
         dense = any(listener.dense for listener in tuple(app.state.listeners))
+        view = None
         if custom_builder is None:
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
+            view = depth_view(frame)
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
             candidates = depth_to_points(frame, max_points=samples)
             # Carpet commonly has medium LiDAR confidence. Prototype navigation
@@ -657,15 +671,25 @@ def create_app(db_path: str | None = None, build_points=None,
             evidence_points = candidates.positions
         evidence = None
         try:
-            evidence = frame_evidence(evidence_points, camera_y=frame.transform[1, 3] if custom_builder is None else None)
+            evidence = frame_evidence(evidence_points,
+                                      camera_y=frame.transform[1, 3] if custom_builder is None else None,
+                                      camera_xz=(frame.transform[0, 3], frame.transform[2, 3])
+                                      if custom_builder is None else None)
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')
+        retired = cursor = None
+        if evidence is not None and view is not None:
+            try:
+                retired, cursor = app.state.occupancy.retirement_candidates(view)
+            except Exception:
+                app.state.occupancy_stats['failed'] += 1
+                logger.exception('occupancy depth retirement failed')
         try:
             chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
         except NoNewPoints:
             chunk = None
-        return MapUpdate(candidates.t_capture, evidence, chunk)
+        return MapUpdate(candidates.t_capture, evidence, chunk, view, retired, cursor)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
@@ -676,7 +700,10 @@ def create_app(db_path: str | None = None, build_points=None,
         def accept(update):
             if update.evidence is not None:
                 try:
-                    grid.commit(update.evidence, time.monotonic())
+                    grid.commit(update.evidence, time.monotonic(),
+                                retirement_keys=update.retirement_keys,
+                                retirement_cursor=update.retirement_cursor,
+                                depth_view=update.depth)
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')
@@ -777,7 +804,8 @@ def create_app(db_path: str | None = None, build_points=None,
         paused = False
         while True:
             await asyncio.sleep(.05)
-            if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
+            if (app.state.pose_at is not None
+                    and time.monotonic() - app.state.pose_at > nav_settings.pose_max_age_s):
                 if not prototype_pause_reason() and app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
             pause_reason = prototype_pause_reason()
@@ -786,7 +814,7 @@ def create_app(db_path: str | None = None, build_points=None,
             if pause_reason:
                 # Drop every queued movement before the 20 Hz pump can dispatch it.
                 # Fresh relay feedback allows an in-session zero; otherwise the ESP
-                # independently brakes when its 200 ms motor lease expires.
+                # independently brakes when its command-loss timer expires.
                 app.state.motion.desired = None
                 if relay is not None:
                     relay.command = None
@@ -1259,6 +1287,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     continue  # repeat, or the pose half of a bundle already counted
                 if pose.tracking != 'normal':
                     app.state.tracking_lost_capture = max(app.state.tracking_lost_capture, pose.t_capture)
+                    grid.clear_depth_history()
                 newest_pose = pose.t_capture > last_capture
                 if newest_pose:
                     last_capture = pose.t_capture
@@ -1294,6 +1323,7 @@ def create_app(db_path: str | None = None, build_points=None,
             for worker in workers:
                 worker.cancel()
             if app.state.phone is owner:
+                grid.clear_depth_history()
                 app.state.phone = None
                 retire_route(invalidate_pending=True)
                 app.state.pose = app.state.pose_at = app.state.detected_at = None

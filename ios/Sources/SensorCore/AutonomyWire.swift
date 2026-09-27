@@ -37,9 +37,9 @@ public struct AutonomyCommand: Decodable {
         case .command:
             keys = ["version", "type", "session", "permit", "seq", "direction", "power", "lease_ms"]
             guard hex(value.session, count: 32), hex(value.permit, count: 16),
-                  let seq = value.seq, seq > 0, value.lease_ms == 200,
+                  let seq = value.seq, seq > 0, value.lease_ms == 1500,
                   let direction = value.direction, let power = value.power,
-                  (direction == 0 && power == 0) || ((1...4).contains(direction) && (1...80).contains(power)) else {
+                  (direction == 0 && power == 0) || ((1...4).contains(direction) && (1...180).contains(power)) else {
                 throw Error.invalidCommand
             }
         }
@@ -55,7 +55,7 @@ public struct AutonomyCommand: Decodable {
             case .arm: fields = ["N": 201, "H": session!, "C": permit!]
             case .command:
                 fields = ["N": 202, "H": session!, "C": permit!, "S": seq!,
-                          "D1": direction!, "D2": power!, "T": 200]
+                          "D1": direction!, "D2": power!, "T": 1500]
             }
             return try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
         }
@@ -77,7 +77,7 @@ public struct AutonomyGate {
     public init() {}
 
     public mutating func sawPermit(_ permit: String, now: Double) {
-        permits = permits.filter { now - $0.value < 0.2 }
+        permits = permits.filter { now - $0.value < 0.5 }
         // Repeated notifications cannot renew the original local receipt time.
         if permits[permit] == nil && AutonomyCommand.hex(permit, count: 16) { permits[permit] = now }
     }
@@ -94,7 +94,7 @@ public struct AutonomyGate {
 
     public func fresh(_ command: AutonomyCommand, now: Double) -> Bool {
         guard let permit = command.permit, let received = permits[permit] else { return false }
-        return now >= received && now - received < 0.2
+        return now >= received && now - received < 0.5
     }
 
     /// Consume an expired movement's sequence without forwarding it or

@@ -195,9 +195,13 @@ only when the picture changed:
   over free) with at least 3 hits from 8 cm to 1.5 m above it that also reach
   10% of its free hits. The 4-8 cm gap, anything below the floor, and anything
   above 1.5 m (ceiling, overhangs) are ignored.
-- **Caps:** x and z within 10 m of the AR origin (at most 400 x 400 cells, about
-  213 KB of base64) and Y within 4 m; other points are dropped. At most 500,000
-  voxels (about 6 MB) per map; new voxels beyond that are dropped.
+- **Caps:** sparse world evidence spans ±100 km in x/z around the AR origin,
+  while the navigation and `/live` occupancy picture follows the accepted camera
+  position in a 20 m window (at most 400 x 400 cells, about 213 KB of base64).
+  Y spans ±4 m. At most 500,000 voxels (about 6 MB of key/count arrays) are
+  retained per map. At capacity, distant voxels yield to nearby new evidence so
+  the rover can keep mapping. The rolling picture retains older evidence while
+  it fits in that budget.
 - The grid belongs to one session/epoch: a map reset starts an empty one, a
   phone rejoining the same map keeps it, and a grid finished after the session or
   phone changed is counted and dropped. A frame still mapping when its phone left
@@ -210,13 +214,22 @@ only when the picture changed:
   monotonic time of the newest accepted frame, even one that adds nothing, so a
   planner can tell fresh sensing from a stale map without waiting for a new
   `occupancy` message.
+- **Fresh-depth obstacle retirement:** a map worker checks at most 1,024 old
+  obstacle voxels per accepted capture. Two increasing, medium-or-high-confidence raw-depth
+  views in the same uninterrupted tracking interval must both see beyond the
+  complete padded projection of each old voxel by at least 12 cm or 5%, plus
+  its voxel radius. Missing depth, occlusion, image edges and low confidence
+  retain the obstacle. Only an accepted newer frame applies removals; the grid
+  revision then makes navigation recheck its route. A phone disconnect or tracking
+  loss breaks the two-view proof. The separate dashboard map has its own visual
+  point/triangle cleanup.
 - **Limitations:** without a motion-ready rover calibration (below) the 8 cm to
   1.5 m band is a generic guess, not its clearance; the handheld floor estimate
-  can shift by a slice as evidence grows; there is no free-space ray carving (cells are only
-  known where a surface was seen) and no decay, so a removed object stays
-  occupied. `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
+  can shift by a slice as evidence grows. This is not general ray carving:
+  unknown cells remain unknown, and unobserved old obstacles persist.
+  `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
   produces no grid; tested on synthetic floors and boxes only
-  (`backend/tests/test_occupancy.py`).
+  (`backend/tests/test_occupancy.py`, `backend/tests/test_occupancy_retirement.py`).
 
 ## Rover calibration and the navigation map
 

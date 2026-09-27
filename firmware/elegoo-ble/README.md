@@ -46,6 +46,9 @@ Custom service `9E9E0001-3A17-4D2E-9A61-5C7D581F1800` has RX `...0002...` (write
 Only these commands pass the bridge, reconstructed from validated fields:
 
 - `N=2`: direction 1–4, PWM 1–80, lease exactly 200 ms.
+- `N=202`: autonomous direction 1–4, PWM 1–180, Uno timer exactly 1500 ms, with an
+  active session and fresh permit. The higher bound needs the matching iPhone
+  app; manual `N=2` keeps its 80 limit.
 - `N=22,D1=1`: cached line-sensor query, preserving its request ID.
 - `N=100`: Stop.
 - `N=201`: open a drive session after a fresh ESP permit and a UART Stop handoff.
@@ -57,7 +60,7 @@ BLE callbacks only copy bounded input into `BridgeInbox`; JSON parsing runs on t
 
 If the PlatformIO uploader's stub fails on this S3, esptool 5 with `--no-stub` and 115200 baud successfully updated the application at `0x10000`. Use that application-only path only when the installed bootloader and partition layout already match the build.
 
-There is one pending movement and one pending query. New movement replaces pending movement; Stop clears it and takes priority. Movement waiting more than 100 ms is discarded with Stop. Incomplete frames expire after 150 ms. UART writes are paced at their actual 9600-baud serialization cost. The bridge sends Stop after 200 ms without forwarding a new movement and on BLE disconnect; each forwarded movement also retains the Uno's 200 ms lease. An expired permit or missed movement refresh brakes the motors without retiring the explicitly armed session; only a later command with a new permit and sequence can move again. Malformed input, replay, disconnect and explicit Stop still retire the session. These are software timers, not a measured hardware stopping guarantee. Already-transmitted bytes and radio delays are not absolute end-to-end command expiry.
+There is one pending movement and one pending query. New movement replaces pending movement; Stop clears it and takes priority. Movement waiting more than 100 ms is discarded with Stop. Incomplete frames expire after 150 ms. UART writes are paced at their actual 9600-baud serialization cost. Manual movement keeps its 200 ms lease. Autonomous movement coasts through brief packet gaps; the bridge sends Stop after a full second without a forwarded command and on BLE disconnect, and the Uno has an independent 1.5 s timed fallback. An expired permit or missed movement refresh brakes the motors without retiring the explicitly armed session; only a later command with a new permit and sequence can move again. Malformed input, replay, disconnect and explicit Stop still retire the session. These are software timers, not a measured hardware stopping guarantee. Already-transmitted bytes and radio delays are not absolute end-to-end command expiry.
 
 The demo service does not implement authenticated pairing or bonding; anyone in Bluetooth range with a compatible client could connect while advertising. It supports one active connection and does not advertise again until it disconnects. Use only in a supervised demo environment; add authenticated pairing before wider deployment.
 

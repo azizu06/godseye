@@ -3,9 +3,10 @@
 #include <stdio.h>
 
 constexpr auto ARM = "{\"N\":201,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000001\"}";
-constexpr auto DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":200}";
-constexpr auto IDLE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":2,\"D1\":0,\"D2\":0,\"T\":200}";
-constexpr auto RESUME = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000003\",\"S\":2,\"D1\":3,\"D2\":40,\"T\":200}";
+constexpr auto DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":1500}";
+constexpr auto FAST_DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":180,\"T\":1500}";
+constexpr auto IDLE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":2,\"D1\":0,\"D2\":0,\"T\":1500}";
+constexpr auto RESUME = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000003\",\"S\":2,\"D1\":3,\"D2\":40,\"T\":1500}";
 constexpr auto STOP = "{\"N\":100,\"H\":\"S\"}";
 constexpr auto MANUAL = "{\"N\":2,\"H\":\"M\",\"D1\":3,\"D2\":40,\"T\":200}";
 
@@ -32,28 +33,34 @@ int main() {
   BridgeCore::Frame out;
   {
     BridgeCore b; arm(b);
+    feed(b, FAST_DRIVE, 5);
+    assert(b.next(6, out) && command(out) == 2);
+    assert(strstr(out.bytes, "\"D2\":180") != nullptr);
+  }
+  {
+    BridgeCore b; arm(b);
     // The longer autonomy message also works at ATT MTU 23.
     const size_t length = strlen(DRIVE);
     for (size_t i = 0; i < length; i += 20)
       b.feed(reinterpret_cast<const uint8_t*>(DRIVE + i), length - i < 20 ? length - i : 20, 5 + i / 20);
     assert(b.next(20, out) && command(out) == 2);
     assert(out.autonomous && out.nonzero && out.sequence == 1);
-    assert(strcmp(out.bytes, "{\"H\":\"M\",\"N\":2,\"D1\":3,\"D2\":40,\"T\":200}") == 0);
-    assert(!b.next(219, out));
-    assert(b.next(220, out) && command(out) == 100);
-    assert(!out.notification[0]); // Stop on the existing 200 ms deadline.
-    assert(b.issuePermit(3, 221));
-    feed(b, RESUME, 222);
-    assert(b.next(223, out) && command(out) == 2); // Fresh command resumes that arm.
+    assert(strcmp(out.bytes, "{\"H\":\"M\",\"N\":2,\"D1\":3,\"D2\":40,\"T\":1500}") == 0);
+    assert(!b.next(1019, out));
+    assert(b.next(1020, out) && command(out) == 100);
+    assert(!out.notification[0]); // ESP brakes after its 1 s command gap.
+    assert(b.issuePermit(3, 1021));
+    feed(b, RESUME, 1022);
+    assert(b.next(1023, out) && command(out) == 2); // Fresh command resumes that arm.
   }
   {
     BridgeCore b; arm(b);
-    feed(b, DRIVE, 220); // Permit still valid at input.
-    assert(b.next(255, out) && command(out) == 100); // But expired before UART.
+    feed(b, DRIVE, 470); // Permit still valid at input.
+    assert(b.next(505, out) && command(out) == 100); // But expired before UART.
     assert(!out.notification[0]);
-    assert(b.issuePermit(3, 256));
-    feed(b, RESUME, 257);
-    assert(b.next(258, out) && command(out) == 2);
+    assert(b.issuePermit(3, 506));
+    feed(b, RESUME, 507);
+    assert(b.next(508, out) && command(out) == 2);
   }
   {
     BridgeCore b; arm(b);
@@ -76,10 +83,10 @@ int main() {
     assert(strcmp(out.notification, "{X}") == 0);
   }
   for (const char* input : {
-      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":-1,\"D1\":3,\"D2\":40,\"T\":200}",
-      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":81,\"T\":200}",
-      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":1000}",
-      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000000\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":200}"}) {
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":-1,\"D1\":3,\"D2\":40,\"T\":1500}",
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":181,\"T\":1500}",
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":200}",
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000000\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":1500}"}) {
     BridgeCore b; arm(b);
     feed(b, input, 5);
     assert(b.next(6, out) && command(out) == 100);
