@@ -17,6 +17,7 @@ import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { useReconApproaches } from "./useReconApproaches";
 import { VoiceAsk } from "./VoiceAsk";
+import { Joystick } from "./Joystick";
 import { PhoneControls } from "./PhoneControls";
 import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";
@@ -389,6 +390,13 @@ export default function App() {
         showLabels={controls.labels}
         handle={sceneHandle}
       />
+      <div className="flight-controls joystick-flight">
+        <OperatorControls controller={controller} compact />
+        <Joystick
+          controller={controller}
+          blocked={!!panel || settings || newSession || help}
+        />
+      </div>
       <DetectionOverlay
         detections={mission.detections}
         apiUrl={config.apiUrl}

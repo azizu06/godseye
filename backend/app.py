@@ -35,6 +35,7 @@ from backend.scan_pacing import CameraPose, ScanObservation, capture_observation
 from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
                              points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
+from backend.manual_control import capabilities as manual_capabilities, clearance_problem
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.mission_entry import load_entry, record_entry
 from backend.detections import classes_from_env, detections_message, overlay_classes
@@ -73,6 +74,9 @@ class Mode(Input):
 
 
 class Manual(Input):
+    takeover: bool = False
+    release: bool = False
+    expected_generation: int | None = Field(default=None, ge=0)
     v_mps: float = Field(ge=-.2, le=.2)
     yaw_rate_rps: float = Field(ge=-.5, le=.5)
 
@@ -306,6 +310,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.auto_retry_at = 0.
         app.state.arm_request_token = None
         app.state.mode = 'manual'
+        app.state.manual_generation = None
         app.state.stop_reason = 'startup_disarmed'
         limits = motion_limits or (MotionLimits(max_speed_mps=.2)
                                    if relay is not None and getattr(relay.actuation, 'prototype', False)
@@ -466,6 +471,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
                     auto_requested=app.state.auto_requested, scan_pacing=app.state.nav.scan_status,
+                    manual_control=manual_capabilities(relay.actuation, app.state.motion.limits) if relay else None,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
 
@@ -484,6 +490,7 @@ def create_app(db_path: str | None = None, build_points=None,
         if app.state.auto_requested:
             app.state.auto_retry_at = time.monotonic() + EXPLORE_RETRY_S
         app.state.armed = False
+        app.state.manual_generation = None
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
             app.state.nav.halt()  # end any goal/explore run and clear its path first
@@ -525,6 +532,7 @@ def create_app(db_path: str | None = None, build_points=None,
         return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
                     stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry,
+                    motion_generation=app.state.motion.generation,
                     navigation_wait_reason=app.state.nav.waiting_reason)
 
     def car_health():
@@ -574,7 +582,13 @@ def create_app(db_path: str | None = None, build_points=None,
             return 'disarmed'
         if command.mode != app.state.mode:
             return 'mode_change'
-        return hazard()
+        if (reason := hazard()) is not None:
+            return reason
+        if (relay is not None and app.state.manual_generation == command.generation
+                and (command.v_mps or command.yaw_rate_rps)):
+            return clearance_problem(app.state.autonomy_map, rover_pose(), app.state.session,
+                                     nav_settings, command.v_mps, command.yaw_rate_rps)
+        return None
 
     def publish(message):
         for listener in app.state.listeners:
@@ -1010,7 +1024,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/arm')
     async def arm(prepare: bool = False, standard: bool = False):
-        """`standard` keeps manual mode for one confirmed voice move (backend/moves.py) instead of
+        """`standard` keeps manual mode for dashboard gestures or a confirmed voice move instead of
         prepare's Explore default; it needs only the manual prerequisites, never a route or map."""
         if standard and app.state.mode != 'manual':
             raise HTTPException(409, 'Select Standard before arming for a move')
@@ -1114,9 +1128,56 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/manual')
     async def manual(body: Manual):
-        if relay is not None:  # arming manual here only serves confirmed, measured voice moves
-            raise HTTPException(409, 'Direct manual driving stays on the phone')
         motion = app.state.motion
+        if body.takeover or body.release or body.expected_generation is not None or relay is not None:
+            if (not app.state.armed or not motion.active
+                    or body.expected_generation != motion.generation
+                    or app.state.arm_request_token is not None):
+                raise HTTPException(409, 'Manual control generation is no longer armed')
+            if body.takeover:
+                if body.v_mps or body.yaw_rate_rps or body.release:
+                    raise HTTPException(409, 'Acquire manual control with zero first')
+                if (reason := hazard()) is not None:
+                    raise HTTPException(409, reason)
+                app.state.auto_requested = False
+                pending = app.state.auto_arm_task
+                if pending is not None and pending is not asyncio.current_task():
+                    pending.cancel()
+                app.state.nav.halt()
+                app.state.mover.halt('manual_takeover')
+                app.state.nav_proposals.invalidate()
+                generation = motion.takeover(body.expected_generation)
+                if generation is None:
+                    raise HTTPException(409, 'Manual takeover could not zero the rover')
+                app.state.mode = 'manual'
+                app.state.manual_generation = generation
+                publish(health())
+                return health()
+            if app.state.mode != 'manual' or app.state.manual_generation != motion.generation:
+                raise HTTPException(409, 'Acquire manual control before driving')
+            if body.release:
+                if body.v_mps or body.yaw_rate_rps:
+                    raise HTTPException(409, 'Release manual control with zero')
+                # A release retires every delayed command from this gesture.
+                if motion.takeover(body.expected_generation) is None:
+                    raise HTTPException(409, 'Manual release could not zero the rover')
+                app.state.manual_generation = None
+                publish(health())
+                return health()
+            reason = hazard()
+            if relay is not None and reason is None and (body.v_mps or body.yaw_rate_rps):
+                try:
+                    relay.actuation.command(body.v_mps, body.yaw_rate_rps)
+                except ValueError as error:
+                    reason = str(error)
+                if reason is None:
+                    reason = clearance_problem(app.state.autonomy_map, rover_pose(), app.state.session,
+                                               nav_settings, body.v_mps, body.yaw_rate_rps)
+            if reason is not None:
+                motion.desired = None
+                if not motion.zero():
+                    stop('car_error')
+                raise HTTPException(409, reason)
         if (not app.state.armed or app.state.mode != 'manual'
                 or not motion.submit(motion.generation, 'manual', body.v_mps, body.yaw_rate_rps)):
             raise HTTPException(409, 'Disarmed or not in manual mode')
@@ -1165,6 +1226,10 @@ def create_app(db_path: str | None = None, build_points=None,
         pose = app.state.nav.fresh_pose()
         if pose is None or pose.tracking != 'normal':
             raise HTTPException(409, 'pose_stale' if pose is None else 'tracking_lost')
+        if app.state.manual_generation is not None:
+            if app.state.motion.takeover(app.state.motion.generation) is None:
+                raise HTTPException(409, 'Manual control could not be released')
+            app.state.manual_generation = None
         return app.state.mover.start(request, app.state.motion.generation, proposal_id)
 
     def select_explore():

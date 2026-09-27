@@ -34,7 +34,7 @@ A stationary left-click still navigates; a stationary right-click opens the work
 The 2D tab provides a top-down map when inspecting occupancy or selecting a navigation goal.
 Arm explicitly before moving.
 Standard offers both arrow-key steering and click-to-navigate in the 3D scene or 2D map.
-Up moves straight along the rover’s current heading immediately. Down turns 180°, and Left/Right turn 90° before moving forward. Each new key press chooses a rover-relative heading; holding the key or orbiting the camera does not change that target.
+The circular joystick takes manual control only from an already armed rover. Drag forward or sideways for forward motion and turning; supported diagonal input combines them. Release stops held motion without restarting Explore. Arrow keys use the same controller: Up is forward, Left/Right turn, and Down reverses only when the backend advertises reverse support. The prototype supports forward arcs and pivots; measured adapters use their advertised calibrated ranges and dominant-axis motion. Select Standard then explicitly Arm to start in manual mode.
 Release the key to stop steering.
 Focus loss ends held commands, while STOP disarms the rover.
 Explore and navigation depend on the connected backend and its readiness checks.

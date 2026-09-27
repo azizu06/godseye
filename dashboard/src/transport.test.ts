@@ -10,7 +10,7 @@ afterEach(() => vi.useRealTimers());
 describe("held controls", () => {
   it("sends every 100ms while held and zero on release, then sends no more motion", async () => {
     vi.useFakeTimers();
-    const sent: Record<string, number>[] = [];
+    const sent: Record<string, number | boolean>[] = [];
     const controller = new ManualController(
       async (body) => {
         sent.push(body);
@@ -23,11 +23,32 @@ describe("held controls", () => {
     controller.stop();
     await vi.advanceTimersByTimeAsync(500);
     expect(sent).toHaveLength(4);
-    expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0 });
+    expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0, release: true });
+  });
+  it("updates a held vector without aborting or inserting a zero between pointer moves", async () => {
+    vi.useFakeTimers();
+    const sent: Record<string, number | boolean>[] = [];
+    const controller = new ManualController(
+      async (body) => {
+        sent.push(body);
+      },
+      () => {},
+    );
+    controller.start(0.1, 0.1);
+    await vi.advanceTimersByTimeAsync(10);
+    controller.start(0.15, -0.3);
+    controller.start(-0.1, 0.4);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toEqual([
+      { v_mps: 0.1, yaw_rate_rps: 0.1 },
+      { v_mps: -0.1, yaw_rate_rps: 0.4 },
+    ]);
+    controller.stop();
+    expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0, release: true });
   });
   it("never queues pulses behind a slow network", async () => {
     vi.useFakeTimers();
-    const sent: Record<string, number>[] = [];
+    const sent: Record<string, number | boolean>[] = [];
     const controller = new ManualController(
       (body) => {
         sent.push(body);
@@ -39,7 +60,7 @@ describe("held controls", () => {
     await vi.advanceTimersByTimeAsync(700);
     expect(sent).toHaveLength(1);
     controller.stop();
-    expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0 });
+    expect(sent.at(-1)).toEqual({ v_mps: 0, yaw_rate_rps: 0, release: true });
   });
 });
 describe("feed selection", () => {

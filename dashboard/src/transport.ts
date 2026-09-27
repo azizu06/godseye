@@ -100,16 +100,18 @@ export class ManualController {
   private busy = false;
   private generation = 0;
   private active = false;
+  private vector = { v_mps: 0, yaw_rate_rps: 0 };
   private abort: AbortController | null = null;
   constructor(
     private send: (
-      body: Record<string, number>,
+      body: Record<string, number | boolean>,
       signal?: AbortSignal,
     ) => Promise<unknown>,
     private error: (error: unknown) => void,
   ) {}
   start(v: number, w: number) {
-    this.stop();
+    this.vector = { v_mps: v, yaw_rate_rps: w };
+    if (this.active) return;
     this.active = true;
     const generation = ++this.generation;
     const pulse = async () => {
@@ -118,7 +120,7 @@ export class ManualController {
       this.abort = new AbortController();
       const timeout = setTimeout(() => this.abort?.abort(), 800);
       try {
-        await this.send({ v_mps: v, yaw_rate_rps: w }, this.abort.signal);
+        await this.send({ ...this.vector }, this.abort.signal);
       } catch (e) {
         if (generation === this.generation) {
           this.stop();
@@ -140,7 +142,9 @@ export class ManualController {
     this.abort = null;
     if (this.active) {
       this.active = false;
-      void this.send({ v_mps: 0, yaw_rate_rps: 0 }).catch(() => {});
+      void this.send({ v_mps: 0, yaw_rate_rps: 0, release: true }).catch(
+        () => {},
+      );
     }
   }
 }

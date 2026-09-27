@@ -81,8 +81,9 @@ geometry, only the manual prerequisites; it never falls back to a timed pulse.
   degrees. Larger or smaller requests are refused (`move_out_of_range`), never clamped.
 - Arming: the card's **Arm for this move** is a separate deliberate click that selects
   Standard and arms (`POST /arm?prepare=true&standard=true` with phone setup, or plain
-  `/arm` in manual). On the iPhone adapter this is the only reason to arm in manual:
-  `/manual` stays 409 there, and prepare without `standard` still defaults to Explore.
+  `/arm` in manual). The iPhone adapter also supports generation-bound dashboard
+  joystick gestures; a confirmed move retires any earlier gesture before starting.
+  Prepare without `standard` still defaults to Explore.
   Manual readiness is `RelayCar.blockers()` (link, fresh ESP feedback, capture identity
   and an actuation profile that turns a velocity into PWM) plus phone/car/detector
   health. An empty `actuation.json` reports the precise `actuation_*_unmeasured`

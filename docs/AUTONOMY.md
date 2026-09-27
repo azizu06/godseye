@@ -190,8 +190,11 @@ A missing detector stays down; the setup controls still work, but driving stays 
    choice can rearm only after the phone, rover, camera and map recover.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
-   Explore starts planning upon explicit arm. Manual PWM driving stays on the phone;
-   the laptop arms Standard only for one confirmed, pose-measured voice move
+   Explore starts planning upon explicit arm. The dashboard joystick can take over
+   an already-armed rover without rearming; release keeps Standard and never resumes
+   Explore automatically. Select Standard and explicitly Arm to start directly in
+   manual control. Pairing, supported adapter rates, fresh sensing and physical
+   footprint checks still apply. Standard also supports a confirmed, pose-measured voice move
    ([backend/NAV_ACTIONS.md](../backend/NAV_ACTIONS.md), Bounded moves).
 5. **STOP ROVER** stops the backend and sends an independent phone-side Stop through
    the setup channel. Stop remains available without REST enable or a pairing key.

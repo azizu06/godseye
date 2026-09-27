@@ -671,14 +671,14 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/arm` | 409 while any health component is not ok (the default logging car always reports down); opens a fresh command generation |
 | POST `/stop` | Always accepted; latch operator stop, end any navigation run and send an explicit zero |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
-| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed, not in manual mode, or on the iPhone adapter (manual arming there only serves confirmed voice moves, NAV_ACTIONS.md); otherwise hold the command for a 250 ms lease and return health |
+| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or authority is stale; generation-bound joystick takeover on the iPhone adapter (below), then a 250 ms command lease and health response |
 | POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |
 | GET `/voice`, POST `/voice/ask` | Push-to-talk Q&A: availability, then clip -> transcript -> grounded answer -> speech (see [VOICE.md](VOICE.md); off by default) |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
-| GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason |
+| GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason, motion_generation |
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
 serial, vendor, motor or credential integration. Startup is disarmed, and the
@@ -720,9 +720,28 @@ autonomous movement remains unverified; see [the validation record](../docs/AUTO
 - An adapter `send` error stops with `car_error`. A failed `zero` also stops
   with `car_error`, is retried every tick with nothing else sent, and blocks
   `/arm` until the car accepts one.
-- `/manual` carries no token in the frozen v1 wire, so a delayed request or a
-  second dashboard still holding the button counts as fresh input after a
-  re-arm. Only one operator surface should drive at a time.
+- Dashboard joystick control uses additive `/manual` fields `takeover`, `release`
+  and `expected_generation`. A paired zero takeover against current
+  `health.motion_generation` transfers an already armed rover to manual mode,
+  cancels Explore retry/navigation/voice intent, and retires the old command
+  generation without changing the relay drive session or arming again.
+  Pulses every 100 ms carry the returned generation. Ordinary zero is held-center
+  idle; explicit `release: true` requires zero and retires the gesture generation.
+  Delayed pulses, releases and takeovers cannot revive a stopped/rearmed gesture.
+  Legacy non-relay clients may omit these fields; physical relay clients cannot.
+- Standard plus explicit `/arm?standard=true` supports dashboard joystick use.
+  The gesture itself never arms. Release/lease expiry leaves manual mode; Explore
+  does not resume until explicitly selected and armed again. A confirmed voice
+  move retires any earlier gesture before starting its own controller.
+- `/autonomy.manual_control` reports supported nonzero `forward`, `reverse`, and
+  `yaw` magnitude ranges or null, plus `arcs`. Measured ranges come from the
+  configured calibration; unsupported arcs/reverse are refused before dispatch.
+  Prototype ranges remain nominal PWM requests, not measured physical speeds.
+- Relay joystick movement needs fresh phone/detector/car and current same-map
+  occupancy. Class-independent swept footprint checks run both at request and
+  dispatch against the configured profile, including its existing unknown-space
+  policy. Zero/release remains available despite a blocked path. This does not
+  add a semantic person-stop rule or certify unseen space as collision-free.
 
 Navigation uses the same boundary: `/goal` reads `app.state.motion.generation`
 before planning, and every 10 Hz follower step calls

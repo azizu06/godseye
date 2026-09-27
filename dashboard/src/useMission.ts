@@ -19,7 +19,8 @@ import {
   reduceMessage,
 } from "./state";
 import type { PersonClearance } from "./personMemory";
-import { DirectionalSteering, type SteeringDirection } from "./steering";
+import type { SteeringDirection } from "./steering";
+import { defaultManualCapabilities, joystickVector } from "./joystick";
 import { useAutonomy } from "./useAutonomy";
 import {
   initialConfig,
@@ -114,6 +115,8 @@ export function useMission() {
   const confirmedMap = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [stopLatched, setStopLatched] = useState(true);
+  const [manualStopBarrier, setManualStopBarrier] = useState(false);
+  const manualStopRef = useRef(false);
   const [rescanBaseline, setRescanBaseline] = useState<string | null>(null);
   const [historyStatus, setHistoryStatus] = useState("Live events only");
   const [pending, setPending] = useState<string | null>(null);
@@ -131,9 +134,14 @@ export function useMission() {
   const armSetupPending = useRef(false);
   const controlBusy = useRef<number | null>(null);
   const heldDirection = useRef<SteeringDirection | null>(null);
-  const [steeringDirection, setSteeringDirection] =
-    useState<SteeringDirection | null>(null);
-  const directional = useRef<DirectionalSteering | null>(null);
+  const manualGesture = useRef<{
+    token: number;
+    vector: [number, number];
+    ready: boolean;
+  } | null>(null);
+  const manualGeneration = useRef<number | undefined>(undefined);
+  const manualAuthority = useRef<number | undefined>(undefined);
+  const manualRelease = useRef<Promise<unknown>>(Promise.resolve());
   const motionState = useRef({ ready: false, healthy: false, yaw: 0 });
   const latchStop = useCallback((value: boolean) => {
     stopLatchRef.current = value;
@@ -142,9 +150,9 @@ export function useMission() {
   const cancelControl = useCallback(() => {
     controlEpoch.current++;
     heldDirection.current = null;
-    setSteeringDirection(null);
-    directional.current?.stop();
     manual.current?.stop();
+    manualGesture.current = null;
+    manualGeneration.current = undefined;
   }, []);
   const releaseSteering = useCallback(() => {
     if (heldDirection.current !== null) cancelControl();
@@ -193,6 +201,8 @@ export function useMission() {
   useEffect(() => {
     const gen = ++generation.current;
     armSetupPending.current = false;
+    manualStopRef.current = false;
+    setManualStopBarrier(false);
     cancelControl();
     controlBusy.current = null;
     activeMap.current = null;
@@ -230,6 +240,8 @@ export function useMission() {
       socket.onopen = () => {
         if (disposed) return;
         opened = true;
+        manualAuthority.current = undefined;
+        manualRelease.current = Promise.resolve();
         attempt = 0;
         pointWorker.current?.reconnect();
         confirmedMap.current = false;
@@ -259,6 +271,7 @@ export function useMission() {
           }
           if (key !== undefined && key !== activeMap.current) {
             activeMap.current = key;
+            manualAuthority.current = undefined;
             setStartedAt(Date.now());
             stopEpoch.current++;
             cancelControl();
@@ -384,7 +397,9 @@ export function useMission() {
         // Phone setup defaults to Explore; `standard` keeps Standard for one confirmed voice move.
         preparing
           ? `/arm?prepare=true${standard ? "&standard=true" : ""}`
-          : path,
+          : path === "/arm" && standard
+            ? "/arm?standard=true"
+            : path,
         body,
         preparing ? AbortSignal.timeout(18000) : signal,
         config.roverKey,
@@ -419,19 +434,40 @@ export function useMission() {
   );
   useEffect(() => {
     const controller = new ManualController(
-      (body, signal) => send("/manual", body, signal),
-      (e) => notify(e instanceof Error ? e.message : "Manual command failed."),
-    );
-    manual.current = controller;
-    const steering = new DirectionalSteering(
-      (body, signal) => send("/manual", { ...body }, signal),
-      () => motionState.current,
+      (body, signal) => {
+        const requestGeneration = generation.current;
+        const requestEpoch = stopEpoch.current;
+        const request = send(
+          "/manual",
+          {
+            ...body,
+            ...(manualGeneration.current === undefined
+              ? {}
+              : { expected_generation: manualGeneration.current }),
+          },
+          signal,
+        ).then((result) => {
+          if (
+            requestGeneration === generation.current &&
+            requestEpoch === stopEpoch.current &&
+            Number.isSafeInteger(result.motion_generation)
+          )
+            manualAuthority.current = Math.max(
+              manualAuthority.current ?? -1,
+              Number(result.motion_generation),
+            );
+          return result;
+        });
+        if (body.release) manualRelease.current = request.catch(() => {});
+        return request;
+      },
       (e) => {
         cancelControl();
-        notify(e instanceof Error ? e.message : "Steering command failed.");
+        notify(e instanceof Error ? e.message : "Manual command failed.");
       },
     );
-    directional.current = steering;
+    manual.current = controller;
+    manualAuthority.current = undefined;
     const stop = () => cancelControl();
     const hidden = () => {
       if (document.hidden) stop();
@@ -439,7 +475,7 @@ export function useMission() {
     window.addEventListener("blur", stop);
     document.addEventListener("visibilitychange", hidden);
     return () => {
-      steering.stop();
+      cancelControl();
       controller.stop();
       window.removeEventListener("blur", stop);
       document.removeEventListener("visibilitychange", hidden);
@@ -454,7 +490,8 @@ export function useMission() {
     mission.pose?.tracking === "normal" &&
     mission.health?.phone === "ok" &&
     mission.health.pose_age_ms !== null &&
-    mission.health.pose_age_ms <= 250;
+    mission.health.pose_age_ms <=
+      (autonomy?.profile === "prototype" ? 1000 : 250);
   const healthy =
     trackingNormal &&
     mission.health?.car === "ok" &&
@@ -498,16 +535,132 @@ export function useMission() {
     }
   }, [healthy, unexpectedStop, cancelControl, latchStop]);
   useEffect(() => {
-    if (!canDrive) manual.current?.stop();
-    if (canDrive && mission.health?.mode === "manual" && steeringDirection)
-      directional.current?.start(steeringDirection);
-    else directional.current?.stop();
-  }, [canDrive, mission.health?.mode, steeringDirection]);
+    if (!canDrive) cancelControl();
+  }, [canDrive, cancelControl]);
+  const manualCapabilities =
+    autonomy?.adapter === "iphone"
+      ? (autonomy.manual_control ?? undefined)
+      : defaultManualCapabilities;
+  const canJoystick =
+    healthy &&
+    !pending &&
+    !manualStopBarrier &&
+    mission.health?.armed === true &&
+    config.commands &&
+    !!manualCapabilities &&
+    mission.health?.motion_generation !== undefined &&
+    (autonomy?.adapter !== "iphone" ||
+      (!!(config.roverKey || config.serverPaired) &&
+        mission.health?.motion_generation !== undefined));
+  const releaseDrive = useCallback((token: number | null) => {
+    if (token === null || manualGesture.current?.token !== token) return;
+    manual.current?.stop();
+    manualGesture.current = null;
+    manualGeneration.current = undefined;
+  }, []);
+  const beginDrive = useCallback(
+    (v: number, w: number): number | null => {
+      if (!canJoystick || manualStopRef.current) return null;
+      cancelControl();
+      const token = controlEpoch.current;
+      const gen = generation.current;
+      const epoch = stopEpoch.current;
+      const gesture = {
+        token,
+        vector: [v, w] as [number, number],
+        ready: false,
+      };
+      manualGesture.current = gesture;
+      const previous = manualRelease.current;
+      const ready = async () => {
+        try {
+          await previous;
+          if (
+            manualStopRef.current ||
+            manualGesture.current !== gesture ||
+            gen !== generation.current ||
+            epoch !== stopEpoch.current
+          )
+            return false;
+          const result = await send("/manual", {
+            v_mps: 0,
+            yaw_rate_rps: 0,
+            takeover: true,
+            expected_generation: Math.max(
+              mission.health?.motion_generation ?? -1,
+              manualAuthority.current ?? -1,
+            ),
+          });
+          if (gen !== generation.current || epoch !== stopEpoch.current)
+            return false;
+          if (Number.isSafeInteger(result.motion_generation))
+            manualAuthority.current = Math.max(
+              manualAuthority.current ?? -1,
+              Number(result.motion_generation),
+            );
+          if (
+            manualGesture.current !== gesture ||
+            epoch !== stopEpoch.current ||
+            token !== controlEpoch.current
+          )
+            return false;
+          if (!Number.isSafeInteger(result.motion_generation))
+            throw Error("Backend did not confirm manual control");
+          manualGeneration.current = manualAuthority.current = Number(
+            result.motion_generation,
+          );
+          latchStop(false);
+          gesture.ready = true;
+          manual.current?.start(...gesture.vector);
+          return true;
+        } catch (error) {
+          if (manualGesture.current === gesture) {
+            releaseDrive(token);
+            notify(
+              error instanceof Error
+                ? error.message
+                : "Manual control unavailable",
+            );
+          }
+          return false;
+        }
+      };
+      manualRelease.current = ready();
+      return token;
+    },
+    [
+      canJoystick,
+      cancelControl,
+      send,
+      mission.health?.motion_generation,
+      releaseDrive,
+      notify,
+    ],
+  );
+  const drive = useCallback(
+    (token: number | null, v: number, w: number) => {
+      const gesture = manualGesture.current;
+      if (
+        !gesture ||
+        gesture.token !== token ||
+        !canJoystick ||
+        manualStopRef.current
+      )
+        return;
+      gesture.vector = [v, w];
+      if (gesture.ready) manual.current?.start(v, w);
+    },
+    [canJoystick, releaseDrive],
+  );
   const command = useCallback(
     async (path: string, body?: Record<string, unknown>, standard = false) => {
       cancelControl();
       controlBusy.current = null;
       if (path === "/arm") armSetupPending.current = true;
+      if (path === "/stop") {
+        manualStopRef.current = true;
+        setManualStopBarrier(true);
+      }
       const gen = generation.current;
       if (["/stop", "/mode", "/session"].includes(path)) latchStop(true);
       if (["/stop", "/mode", "/session"].includes(path)) {
@@ -593,7 +746,11 @@ export function useMission() {
           return false;
         }
         if (gen !== generation.current) return false;
-        if (path === "/arm") latchStop(false);
+        if (path === "/arm") {
+          latchStop(false);
+          manualStopRef.current = false;
+          setManualStopBarrier(false);
+        }
         if (path === "/stop") notify("Stop acknowledged. Rover disarmed.");
         return true;
       } catch (e) {
@@ -708,8 +865,7 @@ export function useMission() {
           latchStop(true);
           await send("/mode", { mode });
           if (!valid()) return false;
-          // A Standard arm on the iPhone adapter only serves a confirmed voice move;
-          // direct steering stays refused there.
+          // A mode handoff preserves the operator’s existing armed intent.
           await send("/arm", undefined, undefined, mode === "manual");
           if (!valid()) {
             // The request can complete after release, Stop, or a source switch.
@@ -747,25 +903,19 @@ export function useMission() {
   );
   const steer = useCallback(
     (direction: SteeringDirection) => {
-      if (autonomy?.adapter === "iphone") {
-        notify(
-          "Use the phone for manual driving. Select a map destination for laptop navigation.",
-        );
-        return;
-      }
-      if (heldDirection.current === direction) return;
-      if (
-        heldDirection.current &&
-        mission.health?.mode === "manual" &&
-        canDrive
-      ) {
-        heldDirection.current = direction;
-        setSteeringDirection(direction);
-        return;
-      }
-      void handoff("manual", () => setSteeringDirection(direction), direction);
+      if (heldDirection.current === direction || !manualCapabilities) return;
+      const axes = {
+        up: [0, -1],
+        down: [0, 1],
+        left: [-1, 0],
+        right: [1, 0],
+      } as const;
+      const [x, y] = axes[direction];
+      const value = joystickVector(x, y, manualCapabilities);
+      void beginDrive(value.v, value.w);
+      heldDirection.current = direction;
     },
-    [handoff, canDrive, mission.health?.mode, autonomy?.adapter, notify],
+    [beginDrive, manualCapabilities],
   );
   const navigate = useCallback(
     (x: number, z: number) => {
@@ -846,10 +996,6 @@ export function useMission() {
       document.removeEventListener("focusin", focus);
     };
   }, []);
-  const drive = (v: number, w: number) => {
-    if (canDrive && mission.health?.mode === "manual")
-      manual.current?.start(v, w);
-  };
   return {
     cloud,
     ingestCaptured,
@@ -873,6 +1019,10 @@ export function useMission() {
     now,
     startedAt,
     drive,
+    beginDrive,
+    releaseDrive,
+    canJoystick,
+    manualCapabilities,
     steer,
     releaseSteering,
     navigate,

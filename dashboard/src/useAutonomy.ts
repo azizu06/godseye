@@ -1,3 +1,4 @@
+import { validManualCapabilities, type ManualCapabilities } from "./joystick";
 import { useEffect, useState } from "react";
 
 export interface AutonomyReadiness {
@@ -6,6 +7,7 @@ export interface AutonomyReadiness {
   profile?: "prototype" | "measured";
   warnings?: string[];
   ready: boolean;
+  manual_control?: ManualCapabilities | null;
   auto_requested?: boolean;
   blockers: string[];
 }
@@ -29,6 +31,8 @@ export function useAutonomy(apiUrl: string) {
           data.version !== 1 ||
           !["logging", "iphone"].includes(data.adapter) ||
           typeof data.ready !== "boolean" ||
+          (data.manual_control !== undefined &&
+            !validManualCapabilities(data.manual_control)) ||
           !Array.isArray(data.blockers) ||
           !data.blockers.every((item: unknown) => typeof item === "string")
         )

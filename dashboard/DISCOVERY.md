@@ -25,8 +25,7 @@ Spatial Memory, Object Intelligence, Recent Activity, and Rover Controls remain 
 Source selection, Stop, export, and new-session actions remain inside the view.
 The default controls expose Standard and Explore.
 Standard offers arrow-key steering and click-to-navigate together; the transport handles the backend's separate manual/navigate commands without exposing separate mutually exclusive UI modes.
-Arrow-key directions are rover-relative: Up moves straight ahead immediately, Down turns around, and Left/Right turn 90° before advancing. Capture the requested heading at the start of each new direction press, independent of camera orbit or 2D/3D view. Holding or repeating a key must not accumulate turns.
-Steering rotates by the shortest angle before applying forward velocity; the opposite direction is a 180-degree turn, never an automatic reverse.
+Arrow keys and the circular joystick share manual ownership. Up advances along the rover heading; Left/Right turn; Down reverses only with backend support. Camera orbit does not change this mapping. Diagonal joystick input follows the backend’s advertised arc capability, with dominant-axis driving for measured adapters. Every gesture explicitly takes over an already armed generation; releasing it stops its commands and never resumes Explore.
 Releasing a key, losing focus, opening an input/dialog, resetting the map, or pressing Stop cancels steering and pending handoffs.
 Only an already explicitly armed, healthy Standard session may change between manual and navigation input without another arm gesture.
 Any fault or Stop requires explicit arming again.
