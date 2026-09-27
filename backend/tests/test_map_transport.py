@@ -170,6 +170,14 @@ class MapTransportTests(unittest.TestCase):
                 self.assertEqual(client.app.state.map_stats['published'], 0)
                 phone.send_bytes(frame(frame_id=2, t_capture=2.))
                 self.assertEqual(next_of(live, 'points')['frame_id'], 2)
+                # Points are deliberately published on a 250 ms cadence, the
+                # same length as the pose-health window. A fresh pose proves
+                # the phone link survived without depending on scheduler timing.
+                phone.send_json(dict(version=1, type='pose', session_id='map-session',
+                                     map_epoch=1, frame_id=3, t_capture=3.,
+                                     t_wall_ms=int(time.time() * 1000),
+                                     transform=TRANSFORM, tracking='normal'))
+                wait_for(lambda: client.app.state.pose.t_capture == 3.)
                 self.assertEqual(client.get('/health').json()['phone'], 'ok')
 
     def test_burst_is_coalesced_to_bounded_newest_work(self):
