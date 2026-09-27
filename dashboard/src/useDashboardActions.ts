@@ -16,6 +16,7 @@ import {
   detectionImageUrl,
   detectionsLive,
 } from "./detections";
+import { offerForMap, navAction } from "./navProposals";
 import { mapKey } from "./protocol";
 import type { CameraPose, SceneHandle } from "./Scene";
 import type { Mission } from "./state";
@@ -112,6 +113,16 @@ export function useDashboardActions<P extends string>(opts: {
       if (applied.current.size > 500) applied.current.clear();
       fresh.forEach((a) => applied.current.add(a.id));
       const now = latest.current;
+      const suggestion = fresh.length === 1 ? navAction(fresh[0]) : null;
+      if (suggestion) {
+        // A rover suggestion changes nothing here: it only becomes a card a person must confirm.
+        if (!replyScope || replyScope !== now.mission.mapKey)
+          return "The map changed while Scout was answering. Nothing was suggested.";
+        offerForMap(replyScope, [suggestion]);
+        return suggestion.name === "stop_navigation"
+          ? "Stop is on screen. Press it, or Stop in Rover controls, to stop the rover."
+          : "I put that suggestion on screen. Nothing moves unless you confirm it there.";
+      }
       const d = now.mission.detections;
       const plan = planActions(fresh, {
         scope: now.mission.mapKey,

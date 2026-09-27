@@ -629,6 +629,20 @@ export function useMission() {
     },
     [handoff, send],
   );
+  const confirmProposal = useCallback(
+    (kind: string, body: Record<string, unknown>) => {
+      // A destination uses the same hand-off as click-to-navigate: it needs a
+      // deliberate arm first, and the backend then plans it exactly like /goal.
+      if (kind === "destination")
+        return handoff("navigate", () => send("/nav/confirm", body));
+      // Exploration only selects explore mode, which stops and disarms; arming
+      // to start it stays a separate deliberate click.
+      stopEpoch.current++;
+      latchStop(true);
+      return command("/nav/confirm", body);
+    },
+    [handoff, send, command, latchStop],
+  );
   const keyboard = useRef({ steer, releaseSteering });
   keyboard.current = { steer, releaseSteering };
   useEffect(() => {
@@ -702,6 +716,7 @@ export function useMission() {
     steer,
     releaseSteering,
     navigate,
+    confirmProposal,
     release: cancelControl,
   };
 }
