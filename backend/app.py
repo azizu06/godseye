@@ -31,6 +31,7 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
+from backend.scan_pacing import CameraPose, ScanObservation, capture_observation
 from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
                              points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
@@ -193,6 +194,7 @@ class MapUpdate:
     retirement_keys: object = None
     retirement_cursor: int | None = None
     mesh_keys: object = None
+    scan: ScanObservation | None = None
 
 
 class LatestFrame:
@@ -202,9 +204,9 @@ class LatestFrame:
         self.item = None
         self.ready = asyncio.Event()
 
-    def put(self, payload):
+    def put(self, payload, observed_at=None):
         replaced = self.item is not None
-        self.item = (payload, time.monotonic())
+        self.item = (payload, time.monotonic(), observed_at)
         self.ready.set()
         return replaced
 
@@ -323,11 +325,13 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.autonomy_map = None
         app.state.occupancy_stats = Counter()
+        app.state.scan_observation = None
         app.state.nav = Navigator(nav_settings, pose=rover_pose,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None,
-                                  pause_reason=prototype_pause_reason)
+                                  pause_reason=prototype_pause_reason,
+                                  scan_observation=lambda: app.state.scan_observation)
         app.state.mover = MoveRunner(MoveSettings(), pose=rover_pose, submit=app.state.motion.submit, stop=nav_stop,
                                      armed_mode=lambda: app.state.mode if app.state.armed else None,
                                      speeds=move_speeds(), early_stop_m=getattr(
@@ -461,7 +465,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
-                    auto_requested=app.state.auto_requested,
+                    auto_requested=app.state.auto_requested, scan_pacing=app.state.nav.scan_status,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
 
@@ -504,7 +508,8 @@ def create_app(db_path: str | None = None, build_points=None,
             return None
         mount_yaw = calibration.camera_yaw_rad if calibration is not None else None
         x, z, yaw = pose_from_transform(pose.transform, mount_yaw if mount_yaw is not None else 0.)
-        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
+        camera = CameraPose.from_transform(app.state.session, app.state.phone, pose.t_capture, pose.transform)
+        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking, camera)
 
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
@@ -623,7 +628,7 @@ def create_app(db_path: str | None = None, build_points=None,
             await mailbox.ready.wait()
             cadence = interval() if callable(interval) else interval
             await asyncio.sleep(max(0., last_start + cadence - time.monotonic()))
-            payload, received = mailbox.take()  # newest wins; older ones were replaced
+            payload, received, observed_at = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
@@ -643,6 +648,10 @@ def create_app(db_path: str | None = None, build_points=None,
                 stats['discarded_stale'] += 1
             else:
                 last_capture = result.t_capture
+                if isinstance(result, MapUpdate) and result.scan is not None:
+                    result = replace(result, scan=replace(result.scan,
+                        pose=replace(result.scan.pose, owner=owner),
+                        observed_at=received if observed_at is None else observed_at))
                 try:
                     outcome = accept(result) or 'published'
                 except Exception:
@@ -736,7 +745,8 @@ def create_app(db_path: str | None = None, build_points=None,
             except NoNewPoints:
                 pass
         return MapUpdate(frame.t_capture if custom_builder is None else candidates.t_capture,
-                         evidence, chunk, view, retired, cursor, mesh_keys)
+                         evidence, chunk, view, retired, cursor, mesh_keys,
+                         capture_observation(frame, candidates) if custom_builder is None else None)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
@@ -751,6 +761,9 @@ def create_app(db_path: str | None = None, build_points=None,
                                 retirement_keys=update.retirement_keys,
                                 retirement_cursor=update.retirement_cursor,
                                 depth_view=update.depth, mesh_keys=update.mesh_keys)
+                    # Only accepted, successfully integrated same-frame evidence
+                    # can inform pacing, even when display dedup emitted no chunk.
+                    app.state.scan_observation = update.scan
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')
@@ -898,6 +911,7 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.scan_observation = None
         app.state.detection_view = None
         retire_route(invalidate_pending=True)
         app.state.tracking_lost_capture = -1.0
@@ -1312,6 +1326,7 @@ def create_app(db_path: str | None = None, build_points=None,
             last_pose_publish = -1.0
             while True:
                 message = await ws.receive()
+                received_at, received_wall = time.monotonic(), time.time()
                 if message['type'] == 'websocket.disconnect':
                     break
                 if app.state.phone is not owner:
@@ -1353,6 +1368,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 if pose.tracking != 'normal':
                     app.state.tracking_lost_capture = max(app.state.tracking_lost_capture, pose.t_capture)
                     grid.clear_depth_history()
+                    app.state.scan_observation = None
                 newest_pose = pose.t_capture > last_capture
                 if newest_pose:
                     last_capture = pose.t_capture
@@ -1369,7 +1385,8 @@ def create_app(db_path: str | None = None, build_points=None,
                 if is_frame:
                     app.state.capture.update(message['bytes'], pose.model_dump())
                 if is_frame and pose.tracking == 'normal' and pose.t_capture > app.state.tracking_lost_capture:
-                    if mailbox.put(message['bytes']):
+                    observed_at = received_at - max(0., received_wall - pose.t_wall_ms / 1000)
+                    if mailbox.put(message['bytes'], observed_at):
                         app.state.map_stats['replaced'] += 1
                     if app.state.detector is not None and detections.put(message['bytes']):
                         app.state.detect_stats['replaced'] += 1
@@ -1388,6 +1405,7 @@ def create_app(db_path: str | None = None, build_points=None,
             for worker in workers:
                 worker.cancel()
             if app.state.phone is owner:
+                app.state.scan_observation = None
                 grid.clear_depth_history()
                 app.state.phone = None
                 retire_route(invalidate_pending=True)

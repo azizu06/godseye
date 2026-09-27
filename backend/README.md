@@ -565,6 +565,16 @@ drift are unmeasured.
 
 ## Navigation
 
+Explore also inserts bounded stationary RGB-D checkpoints before initial forward
+travel and after meaningful measured view changes. It holds zero while checking
+full-camera stability and distinct post-settle depth, then resumes through normal
+navigation checks. Each attempt is capped at 2 s; low-quality or missing capture
+reports limited evidence, never room completion. Selected destinations are
+unchanged. See [capture pacing](SCAN_PACING.md) for thresholds, evidence provenance,
+prototype/color limitations and the offline A/B test. `/autonomy.scan_pacing`
+exposes compact diagnostics; `health.navigation_wait_reason` names active settling
+or capture while a checkpoint holds.
+
 `POST /goal` and explore mode plan on the active session's occupancy grid
 (`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
 (`backend/navigator.py`). Each follower command goes through
