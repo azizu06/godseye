@@ -16,7 +16,7 @@ describe("responder rover model", () => {
     expect(all.max.z).toBeLessThanOrEqual(ROVER_FOOTPRINT.length / 2);
     // Tyres sit on the outline floor; nothing rises past the old phone plate.
     expect(all.min.y).toBeCloseTo(-ROVER_FOOTPRINT.height / 2, 6);
-    expect(all.max.y).toBeLessThan(0.16);
+    expect(all.max.y).toBeLessThan(0.2);
   });
 
   it("has finite, non-empty geometry", () => {
@@ -28,16 +28,27 @@ describe("responder rover model", () => {
     }
   });
 
-  it("faces +Z: sensor eyes forward, battery pack behind", () => {
+  it("faces +Z: bumper and sensor eyes forward, battery box behind", () => {
     expect(box("servo").min.z).toBeGreaterThan(0.1);
     expect(box("silver").max.z).toBeGreaterThan(0.16);
-    expect(box("beaconRed").max.z).toBeLessThan(0);
+    expect(box("orange").max.z).toBeGreaterThan(0.16);
+    expect(box("black").min.z).toBeLessThan(-0.15);
     expect(box("tire").min.z).toBeCloseTo(-box("tire").max.z, 6);
     expect(box("tire").min.x).toBeCloseTo(-box("tire").max.x, 6);
   });
 
+  it("gives each deck a visible top face", () => {
+    const deck = rover.get("deck")!;
+    const y = deck.getAttribute("position");
+    const n = deck.getAttribute("normal");
+    let up = 0;
+    for (let i = 0; i < y.count; i++)
+      if (Math.abs(y.getY(i) - 0.024) < 1e-6 && n.getY(i) > 0.99) up++;
+    expect(up).toBeGreaterThan(0);
+  });
+
   it("merges parts into one draw per material", () => {
-    expect(rover.size).toBeLessThanOrEqual(13);
+    expect(rover.size).toBeLessThanOrEqual(11);
     for (const g of rover.values()) expect(g.groups).toHaveLength(0);
   });
 });

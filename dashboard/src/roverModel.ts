@@ -2,8 +2,8 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 /**
- * Display-only footprint of the rover glyph (metres, local frame: +X right,
- * +Y up, +Z forward). This is the long-standing placeholder box size, not a
+ * Display-only footprint of the rover glyph (metres, local frame: +Y up,
+ * +Z forward). This is the long-standing placeholder box size, not a
  * measured rover calibration; motion readiness uses GODSEYE_ROVER_CALIBRATION.
  */
 export const ROVER_FOOTPRINT = { width: 0.25, height: 0.12, length: 0.35 };
@@ -13,15 +13,12 @@ export type RoverMaterial =
   | "tire"
   | "yellow"
   | "brass"
-  | "pcb"
-  | "board"
+  | "ivory"
   | "orange"
+  | "black"
   | "silver"
   | "servo"
-  | "phone"
-  | "trim"
-  | "beaconRed"
-  | "beaconBlue";
+  | "trim";
 
 type Parts = Partial<Record<RoverMaterial, THREE.BufferGeometry[]>>;
 
@@ -37,10 +34,11 @@ function box(
   material: RoverMaterial,
   size: [number, number, number],
   at: [number, number, number],
+  yaw = 0,
 ) {
-  (parts[material] ??= []).push(
-    new THREE.BoxGeometry(...size).translate(...at),
-  );
+  const g = new THREE.BoxGeometry(...size).rotateY(yaw).translate(...at);
+  (parts[material] ??= []).push(g);
+  return g;
 }
 
 /** Cylinder along X (wheels), Y (standoffs) or Z (sensor eyes). */
@@ -57,6 +55,7 @@ function cylinder(
   if (axis === "x") g.rotateZ(Math.PI / 2);
   else if (axis === "z") g.rotateX(Math.PI / 2);
   (parts[material] ??= []).push(g.translate(...at));
+  return g;
 }
 
 /** ELEGOO-style acrylic deck: flat rear, rounded nose. */
@@ -64,28 +63,35 @@ function deck(parts: Parts, halfWidth: number, bottom: number) {
   const rear = -0.165;
   const nose = 0.168;
   const shoulder = 0.09;
-  const shape = new THREE.Shape()
-    .moveTo(-halfWidth, rear)
-    .lineTo(halfWidth, rear)
-    .lineTo(halfWidth, shoulder)
-    .quadraticCurveTo(halfWidth, nose, 0, nose)
-    .quadraticCurveTo(-halfWidth, nose, -halfWidth, shoulder)
-    .closePath();
-  const g = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.004,
-    bevelEnabled: false,
-    curveSegments: 6,
-  });
-  // Shape Y becomes +Z; extrusion runs down from `bottom + depth`.
-  g.rotateX(Math.PI / 2).translate(0, bottom + 0.004, 0);
-  (parts.deck ??= []).push(g);
+  const y = bottom + 0.002;
+  box(
+    parts,
+    "deck",
+    [halfWidth * 2, 0.004, shoulder - rear],
+    [0, y, (rear + shoulder) / 2],
+  );
+  (parts.deck ??= []).push(
+    new THREE.CylinderGeometry(
+      halfWidth,
+      halfWidth,
+      0.004,
+      12,
+      1,
+      false,
+      -Math.PI / 2,
+      Math.PI,
+    )
+      .scale(1, 1, (nose - shoulder) / halfWidth)
+      .translate(0, y, shoulder),
+  );
 }
 
 /**
- * Low-poly responder rover modelled on the team's ELEGOO Smart Robot Car V4:
- * twin black decks on brass standoffs, four knobby tyres with yellow rims and
- * yellow TT motors, a board stack, the rear battery pack (rescue orange here),
- * the front servo with its twin ultrasonic eyes, and the mounted phone.
+ * Low-poly SCOUT responder rover. The chassis follows the team's ELEGOO Smart
+ * Robot Car V4 photos: twin black decks on brass standoffs, four tyres with
+ * yellow rims, TT motors, the rear battery box and the front servo with twin
+ * ultrasonic eyes. The ivory cover, orange bumper/accents and upright phone
+ * slab follow the generated SCOUT concept and are styling, not hardware.
  * Geometry is merged per material so the whole model is one draw per colour.
  */
 export function buildResponderRover(): Map<
@@ -109,12 +115,7 @@ export function buildResponderRover(): Map<
         AXLE_Y,
         z,
       ]);
-      box(
-        parts,
-        "yellow",
-        [0.05, 0.022, 0.024],
-        [sx * 0.06, AXLE_Y - 0.008, z],
-      );
+      box(parts, "ivory", [0.05, 0.022, 0.024], [sx * 0.06, AXLE_Y - 0.008, z]);
     }
   deck(parts, 0.078, -0.022);
   deck(parts, 0.085, 0.02);
@@ -128,23 +129,46 @@ export function buildResponderRover(): Map<
   ])
     cylinder(parts, "brass", 0.0035, 0.038, 6, "y", [x, 0.001, z]);
   const top = 0.024;
-  // Controller stack.
-  box(parts, "pcb", [0.07, 0.004, 0.08], [0, top + 0.002, -0.005]);
-  box(parts, "board", [0.064, 0.012, 0.07], [0, top + 0.01, -0.005]);
-  box(parts, "silver", [0.03, 0.006, 0.008], [0.01, top + 0.019, 0.02]);
-  // Battery pack and light bar.
-  box(parts, "orange", [0.11, 0.034, 0.065], [0, top + 0.017, -0.125]);
-  box(parts, "beaconRed", [0.022, 0.01, 0.012], [-0.012, top + 0.039, -0.1]);
-  box(parts, "beaconBlue", [0.022, 0.01, 0.012], [0.012, top + 0.039, -0.1]);
-  // Front servo, ultrasonic board and its two eyes.
-  box(parts, "servo", [0.024, 0.02, 0.022], [0, top + 0.01, 0.135]);
-  box(parts, "board", [0.07, 0.028, 0.004], [0, top + 0.032, 0.15]);
-  for (const x of [-0.02, 0.02])
-    cylinder(parts, "silver", 0.0095, 0.012, 10, "z", [x, top + 0.032, 0.158]);
-  // Mounted phone: landscape, cameras forward, on a small cradle.
-  box(parts, "orange", [0.05, 0.006, 0.02], [0, top + 0.003, 0.075]);
-  box(parts, "phone", [0.14, 0.068, 0.008], [0, top + 0.04, 0.075]);
-  box(parts, "trim", [0.03, 0.03, 0.004], [0.045, top + 0.056, 0.081]);
+  // Rear battery box and the protective cover over the controller stack.
+  box(parts, "black", [0.1, 0.032, 0.06], [0, top + 0.016, -0.13]);
+  box(parts, "ivory", [0.084, 0.036, 0.1], [0, top + 0.018, -0.035]);
+  for (const sx of [-1, 1])
+    box(
+      parts,
+      "orange",
+      [0.003, 0.026, 0.022],
+      [sx * 0.0435, top + 0.018, 0.004],
+    );
+  // Front: wrap-around bumper (its angled wings also point the way), servo,
+  // ultrasonic bracket and the two eyes with dark transducer faces.
+  box(parts, "orange", [0.06, 0.018, 0.012], [0, top - 0.004, 0.163]);
+  for (const sx of [-1, 1])
+    box(
+      parts,
+      "orange",
+      [0.032, 0.018, 0.012],
+      [sx * 0.042, top - 0.004, 0.152],
+      sx * 0.5,
+    );
+  box(parts, "servo", [0.024, 0.02, 0.022], [0, top + 0.01, 0.14]);
+  box(parts, "black", [0.066, 0.026, 0.004], [0, top + 0.033, 0.153]);
+  for (const x of [-0.02, 0.02]) {
+    cylinder(parts, "silver", 0.0095, 0.012, 10, "z", [x, top + 0.033, 0.161]);
+    cylinder(parts, "trim", 0.007, 0.002, 10, "z", [x, top + 0.033, 0.1675]);
+  }
+  // Upright phone/sensor slab behind the eyes, leaning slightly back, with
+  // its camera pair facing forward. A proposed mount, not observed hardware.
+  box(parts, "black", [0.012, 0.025, 0.008], [0, top + 0.033, 0.143]);
+  const mount = new THREE.Matrix4()
+    .makeTranslation(0, top + 0.045, 0.145)
+    .multiply(new THREE.Matrix4().makeRotationX(-0.2));
+  box(parts, "black", [0.05, 0.09, 0.006], [0, 0.045, 0]).applyMatrix4(mount);
+  for (const x of [-0.012, 0.012])
+    cylinder(parts, "trim", 0.005, 0.002, 8, "z", [
+      x,
+      0.075,
+      0.004,
+    ]).applyMatrix4(mount);
 
   const merged = new Map<RoverMaterial, THREE.BufferGeometry>();
   for (const [key, list] of Object.entries(parts) as [
@@ -165,8 +189,21 @@ export function buildResponderRover(): Map<
   return merged;
 }
 
-/** Top-of-battery marking position (local frame). */
-export const SCOUT_DECAL = {
-  position: [0, 0.024 + 0.034 + 0.0005, -0.135] as const,
-  size: [0.085, 0.026] as const,
-};
+/** SCOUT markings on the cover: top (read from behind) and both sides. */
+export const SCOUT_DECALS = [
+  {
+    position: [0, 0.0605, -0.035],
+    rotation: [-Math.PI / 2, 0, Math.PI],
+    size: [0.07, 0.021],
+  },
+  {
+    position: [0.0425, 0.042, -0.042],
+    rotation: [0, Math.PI / 2, 0],
+    size: [0.06, 0.018],
+  },
+  {
+    position: [-0.0425, 0.042, -0.042],
+    rotation: [0, -Math.PI / 2, 0],
+    size: [0.06, 0.018],
+  },
+] as const;

@@ -3,24 +3,21 @@ import * as THREE from "three";
 import {
   buildResponderRover,
   ROVER_FOOTPRINT,
-  SCOUT_DECAL,
+  SCOUT_DECALS,
   type RoverMaterial,
 } from "./roverModel";
 
 const COLORS: Record<RoverMaterial, string> = {
-  deck: "#2c323b",
-  tire: "#17191d",
-  yellow: "#d9b64a",
+  deck: "#20252a",
+  tire: "#151719",
+  yellow: "#e6b91d",
   brass: "#b8955a",
-  pcb: "#2f6b4f",
-  board: "#1b1e23",
-  orange: "#e07b39",
-  silver: "#c9ced6",
-  servo: "#3d5a99",
-  phone: "#111316",
-  trim: "#3a3f47",
-  beaconRed: "#d05a4e",
-  beaconBlue: "#8ab4f8",
+  ivory: "#e5dfd0",
+  orange: "#f58220",
+  black: "#15181c",
+  silver: "#aeb4bc",
+  servo: "#233c8a",
+  trim: "#2e3339",
 };
 
 let shared:
@@ -36,7 +33,7 @@ function scoutTexture() {
   canvas.height = 80;
   const ctx = canvas.getContext("2d");
   if (ctx) {
-    ctx.fillStyle = "#1b1e23";
+    ctx.fillStyle = "#20252a";
     ctx.font = "700 60px 'IBM Plex Mono', monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -58,9 +55,6 @@ function roverAssets() {
         flatShading: true,
         roughness: key === "brass" || key === "silver" ? 0.35 : 0.6,
         metalness: key === "brass" || key === "silver" ? 0.6 : 0.1,
-        ...(key.startsWith("beacon")
-          ? { emissive: COLORS[key], emissiveIntensity: 0.5 }
-          : {}),
       }),
     ]),
     decal: new THREE.MeshBasicMaterial({
@@ -94,13 +88,16 @@ export function ResponderRover() {
       {meshes.map(([geometry, material]) => (
         <mesh key={geometry.uuid} geometry={geometry} material={material} />
       ))}
-      <mesh
-        position={[...SCOUT_DECAL.position]}
-        rotation={[-Math.PI / 2, 0, Math.PI]}
-        material={decal}
-      >
-        <planeGeometry args={[...SCOUT_DECAL.size]} />
-      </mesh>
+      {SCOUT_DECALS.map(({ position, rotation, size }) => (
+        <mesh
+          key={position[0]}
+          position={[...position]}
+          rotation={[...rotation]}
+          material={decal}
+        >
+          <planeGeometry args={[...size]} />
+        </mesh>
+      ))}
     </group>
   );
 }
