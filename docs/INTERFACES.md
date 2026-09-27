@@ -191,3 +191,17 @@ Write it behind one Python function, `drive(v_mps, yaw_rate_rps)`, so nothing el
 - **Backend:** `tools/fake_phone.py` replays a recorded session (or random poses) into `/phone`.
 - **Dashboard:** `tools/fake_live.py` emits every `/live` message type with made-up objects and a moving pose.
 - **iOS:** until the backend is up, test against `websocat -s 8765`.
+
+### Optional Explore pacing diagnostics
+
+`GET /autonomy` may include `scan_pacing: null` or
+`{ phase: "moving" | "settling" | "capturing", result: null | "stable_support" |
+"capture_limited" | "support_limit" | "interrupted", stable_frames, checkpoints }`.
+It describes bounded stationary capture opportunities in the active Explore run,
+not whole-map quality, physical speed, image sharpness or mission completion.
+`stable_frames` counts distinct usable same-frame captures after measured settling
+at the current/latest checkpoint; `checkpoints` counts attempts in that run.
+Stop or another run clears these diagnostics. Existing optional
+`health.navigation_wait_reason` uses `scan_settling` / `scan_capturing` during the
+idle hold; safety/navigation reasons take priority. This adds no command or phone
+wire fields and changes no selected-destination behavior.

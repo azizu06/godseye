@@ -28,6 +28,7 @@ from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
 from backend.occupancy import FREE, OCCUPIED, OccupancySnapshot
+from backend.scan_pacing import CameraPose, ScanPacer
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class RoverPose:
     yaw_rad: float
     age_s: float
     tracking: str
+    camera: CameraPose | None = None
 
 
 def pose_from_transform(transform, camera_yaw_rad: float = 0.) -> tuple[float, float, float]:
@@ -219,13 +221,16 @@ class Navigator:
     def __init__(self, settings: NavSettings, *, pose: Callable[[], RoverPose | None],
                  occupancy: Callable[[], OccupancySnapshot | None], submit: Callable[[int, str, float, float], bool],
                  stop: Callable[[str], None], publish: Callable[[dict], None],
-                 armed_mode: Callable[[], str | None], pause_reason: Callable[[], str | None] | None = None):
+                 armed_mode: Callable[[], str | None], pause_reason: Callable[[], str | None] | None = None,
+                 scan_observation: Callable | None = None):
         """``armed_mode()`` is the current mode while armed, else None; a run whose mode
         it no longer matches stops at its next tick, even if ``halt()`` was missed."""
         self.settings = settings
         self._pose, self._occupancy, self._submit = pose, occupancy, submit
         self._stop, self._publish, self._armed_mode = stop, publish, armed_mode
         self._pause_reason = pause_reason or (lambda: None)
+        self._scan_observation = scan_observation
+        self.scan_status = None
         self._task: asyncio.Task | None = None
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
@@ -364,6 +369,7 @@ class Navigator:
         task, self._task = self._task, None
         self.kind = self.goal = None
         self.waiting_reason = None
+        self.scan_status = None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
         return task
@@ -394,6 +400,8 @@ class Navigator:
     async def _run(self, kind, goal, initial, generation):
         s = self.settings
         explore = kind == 'explore'
+        pacer = ScanPacer() if explore and self._scan_observation is not None else None
+        self.scan_status = pacer.status if pacer is not None else None
         period = 1. / s.rate_hz
         follower = None
         snapshot = None
@@ -418,6 +426,8 @@ class Navigator:
                     return self._finish('disarmed')
                 if explore and (reason := self._pause_reason()) is not None:
                     self.waiting_reason = reason
+                    if pacer is not None and pacer.active:
+                        pacer.finish('interrupted')
                     if follower is not None or snapshot is not None or job is not None or progress is not None:
                         if job is not None:
                             job.cancel()
@@ -559,6 +569,8 @@ class Navigator:
                             follower, progress, last_plan = None, None, now
                             fast_corridor = False
                             self.waiting_reason = 'start_blocked'
+                            if pacer is not None and pacer.active:
+                                pacer.finish('interrupted')
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
@@ -572,6 +584,8 @@ class Navigator:
                                 and math.hypot(x - rx, z - rz) < s.progress_m
                                 and abs(math.remainder(yaw - ryaw, math.tau)) < s.progress_rad):
                             self.waiting_reason = 'no_feasible_step'
+                            if pacer is not None and pacer.active:
+                                pacer.finish('interrupted')
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
                             await asyncio.sleep(period)
@@ -630,6 +644,12 @@ class Navigator:
                                 v = w = 0.
                                 command_blocked = True
                                 last_plan = -math.inf
+
+                if pacer is not None:
+                    feasible_forward = v > 0. and abs(w) < .1 and self.waiting_reason is None
+                    if pacer.step(now, pose.camera, self._scan_observation(), feasible_forward):
+                        v = w = 0.
+                        self.waiting_reason = 'scan_' + pacer.status['phase']
 
                 if v or w or command_blocked:
                     if progress is None or (math.hypot(x - progress[0], z - progress[1]) >= s.progress_m
