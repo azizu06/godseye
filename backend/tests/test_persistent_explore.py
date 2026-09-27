@@ -158,7 +158,28 @@ class PersistentExploreTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state.armed)
             self.assertFalse(any(packet.get('direction', 0) for _, packet in peer.packets))
             peer.cells = np.ones((80, 80), dtype=np.uint8)
-            await eventually(lambda: any(packet.get('direction', 0) for _, packet in peer.packets), timeout=5.)
+            # This peer provides fresh navigation sensing but no RGB-D capture
+            # observations. After the periodic replan, Explore must offer its
+            # bounded checkpoint, report limited evidence, and then move.
+            await eventually(lambda: state.nav.scan_status is not None and
+                             state.nav.scan_status['phase'] == 'settling',
+                             timeout=state.nav.settings.replan_s + 1.)
+            checkpoint_at = time.monotonic()
+            self.assertFalse(any(packet.get('direction', 0) for _, packet in peer.packets))
+            await eventually(lambda: state.nav.scan_status['phase'] == 'capturing', timeout=1.)
+            self.assertFalse(any(packet.get('direction', 0) for _, packet in peer.packets))
+            self.assertTrue(any(at > checkpoint_at and packet['type'] == 'command' and
+                                packet.get('direction') == 0 for at, packet in peer.packets),
+                            'checkpoint must renew idle-zero through the actual relay')
+            self.assertLess(time.monotonic() - state.pose_at, state.nav.settings.pose_max_age_s)
+            self.assertLess(time.monotonic() - state.autonomy_map.accepted_at,
+                            state.nav.settings.map_max_age_s)
+            await eventually(lambda: any(packet.get('direction', 0) for _, packet in peer.packets), timeout=2.)
+            self.assertLess(time.monotonic() - checkpoint_at, 2.5,
+                            'missing RGB-D evidence must not extend the two-second checkpoint indefinitely')
+            self.assertEqual(state.nav.scan_status['result'], 'capture_limited')
+            self.assertEqual(state.nav.scan_status['stable_frames'], 0)
+            self.assertTrue(state.armed)
             self.assertEqual(peer.count('arm'), 1, 'new floor should resume the same Explore run')
 
     async def test_explicit_cancellation_wins_over_pending_recovery_handshake(self):
