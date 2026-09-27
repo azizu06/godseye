@@ -96,8 +96,9 @@ A v3 frame includes `"mesh_voxels": "..."`: base64 of at most 4,000 world-space
 include the v2 `floor` object. The phone resamples the current mesh about once
 per second and repeats it in every live frame so frame coalescing cannot discard
 an update; an empty encoded snapshot removes its previous mesh obstacles.
-The backend accepts voxels within 5.5 m horizontally and 0.8 m below to 1.6 m
-above the current camera. Mesh evidence is a short-lived navigation overlay,
+The backend keeps voxels within 5.5 m horizontally and 0.8 m below to 1.6 m
+above the current camera, dropping any cached voxels outside that window without
+discarding the frame's RGB-D or floor data. Mesh evidence is a short-lived navigation overlay,
 not permanent depth evidence; absent snapshots expire after 2.5 seconds of
 newer accepted frames. Observed RGB-D obstacles remain in the persistent map.
 
@@ -140,6 +141,10 @@ reconnect/restart; a new session/epoch has none until its first successful Explo
 Legacy/restarted sessions without a recorded entry are not backfilled: start a new
 session at the intended entry point. This metadata changes no motion authority or
 walking-clearance assumptions; `/route` remains the existing visualization-only API.
+
+`health` may also include `navigation_wait_reason`: `null` while following or idle,
+or a reason such as `no_feasible_step` or `explore_complete` while Explore stays armed
+at zero awaiting new map evidence. It does not replace `stop_reason`.
 
 
 ## 3. Dashboard → Mac: REST on `http://<mac>:8765`

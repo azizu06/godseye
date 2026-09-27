@@ -15,6 +15,10 @@ class MappingError(ValueError):
     """A frame carries too little reliable depth to contribute map points."""
 
 
+class InsufficientDepth(MappingError):
+    """Too few valid samples at the requested confidence, not invalid geometry."""
+
+
 @dataclass(frozen=True)
 class PointChunk:
     positions: np.ndarray  # (N, 3) ARKit world meters, float64, read-only
@@ -50,7 +54,7 @@ def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: i
         valid = (confidence >= min_confidence) & (depth >= min_depth_m) & (depth <= max_depth_m)
     indices = np.flatnonzero(valid)
     if indices.size < min_points:
-        raise MappingError('insufficient valid high-confidence depth')
+        raise InsufficientDepth('insufficient valid high-confidence depth')
     if indices.size > max_points:
         indices = indices[np.linspace(0, indices.size - 1, max_points).astype(np.int64)]
     rows, cols = np.divmod(indices, dw)

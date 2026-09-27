@@ -31,8 +31,8 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
-from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_to_points, points_message,
-                             points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
+from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
+                             points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.mission_entry import load_entry, record_entry
@@ -518,7 +518,8 @@ def create_app(db_path: str | None = None, build_points=None,
                 detector = 'ok'
         return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
-                    stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry)
+                    stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry,
+                    navigation_wait_reason=app.state.nav.waiting_reason)
 
     def car_health():
         try:
@@ -683,12 +684,18 @@ def create_app(db_path: str | None = None, build_points=None,
             if frame.mesh_points is not None:
                 mesh_keys = frame_evidence(frame.mesh_points).keys
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
-            candidates = depth_to_points(frame, max_points=samples)
+            prototype_depth = getattr(calibration, 'depth_confidence', 2) == 1
+            try:
+                candidates = depth_to_points(frame, max_points=samples)
+            except InsufficientDepth:
+                if not prototype_depth:
+                    raise
+                candidates = None  # display may be empty; navigation still needs valid medium depth
             # Carpet commonly has medium LiDAR confidence. Prototype navigation
             # accumulates that evidence across frames; displayed points retain
             # their existing high-confidence policy. Decode the JPEG only once.
             evidence_points = (depth_to_points(frame, max_points=max(samples, 6000), min_confidence=1).positions
-                               if getattr(calibration, 'depth_confidence', 2) == 1 else candidates.positions)
+                               if prototype_depth else candidates.positions)
             # ARKit's classified floor plane survives glossy surfaces whose
             # scene-depth confidence is zero. Rasterize it into sparse free
             # evidence at a bounded rate; observed obstacle voxels still win.
@@ -714,11 +721,14 @@ def create_app(db_path: str | None = None, build_points=None,
             except Exception:
                 app.state.occupancy_stats['failed'] += 1
                 logger.exception('occupancy depth retirement failed')
-        try:
-            chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
-        except NoNewPoints:
-            chunk = None
-        return MapUpdate(candidates.t_capture, evidence, chunk, view, retired, cursor, mesh_keys)
+        chunk = None
+        if candidates is not None:
+            try:
+                chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
+            except NoNewPoints:
+                pass
+        return MapUpdate(frame.t_capture if custom_builder is None else candidates.t_capture,
+                         evidence, chunk, view, retired, cursor, mesh_keys)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
