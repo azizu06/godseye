@@ -313,33 +313,14 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         self.assert_stopped(h, 'no_floor')
         self.assertFalse(any(v or w for v, w in h.rover.commands))
 
-    async def test_explore_visits_frontiers_and_stops_when_the_map_is_closed(self):
-        await self.explore_visits_frontiers_and_closes()
-
-    async def test_explore_advances_frontiers_when_every_tick_replans(self):
-        # Force a plan for the old frontier to be pending on its arrival tick.
-        # This used to resurrect that frontier forever instead of choosing the next.
-        await self.explore_visits_frontiers_and_closes(replan_s=0.)
-
-    async def explore_visits_frontiers_and_closes(self, **settings):
-        corridor = cells(UNKNOWN)
-        corridor[5:25, 5:55] = FREE  # explored strip; everything around it is unknown
-        occupancy = FakeOccupancy(corridor)
-        rover = Rover(1.5, .75, 0.)
-        h = Harness(rover, occupancy, mode='explore', **settings)
-        self.addAsyncCleanup(h.nav.aclose)
+    async def test_explore_requires_same_capture_metadata_not_just_a_classified_grid(self):
+        # Positive next-view/completion and late-worker lifecycle regressions live
+        # in test_explore_runner. This old map-only stand-in cannot prove a scan.
+        h = Harness(Rover(1.5, .75, 0.), FakeOccupancy(enclosed()), mode='explore')
         h.nav.start_explore(h.generation)
-        # Two distinct path ends: it reached one frontier and moved on to the next.
-        await wait_until(lambda: len({tuple(p[-1]) for p in h.paths if p}) >= 2)
-        grid = Grid.from_array(corridor, origin=(0., 0.), cell_m=CELL_M)
-        for points in h.paths:
-            if points:
-                row, col = grid.world_to_cell(*points[-1])
-                self.assertEqual(corridor[row, col], FREE)
-        occupancy.set(enclosed())
         await h.finished()
-        self.assert_stopped(h, 'explore_complete')
-        self.assert_within_limits(rover.commands)
+        self.assert_stopped(h, 'scan_capture_unusable')
+        self.assertFalse(any(v or w for v, w in h.rover.commands))
 
 
 class LiveNavigationTests(unittest.TestCase):
@@ -518,12 +499,13 @@ class LiveNavigationTests(unittest.TestCase):
         self.assertEqual(client.app.state.stop_reason, reason)
         self.assertEqual(client.app.state.nav.path, [])
 
-    def test_explore_runs_with_a_calibrated_floor_and_stop_ends_it(self):
+    def test_explore_refuses_old_floor_survey_as_proof_of_a_stable_view(self):
         with TestClient(self.app()) as client, client.websocket_connect('/phone') as phone:
             phone.send_json(self.hello())
             self.arm(client, phone, 'explore')
-            self.keep_fresh(phone, lambda: len(self.sends()) >= 5)
-            self.assertTrue(client.app.state.nav.active)
+            self.keep_fresh(phone, lambda: not client.app.state.armed)
+            self.assertEqual(client.app.state.stop_reason, 'scan_view_unsupported')
+            self.assertEqual(client.get('/health').json()['exploration']['observed_views'], 0)
             client.post('/stop')
             self.assertFalse(client.app.state.nav.active)
             self.assertFalse(client.get('/health').json()['armed'])

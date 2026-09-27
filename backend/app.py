@@ -38,8 +38,9 @@ from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
                            scout_position)
-from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, ScanObservation, frame_evidence
 from backend.navigation import Grid, path_message
+from backend.exploration import observation_from_frame
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
@@ -179,6 +180,7 @@ class MapUpdate:
     evidence: Evidence | None  # None when the occupancy computation failed
     chunk: PointChunk | None  # None when every point was sent recently
     observed_at: float | None = None  # fixed receipt-clock estimate, never processing completion
+    observation: ScanObservation | None = None
 
 
 class LatestFrame:
@@ -399,7 +401,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.armed = False
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
-            app.state.nav.halt()  # end any goal/explore run and clear its path first
+            app.state.nav.halt(reason)  # end any goal/explore run and clear its path first
         app.state.motion.halt()  # drops every held command, then an explicit zero
         session = app.state.session or (None, None)
         app.state.db.execute(
@@ -417,7 +419,8 @@ def create_app(db_path: str | None = None, build_points=None,
             return None
         mount_yaw = calibration.camera_yaw_rad if calibration is not None else None
         x, z, yaw = pose_from_transform(pose.transform, mount_yaw if mount_yaw is not None else 0.)
-        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
+        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking,
+                         pose.t_capture, mount_yaw if mount_yaw is not None else 0.)
 
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
@@ -431,7 +434,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 detector = 'ok'
         return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
-                    stop_reason=app.state.stop_reason)
+                    stop_reason=app.state.stop_reason, exploration=dict(app.state.nav.exploration_status))
 
     def car_health():
         try:
@@ -580,7 +583,8 @@ def create_app(db_path: str | None = None, build_points=None,
             chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
         except NoNewPoints:
             chunk = None
-        return MapUpdate(candidates.t_capture, evidence, chunk)
+        return MapUpdate(candidates.t_capture, evidence, chunk,
+                         observation=observation_from_frame(decode_frame(payload), evidence))
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
@@ -591,7 +595,8 @@ def create_app(db_path: str | None = None, build_points=None,
         def accept(update):
             if update.evidence is not None:
                 try:
-                    grid.commit(update.evidence, time.monotonic(), observed_at=update.observed_at)
+                    grid.commit(update.evidence, time.monotonic(), observed_at=update.observed_at,
+                                observation=update.observation)
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')
@@ -703,6 +708,7 @@ def create_app(db_path: str | None = None, build_points=None,
         stop('session_reset')
         app.state.autonomy_map = None
         if app.state.session != session:
+            app.state.nav.reset_exploration()
             app.state.chunk_id = 0
             app.state.occupancy = OccupancyGrid(session, calibration=calibration)
             app.state.point_memory.reset()

@@ -126,7 +126,7 @@ class ReadinessHTTPTests(unittest.TestCase):
             client.app.state.occupancy = grid
             client.app.state.session = ('TEST', 1)
             client.app.state.autonomy_map = grid.map_snapshot()
-            client.app.state.pose = SimpleNamespace(transform=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1], tracking='normal')
+            client.app.state.pose = SimpleNamespace(transform=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1], tracking='normal', t_capture=1.)
             client.app.state.pose_at = time.monotonic()
             result = client.get('/autonomy').json()
             client.app.state.session = None
