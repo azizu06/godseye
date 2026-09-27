@@ -51,3 +51,34 @@ legacy arc fallback. Explore intent remains separate from temporary motor readin
   straight. Test actual yaw-step magnitude (<0.1 rad/s) and total variation
   (<2 rad/s) as the primary smoothness checks; retain <20 coarse switches.
   Baseline maximum jump 0.536, total 26.33; first new run 0.0655 and 0.899.
+- Protocol/profile/mission backend committed as `a67c346` after independent
+  review. Initial full backend run: 474 passed; the two additional mission
+  cases also passed in the seven-test lifecycle suite. Tools: 25 passed.
+  Swift: 34 passed; actual Swift relay loopback: five scenarios passed;
+  firmware: four sanitizer suites passed and ESP32-S3 build succeeded.
+- ESP32-S3 `dc:b4:d9:27:22:d0` application updated at `0x10000`; both the
+  write hash and independent esptool verify-flash digest matched, followed by
+  hard reset. Replaced region backed up locally; original full backup retained.
+- The running server used the separate scan checkout. Ruling: merge its
+  committed `21f4218` mesh work into this branch (`d5f66a1`) and preserve its
+  database/capture paths on restart; leave its unfinished mesh-cache edits
+  untouched. Integrated Swift v1/v2/v3 sensor and full-capture contract passed.
+- Review found telemetry reconnect and delayed startup cleanup could cancel
+  requested Explore in the dashboard. These need explicit cancellation and
+  operation ownership, separately from connection freshness.
+- The scan work completed `db2822f` while integration was running; merged it as
+  `1246c06`. This retains current mesh in coalesced phone frames and corrects
+  an existing map test's stale-pose timing assumption. Final combined backend
+  suite: **482 passed**. Swift: **35 passed**, including real v1/v2/v3 sensor
+  and full-capture fixtures through both Python decoders. Signed iPhone build
+  succeeded and the combined app was installed on `The Batman`.
+- Hardware-free car smoke passed: real socket mapping and calibrated FakeCar
+  goal/refusal/reconnect rehearsal. No physical motor command was sent.
+- Independent dashboard regressions now pass for telemetry reconnect during
+  startup and an old Arm response arriving after a newer Arm. Explicit admin
+  cancellation remains authoritative.
+- Final dashboard verification: seven persistent Explore browser cases and
+  two legacy Arm/Stop/source cases passed on isolated ports. All 257 unit
+  tests passed with `--maxWorkers=1`; the unchanged throughput assertions had
+  exceeded their existing five-second limits under simultaneous test load.
+  Production build and formatting passed (existing bundle-size warning).
