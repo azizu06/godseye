@@ -288,6 +288,8 @@ class OccupancyGrid:
         self._camera_xz = (0., 0.)
         self._last_depth_view = None
         self._retirement_cursor = 0
+        self._mesh_keys = np.empty(0, np.int64)  # latest ARKit reconstruction only
+        self._mesh_at = None
         self._lock = threading.Lock()
 
     @property
@@ -320,13 +322,22 @@ class OccupancyGrid:
         return retired, cursor + 512
 
     def commit(self, evidence: Evidence, now: float, *, retirement_keys=None,
-               retirement_cursor=None, depth_view: DepthView | None = None) -> None:
+               retirement_cursor=None, depth_view: DepthView | None = None,
+               mesh_keys=None) -> None:
         """Fold one accepted frame in; `now` is a monotonic time in seconds.
 
         Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
         """
         keys = evidence.keys
         with self._lock:
+            mesh_changed = False
+            if mesh_keys is not None:
+                current_mesh = np.unique(np.asarray(mesh_keys, dtype=np.int64))
+                if len(current_mesh) > 4000:
+                    raise ValueError('mesh snapshot exceeds 4000 voxels')
+                mesh_changed = not np.array_equal(self._mesh_keys, current_mesh)
+                self._mesh_keys = current_mesh
+                self._mesh_at = now
             if depth_view is not None:
                 if (depth_view.session_id, depth_view.map_epoch) != self.session:
                     raise ValueError('depth view belongs to another map')
@@ -357,7 +368,7 @@ class OccupancyGrid:
             self.dropped += evidence.outside
             self.accepted_at = now
             if not len(keys):
-                if removed:
+                if removed or mesh_changed:
                     self._dirty = True
                     self.revision += 1
                 return
@@ -400,9 +411,29 @@ class OccupancyGrid:
         # floor); fall back to its last observed height, never old free cells.
         with self._lock:
             floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
+            mesh_keys = self._mesh_keys.copy() if (self._mesh_at is not None
+                and self.accepted_at is not None and self.accepted_at - self._mesh_at <= 2.5) else None
+
+        def with_current_mesh(picture):
+            if picture is None or mesh_keys is None or not len(mesh_keys):
+                return picture
+            col0, row0, cells, floor = picture
+            ix, iz = np.divmod(mesh_keys // _LEVELS, _SIDE)
+            height = Y_MIN_M + (mesh_keys % _LEVELS + .5) / _SLICES_PER_M - floor
+            obstacle = ((height >= self.obstacle_from_m - _EPS)
+                        & (height <= OBSTACLE_MAX_M + _EPS)
+                        & (ix >= col0) & (ix < col0 + cells.shape[1])
+                        & (iz >= row0) & (iz < row0 + cells.shape[0]))
+            cells[iz[obstacle] - row0, ix[obstacle] - col0] = OCCUPIED
+            return picture
+
+        if mesh_keys is not None and len(mesh_keys):
+            keys = np.concatenate((keys, mesh_keys))
+            hits = np.concatenate((hits, np.full(len(mesh_keys), OCCUPIED_MIN_HITS, np.int32)))
         if getattr(self.calibration, 'unknown_traversable', False) and camera_y is not None:
             if floor_y is not None:
-                return classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
+                return with_current_mesh(classify(keys, hits, self.obstacle_from_m,
+                                                  floor_y=floor_y, center_xz=camera_xz))
             candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
             if candidate is None or candidate >= camera_y:
                 return None
@@ -410,15 +441,16 @@ class OccupancyGrid:
             if picture is not None:
                 with self._lock:
                     self._floor_y = candidate
-            return picture
+            return with_current_mesh(picture)
         picture = classify(keys, hits, self.obstacle_from_m, center_xz=camera_xz)
         if picture is not None:
             with self._lock:
                 self._floor_y = picture[3]
-            return picture
+            return with_current_mesh(picture)
         with self._lock:
             floor_y = self._floor_y
-        return (classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
+        return (with_current_mesh(classify(keys, hits, self.obstacle_from_m,
+                                           floor_y=floor_y, center_xz=camera_xz))
                 if floor_y is not None else None)
 
     def snapshot(self):
