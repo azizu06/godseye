@@ -79,7 +79,14 @@ class ExploreYieldTests(unittest.TestCase):
     def test_image_person_label_alone_does_not_emergency_latch(self):
         with running_explore() as (client, state, car):
             # A classifier can label a poster; this supplies no metric/path evidence.
-            state.detection_view = (dict(version=1, type='detections', boxes=[dict(class_name='person', confidence=.95)]), b'')
+            from backend.detections import detections_message
+            from backend.localization import Detection
+            result = SimpleNamespace(session_id='TEST', map_epoch=1, frame_id=1, t_capture=1.,
+                                     t_wall_ms=int(time.time()*1000), image_size=(320, 240),
+                                     boxes=[Detection(box=(10., 10., 50., 120.), class_name='person', confidence=.95)], found=[])
+            view = detections_message(result, [], ('person',))
+            self.assertIsNone(view['detections'][0]['position'])
+            state.detection_view = (view, b'')
             time.sleep(.1)
             self.assertTrue(state.armed)
             self.assertIsNone(state.explore_yield)
