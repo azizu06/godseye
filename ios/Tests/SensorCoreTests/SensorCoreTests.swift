@@ -205,12 +205,29 @@ final class SensorCoreTests: XCTestCase {
             with: floorBundle[4..<(4 + floorHeaderSize)]) as? [String: Any])
         XCTAssertEqual(floorHeader["version"] as? Int, 2)
         XCTAssertNotNil(floorHeader["floor"])
+        var mesh = Data()
+        for value in [Int16(40), 22, -60] {
+            var little = value.littleEndian
+            mesh.append(withUnsafeBytes(of: &little) { Data($0) })
+        }
+        let meshBundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg,
+            intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
+            depth: depth, confidence: confidence, depthWidth: 4, depthHeight: 3,
+            floor: floor, mesh: mesh)
+        let meshHeaderSize = meshBundle.prefix(4).enumerated().reduce(0) {
+            $0 | Int($1.element) << ($1.offset * 8)
+        }
+        let meshHeader = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: meshBundle[4..<(4 + meshHeaderSize)]) as? [String: Any])
+        XCTAssertEqual(meshHeader["version"] as? Int, 3)
+        XCTAssertNotNil(meshHeader["mesh_voxels"])
         XCTAssertThrowsError(try WireProtocol.bundle(pose: pose, jpeg: jpeg,
             intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
             depth: depth, confidence: Data(repeating: 3, count: 12), depthWidth: 4, depthHeight: 3))
         if let path = ProcessInfo.processInfo.environment["GODSEYE_WIRE_FIXTURE"] {
             try bundle.write(to: URL(fileURLWithPath: path))
             try floorBundle.write(to: URL(fileURLWithPath: path + ".floor.bin"))
+            try meshBundle.write(to: URL(fileURLWithPath: path + ".mesh.bin"))
             try WireProtocol.json(pose).write(to: URL(fileURLWithPath: path + ".pose.json"))
         }
     }

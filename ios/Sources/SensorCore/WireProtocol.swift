@@ -64,14 +64,16 @@ public enum WireProtocol {
     public static func bundle(pose: [String: Any], jpeg: Data, intrinsics: [Float],
                               width: Int = 960, height: Int = 720,
                               depth: Data, confidence: Data, depthWidth: Int,
-                              depthHeight: Int, floor: [String: Any]? = nil) throws -> Data {
+                              depthHeight: Int, floor: [String: Any]? = nil,
+                              mesh: Data? = nil) throws -> Data {
         guard (1...8192).contains(width), (1...8192).contains(height),
               (1...4096).contains(depthWidth), (1...4096).contains(depthHeight),
               width * depthHeight == height * depthWidth,
               depth.count == depthWidth * depthHeight * 4,
               confidence.count == depthWidth * depthHeight,
               confidence.allSatisfy({ $0 <= 2 }), !jpeg.isEmpty,
-              intrinsics.count == 9, intrinsics.allSatisfy({ $0.isFinite }) else {
+              intrinsics.count == 9, intrinsics.allSatisfy({ $0.isFinite }),
+              mesh == nil || (mesh!.count <= 24_000 && mesh!.count % 6 == 0) else {
             throw SensorError.invalid("RGB, depth, or confidence dimensions do not align.")
         }
         var header = pose
@@ -79,6 +81,10 @@ public enum WireProtocol {
         if let floor {
             header["version"] = 2
             header["floor"] = floor
+        }
+        if let mesh {
+            header["version"] = 3
+            header["mesh_voxels"] = mesh.base64EncodedString()
         }
         header["image"] = ["width": width, "height": height, "jpeg_len": jpeg.count,
                            "intrinsics": intrinsics, "orientation": "landscape_right"]
