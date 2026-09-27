@@ -6,6 +6,7 @@ import type { SurfacePatch, SurfaceStatus } from "./surfaceTypes";
 import {
   Component,
   Suspense,
+  type RefObject,
   useEffect,
   useSyncExternalStore,
   useMemo,
@@ -26,7 +27,7 @@ import {
   ScanLine,
 } from "lucide-react";
 import type { Mission } from "./state";
-import { decodeCells, type WorldObject } from "./protocol";
+import { decodeCells, type Vec3, type WorldObject } from "./protocol";
 import {
   ProjectLabels,
   useSceneLabels,
@@ -62,6 +63,29 @@ export interface SceneProps {
   now: number;
   pickingRouteStart: boolean;
   onRouteStart: (x: number, z: number) => void;
+  view: "3d" | "2d";
+  onView: (view: "3d" | "2d") => void;
+  /** Viewer display state (voice actions); layer checkboxes still apply. */
+  showBoxes: boolean;
+  showLabels: boolean;
+  handle?: RefObject<SceneHandle>;
+}
+export interface CameraPose {
+  position: Vec3;
+  target: Vec3;
+}
+/** Imperative view hooks for dashboard actions; visualization only. */
+export interface SceneHandle {
+  /** Present while the 3D view is mounted. */
+  camera?: {
+    get(): CameraPose;
+    set(pose: CameraPose): void;
+    focus(position: Vec3): void;
+    frame(): void;
+  };
+  capture?: () => Promise<Blob | null>;
+  /** Applied when the 3D view next mounts, after a switch from 2D. */
+  pending?: { pose?: CameraPose; frame?: boolean; focus?: Vec3 };
 }
 interface Layers {
   surfaces: boolean;
@@ -77,11 +101,13 @@ function Controls({
   frame,
   bounds,
   map,
+  handle,
 }: {
   reset: number;
   frame: number;
   bounds: THREE.Sphere | null;
   map: string | null;
+  handle?: RefObject<SceneHandle>;
 }) {
   const ref = useRef<OrbitControlsImpl>(null);
   const { camera, size, invalidate } = useThree();
@@ -125,6 +151,53 @@ function Controls({
       framed.current = map;
     }
   }, [bounds, map]);
+  useEffect(() => {
+    const view = handle?.current;
+    if (!view) return;
+    const move = (position: THREE.Vector3, target: THREE.Vector3) => {
+      const controls = ref.current;
+      if (!controls) return;
+      controls.enableDamping = false;
+      controls.update();
+      controls.target.copy(target);
+      camera.position.copy(position);
+      camera.updateProjectionMatrix();
+      controls.update();
+      controls.enableDamping = true;
+      invalidate();
+    };
+    const api: NonNullable<SceneHandle["camera"]> = {
+      get: () => ({
+        position: camera.position.toArray() as Vec3,
+        target: (ref.current?.target.toArray() ?? [0, 0, 0]) as Vec3,
+      }),
+      set: (pose) =>
+        move(
+          new THREE.Vector3(...pose.position),
+          new THREE.Vector3(...pose.target),
+        ),
+      focus: (p) => {
+        const controls = ref.current;
+        if (!controls) return;
+        const target = new THREE.Vector3(p[0], p[1] + 0.3, p[2]);
+        const direction = camera.position
+          .clone()
+          .sub(controls.target)
+          .normalize();
+        move(target.clone().addScaledVector(direction, 2.6), target);
+      },
+      frame: () => latestFit.current(),
+    };
+    view.camera = api;
+    const pending = view.pending;
+    view.pending = undefined;
+    if (pending?.pose) api.set(pending.pose);
+    if (pending?.frame) api.frame();
+    if (pending?.focus) api.focus(pending.focus);
+    return () => {
+      if (view.camera === api) view.camera = undefined;
+    };
+  }, [handle, camera, invalidate]);
   return (
     <OrbitControls
       ref={ref}
@@ -263,6 +336,24 @@ function Trajectory({ mission }: { mission: Mission }) {
       opacity={0.65}
     />
   );
+}
+function CaptureBridge({ handle }: { handle?: RefObject<SceneHandle> }) {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    const view = handle?.current;
+    if (!view) return;
+    // Render and read in one task, so the drawing buffer still holds this frame.
+    const capture = () =>
+      new Promise<Blob | null>((resolve) => {
+        gl.render(scene, camera);
+        gl.domElement.toBlob(resolve, "image/png");
+      });
+    view.capture = capture;
+    return () => {
+      if (view.capture === capture) view.capture = undefined;
+    };
+  }, [gl, scene, camera, handle]);
+  return null;
 }
 function World({
   cloud,
@@ -738,8 +829,8 @@ class RenderBoundary extends Component<
   }
 }
 export default function Scene(props: SceneProps) {
-  const [view, setView] = useState<"3d" | "2d">("3d"),
-    [reset, setReset] = useState(0),
+  const { view, onView: setView } = props;
+  const [reset, setReset] = useState(0),
     [frame, setFrame] = useState(0),
     [layerMenu, setLayerMenu] = useState(false),
     [help, setHelp] = useState(false);
@@ -784,13 +875,26 @@ export default function Scene(props: SceneProps) {
     props.mission,
     props.selected,
     props.onSelect,
-    layers.objects,
-    props.liveDetections,
+    layers.objects && props.showLabels,
+    props.showLabels ? props.liveDetections : [],
     props.approachRoute,
     // Ten-second steps keep age wording current without re-rendering the map every tick.
     Math.floor(props.now / 10_000) * 10_000,
     layers.weakObjects,
   );
+  useEffect(() => {
+    const handle = props.handle?.current;
+    const svg = container.current?.querySelector(".scene-canvas svg");
+    if (view !== "2d" || !handle || !svg) return;
+    const capture = async () =>
+      new Blob([new XMLSerializer().serializeToString(svg)], {
+        type: "image/svg+xml",
+      });
+    handle.capture = capture;
+    return () => {
+      if (handle.capture === capture) handle.capture = undefined;
+    };
+  }, [view, props.handle]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (
@@ -903,14 +1007,22 @@ export default function Scene(props: SceneProps) {
             >
               <fog attach="fog" args={["#202226", 18, 38]} />
               <Suspense fallback={null}>
-                <World {...props} layers={layers} />
+                <World
+                  {...props}
+                  layers={{
+                    ...layers,
+                    objects: layers.objects && props.showBoxes,
+                  }}
+                />
               </Suspense>
               <Controls
                 reset={reset}
                 frame={frame}
                 bounds={bounds}
                 map={props.mission.mapKey}
+                handle={props.handle}
               />
+              <CaptureBridge handle={props.handle} />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>
