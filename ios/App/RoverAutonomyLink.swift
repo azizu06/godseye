@@ -7,7 +7,9 @@ import SensorCore
 @MainActor
 final class RoverAutonomyLink: ObservableObject {
     @Published private(set) var enabled = false
-    @Published private(set) var status = "Laptop control disabled"
+    @Published private(set) var status = "Laptop control disabled" {
+        didSet { if oldValue != status { NSLog("Laptop control: %@", status) } }
+    }
     private weak var rover: RoverController?
     private weak var capture: CaptureController?
     private var identity: CaptureIdentity?
@@ -18,6 +20,7 @@ final class RoverAutonomyLink: ObservableObject {
     private var lastServer = 0.0
     private var busySince = 0.0
     private var sending = false
+    private var serverReady = false
     private var acknowledgements: [[String: Any]] = []
     private var pendingStatus: [String: Any]?
     private var now: Double { ProcessInfo.processInfo.systemUptime }
@@ -40,7 +43,7 @@ final class RoverAutonomyLink: ObservableObject {
             return
         }
         self.rover = rover; self.capture = capture; identity = snapshot.identity
-        enabled = true; sequence = 0; lastServer = now
+        enabled = true; sequence = 0; lastServer = now; serverReady = false
         status = "Connecting laptop control…"
         let token = generation
         rover.onAutonomyReply = { [weak self] reply in self?.feedback(reply) }
@@ -69,7 +72,7 @@ final class RoverAutonomyLink: ObservableObject {
         rover?.onAutonomyReply = nil; rover?.onAutonomyLoss = nil
         rover?.stop()
         rover = nil; capture = nil; identity = nil
-        acknowledgements.removeAll(); pendingStatus = nil; sending = false
+        acknowledgements.removeAll(); pendingStatus = nil; sending = false; serverReady = false
         status = reason
     }
 
@@ -85,8 +88,14 @@ final class RoverAutonomyLink: ObservableObject {
             disconnect(reason: "Stopped · capture, depth, tracking or rover feedback lost")
             return
         }
-        if (sending && now - busySince > 0.2) || now - lastServer > 0.5 {
-            disconnect(reason: "Stopped · laptop control timed out")
+        // Connecting never authorizes movement. Wait for a server message
+        // before sending feedback or applying the active transport deadlines.
+        if !serverReady {
+            if now - lastServer > 3 { disconnect(reason: "Stopped · laptop handshake timed out") }
+        } else if sending && now - busySince > 0.2 {
+            disconnect(reason: "Stopped · laptop send timed out")
+        } else if now - lastServer > 0.5 {
+            disconnect(reason: "Stopped · laptop heartbeat timed out")
         }
     }
 
@@ -102,11 +111,15 @@ final class RoverAutonomyLink: ObservableObject {
                     case .data(let bytes): data = bytes
                     @unknown default: throw AutonomyCommand.Error.invalidCommand
                     }
+                    // Startup may have taken longer than a permit's lifetime.
+                    // Await a new BLE permit instead of flushing old feedback.
+                    if !self.serverReady { self.pendingStatus = nil }
                     // Server heartbeat is advisory; no movement or permit in it.
                     if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                        value["type"] as? String == "heartbeat", value.count == 2,
                        value["version"] as? Int == 1 {
                         self.lastServer = self.now
+                        if !self.serverReady { self.status = "Connected · arm from laptop when ready" }
                     } else {
                         let command = try AutonomyCommand.decode(data)
                         guard command.type == .stop || self.validCapture(),
@@ -117,6 +130,8 @@ final class RoverAutonomyLink: ObservableObject {
                         self.status = command.type == .arm ? "Arming rover…" :
                             command.type == .stop ? "Stopped · arm from laptop when ready" : "Laptop controlling rover"
                     }
+                    self.serverReady = true
+                    self.drain()
                     self.receive(token: token)
                 } catch { self.disconnect(reason: "Stopped · laptop disconnected or command rejected") }
             }
@@ -149,7 +164,7 @@ final class RoverAutonomyLink: ObservableObject {
     }
 
     private func drain() {
-        guard enabled, !sending, let socket else { return }
+        guard enabled, serverReady, !sending, let socket else { return }
         let message: [String: Any]
         if !acknowledgements.isEmpty { message = acknowledgements.removeFirst() }
         else if let pendingStatus { message = pendingStatus; self.pendingStatus = nil }

@@ -162,6 +162,14 @@ independent disconnect on missing feedback. After this fix, the real phone staye
 enabled for approximately 11 seconds before ARKit tracking loss stopped control;
 no movement was sent. This does not establish sustained network or driving readiness.
 
+The phone allows up to three seconds for the initial laptop handshake, withholding
+outbound feedback until the server responds and discarding permits accumulated
+during startup. Once connected, the existing 200 ms send deadline and 500 ms
+server-silence deadline apply. Capture and rover-feedback checks apply throughout.
+The loopback Swift test covers an 800 ms delayed server, a completely silent
+startup, and heartbeat loss after arming; those motor packets only reach fake BLE.
+Phone status distinguishes handshake, send and heartbeat timeouts.
+
 The REST motion endpoints require the pairing key when the iPhone adapter is enabled.
 `GET /autonomy` explains readiness; its occupancy snapshot is computed off the event
 loop. Geometry clearance must cover measured stopping distance plus the command-age
