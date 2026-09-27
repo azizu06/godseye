@@ -19,9 +19,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from backend.landmarks import landmark_name
 from backend.moves import LIMITS_TEXT, MoveRequest, request_problem
 
-NAV_ACTION_NAMES = ('propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move')
+NAV_ACTION_NAMES = ('propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move',
+                    'propose_landmark')
 MAX_COORD_M = 50.  # the occupancy grid covers 10 m around the origin; this only rejects nonsense
 
 # Instruction lines for the answer model (backend/labels.py). The model names an object only by
@@ -31,7 +33,10 @@ NAV_ACTION_PROMPT = (
     'Rover suggestions, only when the user asks the rover to go somewhere, explore or stop, and then '
     'as the only action: propose_navigation {"target": "object", "ref": "o3"} (or {"target": "object", '
     '"class": name} when exactly one exists), or {"target": "point", "x": meters, "z": meters} only for '
-    'coordinates the user said; propose_exploration {}; stop_navigation {}. They only put a suggestion '
+    'coordinates the user said; propose_landmark {"name": short noun phrase as said, qualifiers like color '
+    'or left/right kept} when the user asks the rover to go to any visible thing that is not one of the '
+    'objects (for example a door, a box or the red chair), which the backend looks for in recent camera '
+    'frames; propose_exploration {}; stop_navigation {}. They only put a suggestion '
     'on screen for a person to confirm: never say the rover is moving, and never mention speed, arming '
     'or steering. For one short manual move the user states with a number and unit: propose_move '
     '{"direction": "forward", "amount": number, "unit": "cm" | "m" | "in"} or {"direction": "left" | '
@@ -51,15 +56,29 @@ class NavigationArgs(_Strict):
     class_: str | None = Field(default=None, alias='class', min_length=1, max_length=64)
     x: float | None = Field(default=None, ge=-MAX_COORD_M, le=MAX_COORD_M)
     z: float | None = Field(default=None, ge=-MAX_COORD_M, le=MAX_COORD_M)
+    landmark: str | None = None  # a point the backend chose short of a named landmark (backend/landmarks.py)
 
     @model_validator(mode='after')
     def one_target(self):
         point, item = (self.x, self.z), (self.object_id, self.class_)
         if self.target == 'object':
-            if None in item or point != (None, None):
+            if None in item or point != (None, None) or self.landmark is not None:
                 raise ValueError('an object target needs object_id and class only')
         elif None in point or item != (None, None):
-            raise ValueError('a point target needs x and z only')
+            raise ValueError('a point target needs x and z only, and optionally its landmark name')
+        if self.landmark is not None and landmark_name(self.landmark) != self.landmark:
+            raise ValueError('invalid landmark name')
+        return self
+
+
+class LandmarkArgs(_Strict):
+    """An open-vocabulary thing to look for in recent frames; never itself a destination."""
+    name: str
+
+    @model_validator(mode='after')
+    def short_phrase(self):
+        if landmark_name(self.name) != self.name:
+            raise ValueError('name must be a short lowercase noun phrase')
         return self
 
 
@@ -81,12 +100,13 @@ class MoveArgs(_Strict):
 
 
 ARG_MODELS = {'propose_navigation': NavigationArgs, 'propose_exploration': NoArgs, 'stop_navigation': NoArgs,
-              'propose_move': MoveArgs}
+              'propose_move': MoveArgs, 'propose_landmark': LandmarkArgs}
 
 
 class NavAction(_Strict):
     id: str = Field(min_length=1, max_length=64)
-    name: Literal['propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move']
+    name: Literal['propose_navigation', 'propose_exploration', 'stop_navigation', 'propose_move',
+                  'propose_landmark']
     args: dict
 
 
@@ -307,7 +327,8 @@ class NavProposals:
             if destination is None:
                 return 'no_clear_approach', details
         if args['target'] == 'point':
-            details['target'] = dict(kind='point', position=[destination[0], destination[1]])
+            details['target'] = dict(kind='point', position=[destination[0], destination[1]],
+                                     **({'label': args['landmark']} if args.get('landmark') else {}))
         result = plan_path(grid, start, destination, config)
         if not result.ok:
             return PLAN_STOP_REASONS.get(result.reason, result.reason), details
@@ -367,7 +388,7 @@ def register_nav_action_routes(app, proposals: NavProposals, *, active_session, 
         if active_session() != session:
             raise HTTPException(409, 'Proposal is for a map that is not the active one')
         action = validate_nav_action(body.action)
-        if action is None:
+        if action is None or action['name'] == 'propose_landmark':  # voice resolves it to a point first
             raise HTTPException(422, 'Not a valid navigation action')
         kind = dict(propose_navigation='destination', propose_exploration='exploration',
                     stop_navigation='stop', propose_move='move')[action['name']]

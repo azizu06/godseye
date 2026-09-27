@@ -25,7 +25,8 @@ matching objects get "Which one?".
 
 | `name` | resolved `args` (no other keys) |
 |---|---|
-| `propose_navigation` | `{"target": "object", "object_id", "class"}` or `{"target": "point", "x", "z"}` (finite, at most 50 m) |
+| `propose_navigation` | `{"target": "object", "object_id", "class"}` or `{"target": "point", "x", "z"}` (finite, at most 50 m), optionally with `"landmark"` (see Named landmarks) |
+| `propose_landmark` | `{"name"}`: a short lowercase noun phrase; voice resolves it to a point first and `/nav/propose` refuses it (422) |
 | `propose_exploration` | `{}` |
 | `stop_navigation` | `{}` (from voice, carried out at once as the operator Stop, never a card) |
 | `propose_move` | `{"direction": "forward", "amount", "unit": "cm" \| "m" \| "in"}` or `{"direction": "left" \| "right", "amount", "unit": "deg"}` |
@@ -38,6 +39,39 @@ move, or cancel."), what still blocks it, or why it is unavailable.
 `offerNavigationActions({session_id, map_epoch, actions})` and a
 `godseye:voice-actions` window event are equivalent entry points. Each action id is
 shown at most once.
+
+## Named landmarks
+
+"Go to the door", "the red chair" or "the doorway on the left" name things the COCO detector
+has no class for, so there is no stored object. The model then emits `propose_landmark`
+with the phrase as said (open vocabulary: at most 8 words of letters, digits, spaces,
+apostrophes and hyphens, qualifiers kept, a leading article dropped). `backend/landmarks.py`:
+
+1. **Frames.** `LandmarkFrames` keeps at most 24 recent frames of the active
+   `(session_id, map_epoch)`, one per second, taken from the mapping worker's parsed bundles
+   only while voice is enabled: a 640 px JPEG (intrinsics rescaled to it), the native depth and
+   confidence (at most 256x256) and the camera-to-world transform. About 12 MB worst case, in
+   memory only; any map change drops them.
+2. **Locate.** Up to 8 of them, spread over the ring and newest first, go with the phrase to
+   `GeminiLabels.locate` (same key/model as the answer, 11 s timeout). It returns
+   `{"hits": [{"frame", "point": [y, x] in 0-1000, "confidence"}]}`; malformed hits and
+   confidence below 0.5 are dropped, the best (then newest) hit wins.
+3. **Unproject.** The median of a 5x5 depth patch at that pixel, confidence at least medium,
+   finite, 0.1-8 m (otherwise the next hit, else "no reliable depth"), with the same
+   conventions as `mapping.depth_to_points`: optical (x, y, z) -> ARKit (x, -y, -z) -> camera-to-world.
+4. **Destination.** `approach_point` on the same planning grid picks the nearest reachable
+   rover-clear floor 0.5 m (never less than the inflation) to 1.5 m from that world (x, z),
+   then `NavProposals.validate` checks it exactly as `/nav/propose` will. The result is an
+   ordinary `propose_navigation` point with `"landmark": name`; the card, route preview,
+   expiry, spoken "go", arm and every execution check are unchanged. The card is titled and
+   spoken "Drive to the <name>".
+
+Every failure (no frames yet, not visible, no reliable depth, no clear floor near it, any map
+or pose problem) is a spoken sentence and no card ("I can't see a door in what I've mapped so
+far. Nothing was suggested."). Limits: only what the phone camera saw in roughly the last 24 s
+of streaming (one frame per second) can be found; the point is on the visible surface, so a
+wall-mounted or far thing is approached only where mapped floor reaches within 1.5 m; the model
+can mislocate, which the person sees on the card's route before confirming.
 
 ## Spoken confirmation
 

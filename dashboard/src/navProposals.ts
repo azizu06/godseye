@@ -88,7 +88,11 @@ function navArgs(name: NavActionName, args: Record<string, unknown>) {
   if (name !== "propose_navigation") return exactly(args);
   if (args.target === "point")
     return (
-      exactly(args, "target", "x", "z") &&
+      (exactly(args, "target", "x", "z") ||
+        // A point the backend chose short of a named landmark (backend/landmarks.py).
+        (exactly(args, "target", "x", "z", "landmark") &&
+          typeof args.landmark === "string" &&
+          /^[a-z0-9][a-z0-9 '-]{0,59}$/.test(args.landmark))) &&
       coordinate(args.x) &&
       coordinate(args.z)
     );
@@ -451,9 +455,11 @@ export function spokenTitle(action: NavAction) {
     return args.direction === "forward"
       ? `Move forward ${Number(args.amount)} ${UNIT_WORDS[String(args.unit)]}`
       : `Turn ${String(args.direction)} ${Number(args.amount)} degrees`;
-  return args.target === "point"
-    ? "Drive to that point"
-    : `Drive to the ${String(args.class)}`;
+  if (args.target === "point")
+    return typeof args.landmark === "string"
+      ? `Drive to the ${args.landmark}`
+      : "Drive to that point";
+  return `Drive to the ${String(args.class)}`;
 }
 
 const STEP_WORDS: Record<string, string> = {

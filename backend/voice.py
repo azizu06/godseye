@@ -24,6 +24,7 @@ from fastapi import HTTPException, Request
 
 from backend.audio import RATE, ElevenLabsProvider, wav_audio
 from backend.moves import LIMITS_TEXT, MoveRequest, heard_problem, request_problem
+from backend.landmarks import landmark_name
 from backend.nav_actions import NAV_ACTION_NAMES, validate_nav_action
 
 MIN_AUDIO = 1024
@@ -310,6 +311,10 @@ def _navigation(item, objects, classes, heard=None):
     transcript `heard`: its number and its one unit were said, never guessed or converted.
     """
     args = item.get('args') if isinstance(item.get('args'), dict) else {}
+    if item['name'] == 'propose_landmark':  # open vocabulary: only the phrase's form is checked here
+        if set(args) != {'name'} or landmark_name(args['name']) is None:
+            raise _Refusal('invalid', NO_NAV)
+        args = {'name': landmark_name(args['name'])}
     if item['name'] == 'propose_navigation' and args.get('target') == 'object':
         args = {'target': 'object', **_object({k: v for k, v in args.items() if k != 'target'}, objects, classes)}
     action = validate_nav_action(dict(id=secrets.token_hex(6), name=item['name'], args=args))
@@ -358,10 +363,15 @@ def resolve_actions(raw, objects, classes, heard=None):
         return [], (refusal.code, refusal.text)
 
 
-def register_voice_routes(app, providers, budget, evidence, stop=None):
+NO_LANDMARK = "I can't look for things in camera frames right now. Nothing was suggested."
+
+
+def register_voice_routes(app, providers, budget, evidence, stop=None, landmark=None):
     """`evidence()` -> dict(session, objects, events, live, scout, route, extras, classes) of the shown map.
 
     `stop()` is the operator Stop (`POST /stop`'s own code); a spoken stop calls it before replying.
+    `landmark(name)` (async, backend/landmarks.py) turns a `propose_landmark` into
+    (propose_navigation args, spoken text) or (None, spoken refusal); without it one is refused.
     """
     busy = asyncio.Lock()
     asked = 0
@@ -469,6 +479,18 @@ def register_voice_routes(app, providers, budget, evidence, stop=None):
                 result['action_error'], answer = refusal
             if [a['name'] for a in actions] == ['stop_navigation']:
                 return await stopped(result, request)  # the model heard a stop: no card, stop now
+            if [a['name'] for a in actions] == ['propose_landmark']:
+                # Look for it in this map's recent frames; the result is only a point card like any other.
+                name = actions[0]['args']['name']
+                try:
+                    args, answer = await landmark(name) if landmark else (None, NO_LANDMARK)
+                except Exception:
+                    args, answer = None, NO_LANDMARK
+                action = args and validate_nav_action(dict(id=actions[0]['id'], name='propose_navigation', args=args))
+                actions = [action] if action else []
+                if not action:
+                    result['action_error'] = 'landmark_unavailable'
+                    answer = answer if args is None and answer else NO_LANDMARK
             if answer is None and not actions:
                 raise HTTPException(502, 'Answer unavailable')
             result.update(status='ok', answer=answer)

@@ -145,6 +145,16 @@ the shown map and absent until its producer sets it:
   with a reason) and age, always `verified: false`. This is a walking suggestion
   and is distinct from the grounding's `route` (the rover's own `rover_path`).
 
+## Named landmarks
+
+A request to go to something that is not a stored object ("go to the door", "the red chair")
+becomes `propose_landmark`; the backend looks for it in up to 8 recent downscaled camera
+frames of this map with one extra Gemini call and, when found with reliable depth, replies
+with an ordinary point card (NAV_ACTIONS.md Named landmarks). Unlike the text-only answer, this
+call sends images; they are held in memory only, never logged or stored, and dropped on a map
+change. It needs no configuration beyond the existing voice settings, and counts as one
+question of the budget.
+
 ## Live configuration
 
 Put the settings in the gitignored repository-root `.env` (mode 600; never commit,

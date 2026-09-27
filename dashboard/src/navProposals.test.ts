@@ -187,8 +187,34 @@ describe("voice reply parsing (dashboardActions.parseActions)", () => {
       { target: "object", object_id: "db-1", class: "backpack", speed: 1 },
       { target: "point", x: "1", z: 2 },
       { target: "point", x: 1, z: 99 },
+      { target: "point", x: 1, z: 2, landmark: "Door!" },
+      { target: "point", x: 1, z: 2, landmark: 7 },
+      { target: "object", object_id: "db-1", class: "bag", landmark: "bag" },
     ])
       expect(parseActions([{ ...go, args }])).toBeNull();
+  });
+
+  it("accepts a backend-chosen point short of a named landmark and speaks its name", async () => {
+    const { parseActions } = await import("./dashboardActions");
+    const door: NavAction = {
+      id: "l",
+      name: "propose_navigation",
+      args: { target: "point", x: 1, z: 2, landmark: "red door" },
+    };
+    expect(parseActions([door])).toEqual([door]);
+    expect(
+      parseActions([{ id: "p", name: "propose_landmark", args: { name: "door" } }]),
+    ).toBeNull();
+    const ready: CardVoiceState = {
+      live: true,
+      checking: false,
+      step: "confirm",
+      why: null,
+      blocked: null,
+    };
+    expect(voicePrompt(door, ready)).toBe(
+      "Drive to the red door is ready. Say go to drive, or cancel.",
+    );
   });
 });
 
