@@ -1,6 +1,7 @@
 """Voice go-to for a named visual landmark the detector has no class for ("the door", "the red chair").
 
-A small bounded ring keeps recent downscaled RGB-D frames of the active map only. On a spoken
+A small bounded set keeps downscaled RGB-D frames covering the places and headings the camera
+has seen in the active map only. On a spoken
 `propose_landmark`, the answer model is asked where that open-vocabulary thing appears in a few of
 them; the chosen pixel is unprojected with that frame's own depth and pose, and the nearest
 rover-clear reachable floor short of it becomes an ordinary `propose_navigation` point. The result
@@ -15,13 +16,15 @@ import math
 import re
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 
-MAX_FRAMES = 24  # ring size per map; older frames are dropped
-MIN_INTERVAL_S = 1.  # at most one kept frame per second
+MAX_FRAMES = 40  # kept frames per map, chosen for coverage (see LandmarkFrames)
+MAX_BYTES = 24_000_000  # explicit memory bound for all kept frames together
+MIN_INTERVAL_S = 1.  # while not full, also keep one frame per second even without new coverage
+NOVEL_MOVE_M = .5  # a frame covers new ground when the camera moved this far from every kept frame
+NOVEL_TURN_DEG = 25.  # or turned this far from every kept frame's heading
 MAX_SIDE_PX = 640  # kept JPEGs are downscaled to this longest side
 MAX_JPEG_BYTES = 200_000
 MAX_DEPTH_PIXELS = 256 * 256  # ARKit scene depth is 256x192; larger depth is not kept
@@ -61,6 +64,23 @@ class LandmarkFrame:
     depth: np.ndarray
     confidence: np.ndarray
 
+    @property
+    def nbytes(self):
+        return len(self.jpeg) + sum(a.nbytes for a in (self.intrinsics, self.transform, self.depth,
+                                                       self.confidence))
+
+
+def camera_pose(transform):
+    """(x, z, heading radians) of a camera-to-world transform; heading is the world yaw of camera -z."""
+    t = np.asarray(transform, dtype=float)
+    return float(t[0, 3]), float(t[2, 3]), math.atan2(-t[0, 2], -t[2, 2])
+
+
+def pose_gap(a, b):
+    """How different two camera poses are, in units of the novelty thresholds (>= 1 is new coverage)."""
+    turn = abs((a[2] - b[2] + math.pi) % (2 * math.pi) - math.pi)
+    return max(math.dist(a[:2], b[:2]) / NOVEL_MOVE_M, math.degrees(turn) / NOVEL_TURN_DEG)
+
 
 def keep_frame(frame) -> LandmarkFrame | None:
     """A downscaled copy of a parsed FrameBundle for the ring, or None when it is too large to keep."""
@@ -87,40 +107,67 @@ def keep_frame(frame) -> LandmarkFrame | None:
 
 
 class LandmarkFrames:
-    """Recent frames of one map, at most MAX_FRAMES, one per MIN_INTERVAL_S; reset on any map change.
+    """Frames covering what the camera saw in one map, not just the latest seconds; reset on a map change.
 
-    Offered from the mapping worker thread and read from the event loop, so guarded by a lock.
-    Worst case memory is about MAX_FRAMES * (MAX_JPEG_BYTES + 5 * MAX_DEPTH_PIXELS) bytes (~12 MB).
+    A frame is kept when its camera moved at least NOVEL_MOVE_M or turned at least NOVEL_TURN_DEG
+    from every kept frame, or, while fewer than MAX_FRAMES are kept, when MIN_INTERVAL_S passed
+    since the last keep. When full (or over MAX_BYTES), the kept frame most redundant with another
+    (the closest pose and heading pair, the older of the two) is evicted instead of the oldest, so
+    places seen early in an exploration stay findable. Offered from the mapping worker thread and
+    read from the event loop, so guarded by a lock. Memory never exceeds MAX_BYTES (each frame is at
+    most about MAX_JPEG_BYTES + 5 * MAX_DEPTH_PIXELS bytes, ~0.5 MB).
     """
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self._lock = threading.Lock()
         self._session = None
-        self._frames: deque[LandmarkFrame] = deque(maxlen=MAX_FRAMES)
+        self._frames: list[LandmarkFrame] = []  # oldest first
+        self._poses: list[tuple] = []
+        self._bytes = 0
         self._last = -math.inf
 
     def _reset(self, session):
-        self._session, self._last = session, -math.inf
-        self._frames.clear()
+        self._session, self._last, self._bytes = session, -math.inf, 0
+        self._frames, self._poses = [], []
 
-    def due(self, session) -> bool:
-        with self._lock:
-            return session != self._session or self.clock() - self._last >= MIN_INTERVAL_S
+    def _wanted(self, session, pose) -> bool:
+        if session != self._session:
+            return True
+        if all(pose_gap(pose, kept) >= 1 for kept in self._poses):
+            return True
+        return len(self._frames) < MAX_FRAMES and self.clock() - self._last >= MIN_INTERVAL_S
+
+    def _evict_redundant(self):
+        """Drop the older frame of the closest pose pair."""
+        best, drop = math.inf, 0
+        for i, a in enumerate(self._poses):
+            for b in self._poses[i + 1:]:
+                gap = pose_gap(a, b)
+                if gap < best:
+                    best, drop = gap, i
+        self._bytes -= self._frames[drop].nbytes
+        del self._frames[drop], self._poses[drop]
 
     def offer(self, session, frame) -> bool:
-        """Keep this parsed frame of `session` if one is due; True when kept."""
-        if not self.due(session):
-            return False
-        kept = keep_frame(frame)
+        """Keep this parsed frame of `session` if it adds coverage (or is due); True when kept."""
+        pose = camera_pose(frame.transform)
+        with self._lock:
+            if not self._wanted(session, pose):
+                return False
+        kept = keep_frame(frame)  # encode outside the lock
         with self._lock:
             if session != self._session:
                 self._reset(session)
-            if kept is None or self.clock() - self._last < MIN_INTERVAL_S:
+            if kept is None or not self._wanted(session, pose):
                 return False
             self._frames.append(kept)
+            self._poses.append(pose)
+            self._bytes += kept.nbytes
             self._last = self.clock()
-            return True
+            while len(self._frames) > MAX_FRAMES or (self._bytes > MAX_BYTES and len(self._frames) > 1):
+                self._evict_redundant()
+            return True  # the newest is never the older of a pair, so never evicted here
 
     def frames(self, session) -> list[LandmarkFrame]:
         """Newest first, only for the map they were captured in; another map's frames are dropped."""
@@ -128,7 +175,12 @@ class LandmarkFrames:
             if session is None or session != self._session:
                 self._reset(session)
                 return []
-            return list(reversed(self._frames))
+            return self._frames[::-1]
+
+    @property
+    def nbytes(self):
+        with self._lock:
+            return self._bytes
 
     def clear(self):
         with self._lock:
@@ -194,11 +246,21 @@ def parse_hits(reply, count):
 
 
 def sample_frames(frames, limit=MAX_LOCATE_FRAMES):
-    """At most `limit` frames spread over the ring, newest first, always keeping the newest."""
-    n = len(frames)
-    if n <= limit:
+    """At most `limit` frames, newest first: the newest half, then the most distinct views of the rest.
+
+    The rest are chosen greedily, each the frame whose pose and heading differ most from every
+    frame already chosen, so the model sees different places and directions, not one moment.
+    """
+    if len(frames) <= limit:
         return list(frames)
-    return [frames[i] for i in sorted({round(i * (n - 1) / (limit - 1)) for i in range(limit)})]
+    chosen = list(range(limit // 2))
+    poses = [camera_pose(f.transform) for f in frames]
+    rest = list(range(limit // 2, len(frames)))
+    while len(chosen) < limit:
+        pick = max(rest, key=lambda i: (min(pose_gap(poses[i], poses[j]) for j in chosen), -i))
+        chosen.append(pick)
+        rest.remove(pick)
+    return [frames[i] for i in sorted(chosen)]
 
 
 def not_seen(name):

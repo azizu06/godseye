@@ -47,13 +47,16 @@ has no class for, so there is no stored object. The model then emits `propose_la
 with the phrase as said (open vocabulary: at most 8 words of letters, digits, spaces,
 apostrophes and hyphens, qualifiers kept, a leading article dropped). `backend/landmarks.py`:
 
-1. **Frames.** `LandmarkFrames` keeps at most 24 recent frames of the active
-   `(session_id, map_epoch)`, one per second, taken from the mapping worker's parsed bundles
-   only while voice is enabled: a 640 px JPEG (intrinsics rescaled to it), the native depth and
-   confidence (at most 256x256) and the camera-to-world transform. About 12 MB worst case, in
-   memory only; any map change drops them.
-2. **Locate.** Up to 8 of them, spread over the ring and newest first, go with the phrase to
-   `GeminiLabels.locate` (same key/model as the answer, 11 s timeout). It returns
+1. **Frames.** `LandmarkFrames` keeps up to 40 frames of the active `(session_id, map_epoch)`
+   chosen for coverage, not recency: a frame is kept when the camera moved at least 0.5 m or
+   turned at least 25 degrees from every kept frame (or, until 40 are kept, one per second).
+   When full, the older frame of the closest pose/heading pair is evicted, so places seen early
+   in an exploration stay findable. Frames come from the mapping worker's parsed bundles only
+   while voice is enabled: a 640 px JPEG (intrinsics rescaled to it), the native depth and
+   confidence (at most 256x256) and the camera-to-world transform, in memory only, never more
+   than 24 MB together; any map change drops them.
+2. **Locate.** Up to 8 of them go with the phrase to `GeminiLabels.locate` (same key/model as the answer, 11 s timeout): the newest 4, then the 4
+   whose pose and heading differ most from those already chosen, sent newest first. It returns
    `{"hits": [{"frame", "point": [y, x] in 0-1000, "confidence"}]}`; malformed hits and
    confidence below 0.5 are dropped, the best (then newest) hit wins.
 3. **Unproject.** The median of a 5x5 depth patch at that pixel, confidence at least medium,
@@ -68,10 +71,11 @@ apostrophes and hyphens, qualifiers kept, a leading article dropped). `backend/l
 
 Every failure (no frames yet, not visible, no reliable depth, no clear floor near it, any map
 or pose problem) is a spoken sentence and no card ("I can't see a door in what I've mapped so
-far. Nothing was suggested."). Limits: only what the phone camera saw in roughly the last 24 s
-of streaming (one frame per second) can be found; the point is on the visible surface, so a
-wall-mounted or far thing is approached only where mapped floor reaches within 1.5 m; the model
-can mislocate, which the person sees on the card's route before confirming.
+far. Nothing was suggested."). Limits: the model sees 8 of the kept frames per request, so a
+thing seen in only one early view is found only when that view is among the most distinct; the
+point is on the visible surface, so a wall-mounted or far thing is approached only where mapped
+floor reaches within 1.5 m; the model can mislocate, which the person sees on the card's route
+before confirming.
 
 ## Spoken confirmation
 
