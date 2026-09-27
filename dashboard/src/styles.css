@@ -702,6 +702,17 @@ h1 {
   border-color: #c8fff0;
   box-shadow: 0 0 18px #7cdec626;
 }
+.scene-label.stale {
+  opacity: 0.62;
+  border-style: dashed;
+}
+.scene-label.uncertain {
+  border-style: dashed;
+}
+.marker-age {
+  font: 8px var(--mono);
+  color: #8fa3ad;
+}
 .scene-label.moved {
   background: #352d22;
   color: #f0c58e;
@@ -3480,6 +3491,30 @@ input[type="checkbox"] {
 .voice-exchange dd {
   margin: 0;
   color: var(--text-strong, #eef0f3);
+}
+.view-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0 4px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--amber);
+  font: 10px/1.4 var(--mono);
+}
+.view-filter button {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--accent);
+  background: var(--surface-raised, #23272e);
+  font: inherit;
+  cursor: pointer;
+}
+.view-filter button:hover {
+  background: #2b3038;
 }
 @media (max-width: 1100px) {
   .voice-ask {

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB139449FD444766ADE1039A /* ComputerPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = F860E57321E94B35AB4BB99F /* ComputerPairing.swift */; };
 		0329BECFC05E1AC07AFEF92D /* SensorCore in Frameworks */ = {isa = PBXBuildFile; productRef = E3B3D064D2D851A5C71951AE /* SensorCore */; };
 		03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD35F1C133775241800AEABA /* PhoneSensors.swift */; };
 		19A162C851326C05E2AEF5A7 /* RoverAutonomyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD5CEF2FC5AEDC77647032C3 /* RoverAutonomyLink.swift */; };
@@ -24,6 +25,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		F860E57321E94B35AB4BB99F /* ComputerPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerPairing.swift; sourceTree = "<group>"; };
 		0E507055019068885A150916 /* RoverController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoverController.swift; sourceTree = "<group>"; };
 		16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GodsEyeApp.swift; sourceTree = "<group>"; };
 		20294C0CDD838D27EB227E9B /* PhoneRemoteLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRemoteLink.swift; sourceTree = "<group>"; };
@@ -88,6 +90,7 @@
 				16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */,
 				39D54286D33030A3CD00AC9D /* Info.plist */,
 				20294C0CDD838D27EB227E9B /* PhoneRemoteLink.swift */,
+				F860E57321E94B35AB4BB99F /* ComputerPairing.swift */,
 				FD35F1C133775241800AEABA /* PhoneSensors.swift */,
 				D55EA470F2C29DD230C4E32C /* PhoneStream.swift */,
 				8BD6C843425D221F2038BB1F /* RichUploader.swift */,
@@ -169,6 +172,7 @@
 				AF786B52146FFB7B8C36ED56 /* FullFrameEncoder.swift in Sources */,
 				DE32B8241CD239C035F15BE4 /* GodsEyeApp.swift in Sources */,
 				4BD32AFC899B32D79645498C /* PhoneRemoteLink.swift in Sources */,
+				AB139449FD444766ADE1039A /* ComputerPairing.swift in Sources */,
 				03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */,
 				597311B703E52ED7139F8D55 /* PhoneStream.swift in Sources */,
 				B331BACA726E454127DA7AC8 /* RichUploader.swift in Sources */,

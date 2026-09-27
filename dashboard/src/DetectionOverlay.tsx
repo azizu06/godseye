@@ -29,10 +29,13 @@ export function DetectionOverlay({
   detections,
   apiUrl,
   now,
+  classes = null,
 }: {
   detections: ReceivedDetections | null;
   apiUrl: string;
   now: number;
+  /** Classes whose boxes are drawn (null: all); the detection list stays complete. */
+  classes?: string[] | null;
 }) {
   const [shown, setShown] = useState<ShownImage | null>(null);
   const [open, setOpen] = useState(true);
@@ -73,6 +76,8 @@ export function DetectionOverlay({
   const age = detectionAgeMs(detections, now) / 1000;
   const { frame } = detections;
   const captured = new Date(frame.t_wall_ms).toLocaleTimeString();
+  const drawn = (cls: string) => !classes || classes.includes(cls);
+  const hiddenBoxes = frame.detections.filter((d) => !drawn(d.class)).length;
   return (
     <section
       className={`detection-panel ${live ? "live" : "stale"}`}
@@ -111,6 +116,7 @@ export function DetectionOverlay({
                   alt={`Phone frame #${image.detections.frame.frame_id} analysed by the backend detector`}
                 />
                 {image.detections.frame.detections.map((box, i) => {
+                  if (!drawn(box.class)) return null;
                   const p = boxPercent(box.box, image.detections.frame.image);
                   return (
                     <div
@@ -138,6 +144,12 @@ export function DetectionOverlay({
               </p>
             )}
           </div>
+          {hiddenBoxes > 0 && (
+            <p className="detection-source" data-testid="detection-filtered">
+              {hiddenBoxes} {hiddenBoxes === 1 ? "box" : "boxes"} hidden by the
+              view filter · all detections listed below
+            </p>
+          )}
           {frame.detections.length ? (
             <ul className="detection-list">
               {frame.detections.map((box, i) => (

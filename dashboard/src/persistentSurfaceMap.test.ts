@@ -129,6 +129,7 @@ describe("persistent surface map", () => {
     map.add(plane(10));
     const before = map.snapshot()!;
     expect(() => map.add(plane(20))).toThrow(/capacity|budget/i);
+    expect(map.atCapacity).toBe(true);
     expect(map.snapshot()).toBe(before);
     expect(covers(before, 0)).toBe(true);
     expect(covers(before, 10)).toBe(true);
@@ -215,4 +216,39 @@ it("fails an expired coarsening job atomically while retaining the prior map", (
   // A bounded failure does not poison the map or its next small integration.
   map.add(plane(4));
   expect(covers(map.snapshot()!, 4)).toBe(true);
+});
+
+it("coarsens the densest room block first and keeps a sparse region's observed detail", () => {
+  const map = new PersistentSurfaceMap({
+    maxVertices: 4000,
+    maxTriangles: 8000,
+  });
+  const textured = (patch: SurfacePatch) => {
+    for (let vertex = 0; vertex < patch.colors!.length / 3; vertex++)
+      patch.colors![vertex * 3 + 2] = vertex % 2 ? 0.8 : 0.1;
+    return patch;
+  };
+  // Finer than the initial 2 cm clustering cell, so any coarsening would show.
+  const sparse = textured(plane(10, 0, 0.3, 18));
+  map.add(sparse);
+  // Shifted revisits of one dense area repeatedly exceed the vertex budget.
+  for (let i = 0; i < 20; i++) {
+    const view = textured(plane(0.005 * i, 0.003 * i, 0.9, 15));
+    for (let j = 1; j < view.positions.length; j += 3)
+      view.positions[j] = 0.001 * i;
+    map.add(view);
+  }
+  expect(map.cellM).toBeGreaterThan(0);
+  expect(map.atCapacity).toBe(false);
+  const patch = map.snapshot()!;
+  validate(patch);
+  expect(patch.positions.length / 3).toBeLessThanOrEqual(4000);
+  const retained = new Set<string>();
+  for (let i = 0; i < patch.positions.length; i += 3)
+    retained.add([...patch.positions.subarray(i, i + 3)].join(","));
+  for (let i = 0; i < sparse.positions.length; i += 3)
+    expect(
+      retained.has([...sparse.positions.subarray(i, i + 3)].join(",")),
+    ).toBe(true);
+  expect(covers(patch, 0, 0, 1)).toBe(true);
 });

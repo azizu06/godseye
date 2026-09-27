@@ -14,14 +14,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 - Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
-- Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay and incremental rendering: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
+- Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay, incremental rendering and the 3D object-label evidence/declutter policy: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
+- Persistent colored surface map budgets, block-local capacity recovery and its saturation regression: `dashboard/PERSISTENT_SCAN.md` (Capacity recovery). Browser tests reuse an existing server on 5173; set `GODSEYE_DASHBOARD_TEST_PORT` to avoid a running demo.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
 - Direct iPhone ELEGOO V4 manual control, timed PWM protocol and hardware-free loopback validation: `ios/ROVER.md`. This does not enable the backend's navigation adapter.
 - Autonomous rover integration status, measured actuation profiles and ESP permit/session protocol: `docs/AUTONOMY.md`. Never substitute test calibration values for real rover measurements.
 
 - Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
-- Click-to-talk voice Q&A (ElevenLabs STT -> grounded Gemini -> ElevenLabs TTS), grounding bounds, `voice_extras` seam and live opt-in: `backend/VOICE.md`.
+- Click-to-talk voice Q&A (ElevenLabs STT -> grounded Gemini -> ElevenLabs TTS), grounding bounds, `voice_extras` seam, typed dashboard `actions` (allowlist, reserved navigation names) and live opt-in: `backend/VOICE.md`.
+- Playwright reuses any server on its port (default 5173, often a live demo): set `GODSEYE_DASHBOARD_TEST_PORT` to a free port.
 
 ## Maintaining this file
 

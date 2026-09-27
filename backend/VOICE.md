@@ -3,9 +3,10 @@
 Ask Scout a spoken question about what it has observed and hear a spoken answer.
 Off by default: without configured providers `GET /voice` reports
 `{"version":1,"status":"unavailable"}`, `POST /voice/ask` returns 503 before reading
-audio, and the dashboard shows "Voice Q&A unavailable on this backend." This is
-question answering only. It never arms, drives or steers the car, certifies an area
-as clear, recognizes people, or invents routes or destinations.
+audio, and the dashboard shows "Voice Q&A unavailable on this backend." Besides
+answers it can change this dashboard's view (see Dashboard actions). It never arms,
+drives or steers the car, certifies an area as clear, recognizes people, or invents
+routes or destinations.
 
 ## Data flow
 
@@ -46,6 +47,54 @@ Provider failures return sanitized 502s (`Speech transcription unavailable`,
 
 Nothing is retained: no clip, transcript, answer or reply audio is written to
 SQLite, captures or logs. Provider errors and bodies are never logged or returned.
+
+## Dashboard actions
+
+Gemini may add `actions` to its JSON reply. `voice.resolve_actions()` validates them as a
+whole against a strict allowlist (at most 4; exact argument keys; classes only from
+`known_classes`, the overlay classes plus stored object classes; objects only by the
+per-request `ref` `o1`..`o40` from the grounding, or by class when exactly one stored object
+matches). Accepted actions get fresh server ids and are returned as
+`actions: [{id, name, args}]`; the backend never executes them. Names and resolved args:
+
+| name | args |
+| --- | --- |
+| `filter_classes` | `{classes: [class, ...]}` (1-8) |
+| `show_all_classes`, `frame_room`, `undo` (only alone) | `{}` |
+| `set_layer` | `{layer: "boxes" \| "labels", visible: bool}` |
+| `set_view` | `{mode: "2d" \| "3d"}` |
+| `focus_object`, `open_evidence` | `{object_id, class}` (resolved from `ref`/`class`) |
+| `download_view_snapshot`, `save_camera_frame` | `{}` |
+
+Anything else rejects every action and replaces the answer with a fixed, spoken reason
+(`action_error`: `invalid`, `ambiguous` "Which one?", `not_found`, or `unsupported`).
+`propose_navigation`, `propose_exploration` and `stop_navigation` are reserved for the
+navigation owner and stay `unsupported` ("use Rover controls"); `take_photo` is
+`unsupported` because the phone offers no remote capture (use **High-res photo** on the
+phone). Object labels are data: they cannot add names, classes or objects.
+
+A reply with actions is not spoken and carries a one-use `confirm` token. The dashboard
+(`dashboardActions.ts`, `useDashboardActions.ts`) re-validates the actions, applies nothing
+unless the reply's map is the shown map, every target still exists and it arrived within
+30 s of sending (and not after Cancel), and applies each id at most once. Only then does it
+post the actual result text (success or "Nothing changed" failure) to `POST /voice/confirm`
+`{token, text}`, which speaks it with the same ElevenLabs voice (one call per token, at most
+400 characters, 60 s expiry; reused or unknown tokens get 409, invalid text 422). The model's
+prose is never shown or spoken for action replies, and there is no browser-speech fallback:
+if speech fails the result stays on screen. The class filter narrows what this viewer draws
+before the 3D evidence policy (`objectDisplay.ts`) applies, and like that policy it always
+keeps the selected object. Stored objects, Spatial memory and the detection list stay
+complete; the dock says how many objects (and people) the filter hides, and **Show all**
+restores it. Undo restores the view, selection, panel and 3D camera from before the last
+voice change.
+`download_view_snapshot` saves the 3D canvas as PNG (labels not included) or the 2D map as
+SVG; `save_camera_frame` downloads the newest already received detection frame JPEG and
+reports its capture time and age. Neither requests a new photo.
+
+```sh
+cd dashboard && npx vitest run src/dashboardActions.test.ts src/VoiceAsk.test.ts
+GODSEYE_DASHBOARD_TEST_PORT=<free port> npx playwright test tests/voiceActions.spec.ts
+```
 
 ## Live frame and approach route
 

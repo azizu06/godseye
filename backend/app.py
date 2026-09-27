@@ -319,7 +319,7 @@ def create_app(db_path: str | None = None, build_points=None,
         session=shown_session(), objects=app.state.objects.snapshot(shown_session(), limit=None),
         events=app.state.changes.events(shown_session()),
         live=app.state.phone is not None and app.state.session is not None,
-        scout=scout_position(rover_pose()), route=app.state.nav.path,
+        scout=scout_position(rover_pose()), route=app.state.nav.path, classes=app.state.overlay_classes,
         extras=lambda: scene_extras(app.state, shown_session(), time.time())))
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match", "Authorization"],

@@ -6,6 +6,7 @@ import type { SurfacePatch, SurfaceStatus } from "./surfaceTypes";
 import {
   Component,
   Suspense,
+  type RefObject,
   useEffect,
   useSyncExternalStore,
   useMemo,
@@ -26,12 +27,13 @@ import {
   ScanLine,
 } from "lucide-react";
 import type { Mission } from "./state";
-import { decodeCells, type WorldObject } from "./protocol";
+import { decodeCells, type Vec3, type WorldObject } from "./protocol";
 import {
   ProjectLabels,
   useSceneLabels,
   type ApproachDrawing,
 } from "./SceneLabels";
+import { displayedObjects, objectEvidence } from "./objectDisplay";
 import type { LiveMarker } from "./detections";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 
@@ -57,8 +59,33 @@ export interface SceneProps {
   liveDetections: LiveMarker[];
   /** Suggested walking route; visualization only, never a rover goal. */
   approachRoute: ApproachDrawing | null;
+  /** Viewer clock (ms) for object last-seen wording. */
+  now: number;
   pickingRouteStart: boolean;
   onRouteStart: (x: number, z: number) => void;
+  view: "3d" | "2d";
+  onView: (view: "3d" | "2d") => void;
+  /** Viewer display state (voice actions); layer checkboxes still apply. */
+  showBoxes: boolean;
+  showLabels: boolean;
+  handle?: RefObject<SceneHandle>;
+}
+export interface CameraPose {
+  position: Vec3;
+  target: Vec3;
+}
+/** Imperative view hooks for dashboard actions; visualization only. */
+export interface SceneHandle {
+  /** Present while the 3D view is mounted. */
+  camera?: {
+    get(): CameraPose;
+    set(pose: CameraPose): void;
+    focus(position: Vec3): void;
+    frame(): void;
+  };
+  capture?: () => Promise<Blob | null>;
+  /** Applied when the 3D view next mounts, after a switch from 2D. */
+  pending?: { pose?: CameraPose; frame?: boolean; focus?: Vec3 };
 }
 interface Layers {
   surfaces: boolean;
@@ -66,6 +93,7 @@ interface Layers {
   objects: boolean;
   trajectory: boolean;
   occupancy: boolean;
+  weakObjects: boolean;
 }
 
 function Controls({
@@ -73,11 +101,13 @@ function Controls({
   frame,
   bounds,
   map,
+  handle,
 }: {
   reset: number;
   frame: number;
   bounds: THREE.Sphere | null;
   map: string | null;
+  handle?: RefObject<SceneHandle>;
 }) {
   const ref = useRef<OrbitControlsImpl>(null);
   const { camera, size, invalidate } = useThree();
@@ -121,6 +151,53 @@ function Controls({
       framed.current = map;
     }
   }, [bounds, map]);
+  useEffect(() => {
+    const view = handle?.current;
+    if (!view) return;
+    const move = (position: THREE.Vector3, target: THREE.Vector3) => {
+      const controls = ref.current;
+      if (!controls) return;
+      controls.enableDamping = false;
+      controls.update();
+      controls.target.copy(target);
+      camera.position.copy(position);
+      camera.updateProjectionMatrix();
+      controls.update();
+      controls.enableDamping = true;
+      invalidate();
+    };
+    const api: NonNullable<SceneHandle["camera"]> = {
+      get: () => ({
+        position: camera.position.toArray() as Vec3,
+        target: (ref.current?.target.toArray() ?? [0, 0, 0]) as Vec3,
+      }),
+      set: (pose) =>
+        move(
+          new THREE.Vector3(...pose.position),
+          new THREE.Vector3(...pose.target),
+        ),
+      focus: (p) => {
+        const controls = ref.current;
+        if (!controls) return;
+        const target = new THREE.Vector3(p[0], p[1] + 0.3, p[2]);
+        const direction = camera.position
+          .clone()
+          .sub(controls.target)
+          .normalize();
+        move(target.clone().addScaledVector(direction, 2.6), target);
+      },
+      frame: () => latestFit.current(),
+    };
+    view.camera = api;
+    const pending = view.pending;
+    view.pending = undefined;
+    if (pending?.pose) api.set(pending.pose);
+    if (pending?.frame) api.frame();
+    if (pending?.focus) api.focus(pending.focus);
+    return () => {
+      if (view.camera === api) view.camera = undefined;
+    };
+  }, [handle, camera, invalidate]);
   return (
     <OrbitControls
       ref={ref}
@@ -260,6 +337,24 @@ function Trajectory({ mission }: { mission: Mission }) {
     />
   );
 }
+function CaptureBridge({ handle }: { handle?: RefObject<SceneHandle> }) {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    const view = handle?.current;
+    if (!view) return;
+    // Render and read in one task, so the drawing buffer still holds this frame.
+    const capture = () =>
+      new Promise<Blob | null>((resolve) => {
+        gl.render(scene, camera);
+        gl.domElement.toBlob(resolve, "image/png");
+      });
+    view.capture = capture;
+    return () => {
+      if (view.capture === capture) view.capture = undefined;
+    };
+  }, [gl, scene, camera, handle]);
+  return null;
+}
 function World({
   cloud,
   persistentSurface,
@@ -284,6 +379,8 @@ function World({
   onGoal: (x: number, z: number) => void;
   liveDetections: LiveMarker[];
   approachRoute: ApproachDrawing | null;
+  /** Viewer clock (ms) for object last-seen wording. */
+  now: number;
   pickingRouteStart: boolean;
   onRouteStart: (x: number, z: number) => void;
 }) {
@@ -413,48 +510,50 @@ function World({
         </group>
       )}
       {layers.objects &&
-        mission.objects.map((o) => (
-          <group key={o.id} position={o.position}>
-            <mesh>
-              <boxGeometry
-                args={
-                  o.class === "backpack"
-                    ? [0.32, 0.48, 0.23]
-                    : o.class === "laptop"
-                      ? [0.45, 0.05, 0.3]
-                      : o.class === "chair"
-                        ? [0.42, 0.7, 0.42]
-                        : o.class === "bottle"
-                          ? [0.12, 0.3, 0.12]
-                          : [0.35, 0.65, 0.35]
-                }
-              />
-              <meshStandardMaterial
-                color={o.id === selected ? "#c2d6f5" : "#718198"}
+        displayedObjects(mission.objects, layers.weakObjects, selected).map(
+          (o) => (
+            <group key={o.id} position={o.position}>
+              <mesh>
+                <boxGeometry
+                  args={
+                    o.class === "backpack"
+                      ? [0.32, 0.48, 0.23]
+                      : o.class === "laptop"
+                        ? [0.45, 0.05, 0.3]
+                        : o.class === "chair"
+                          ? [0.42, 0.7, 0.42]
+                          : o.class === "bottle"
+                            ? [0.12, 0.3, 0.12]
+                            : [0.35, 0.65, 0.35]
+                  }
+                />
+                <meshStandardMaterial
+                  color={o.id === selected ? "#c2d6f5" : "#718198"}
+                  transparent
+                  opacity={o.id === selected ? 0.28 : 0.12}
+                />
+                <Edges
+                  color={
+                    o.state === "moved"
+                      ? "#e9b373"
+                      : o.id === selected
+                        ? "#d1e1fa"
+                        : "#97aecb"
+                  }
+                />
+              </mesh>
+              <Line
+                points={[
+                  [0, 0.1, 0],
+                  [0, 0.72, 0],
+                ]}
+                color={o.state === "moved" ? "#e9b373" : "#91a6c2"}
                 transparent
-                opacity={o.id === selected ? 0.28 : 0.12}
+                opacity={0.6}
               />
-              <Edges
-                color={
-                  o.state === "moved"
-                    ? "#e9b373"
-                    : o.id === selected
-                      ? "#d1e1fa"
-                      : "#97aecb"
-                }
-              />
-            </mesh>
-            <Line
-              points={[
-                [0, 0.1, 0],
-                [0, 0.72, 0],
-              ]}
-              color={o.state === "moved" ? "#e9b373" : "#91a6c2"}
-              transparent
-              opacity={0.6}
-            />
-          </group>
-        ))}
+            </group>
+          ),
+        )}
       {liveDetections.map((d) => (
         <group key={d.key} position={d.position}>
           <mesh>
@@ -730,8 +829,8 @@ class RenderBoundary extends Component<
   }
 }
 export default function Scene(props: SceneProps) {
-  const [view, setView] = useState<"3d" | "2d">("3d"),
-    [reset, setReset] = useState(0),
+  const { view, onView: setView } = props;
+  const [reset, setReset] = useState(0),
     [frame, setFrame] = useState(0),
     [layerMenu, setLayerMenu] = useState(false),
     [help, setHelp] = useState(false);
@@ -741,6 +840,7 @@ export default function Scene(props: SceneProps) {
     objects: true,
     trajectory: true,
     occupancy: false,
+    weakObjects: false,
   });
   useSyncExternalStore(props.cloud.subscribe, props.cloud.snapshot);
   const hasGeometry =
@@ -768,14 +868,33 @@ export default function Scene(props: SceneProps) {
     props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0);
   const container = useRef<HTMLDivElement>(null);
   const labelElements = useRef(new Map<string, HTMLDivElement>());
+  const weakCount = props.mission.objects.filter(
+    (o) => objectEvidence(o) === "weak",
+  ).length;
   const labels = useSceneLabels(
     props.mission,
     props.selected,
     props.onSelect,
-    layers.objects,
-    props.liveDetections,
+    layers.objects && props.showLabels,
+    props.showLabels ? props.liveDetections : [],
     props.approachRoute,
+    // Ten-second steps keep age wording current without re-rendering the map every tick.
+    Math.floor(props.now / 10_000) * 10_000,
+    layers.weakObjects,
   );
+  useEffect(() => {
+    const handle = props.handle?.current;
+    const svg = container.current?.querySelector(".scene-canvas svg");
+    if (view !== "2d" || !handle || !svg) return;
+    const capture = async () =>
+      new Blob([new XMLSerializer().serializeToString(svg)], {
+        type: "image/svg+xml",
+      });
+    handle.capture = capture;
+    return () => {
+      if (handle.capture === capture) handle.capture = undefined;
+    };
+  }, [view, props.handle]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (
@@ -888,14 +1007,22 @@ export default function Scene(props: SceneProps) {
             >
               <fog attach="fog" args={["#202226", 18, 38]} />
               <Suspense fallback={null}>
-                <World {...props} layers={layers} />
+                <World
+                  {...props}
+                  layers={{
+                    ...layers,
+                    objects: layers.objects && props.showBoxes,
+                  }}
+                />
               </Suspense>
               <Controls
                 reset={reset}
                 frame={frame}
                 bounds={bounds}
                 map={props.mission.mapKey}
+                handle={props.handle}
               />
+              <CaptureBridge handle={props.handle} />
               <ProjectLabels labels={labels} elements={labelElements} />
             </Canvas>
           </RenderBoundary>
@@ -959,7 +1086,7 @@ export default function Scene(props: SceneProps) {
                 {props.surfaceStatus === "capacity"
                   ? "Map capacity reached · prior scan retained · export before reset"
                   : props.persistentSurface || props.surfaces.length
-                    ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · retained grid ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
+                    ? `Coarse preview · ${(props.persistentSurface ? props.persistentSurface.indices.length / 3 : props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0)).toLocaleString()} color triangles${props.persistentSurface ? (props.mapCellM > 0 ? ` · adaptive grid up to ${(props.mapCellM * 100).toFixed(0)} cm` : " · before grid coarsening") : ""}${props.surfaceStatus !== "receiving" ? " · capture paused" : ""}`
                     : props.surfaceReason}
               </div>
             )}
@@ -971,6 +1098,12 @@ export default function Scene(props: SceneProps) {
               <small>
                 <span className="tiny-dot" /> {props.mission.objects.length}{" "}
                 objects recognized
+                {weakCount > 0 && !layers.weakObjects && (
+                  <span data-testid="weak-hidden">
+                    {" "}
+                    · {weakCount} low-evidence hidden in 3D
+                  </span>
+                )}
               </small>
             </div>
             <div className="scene-settings-actions">
@@ -1044,7 +1177,9 @@ export default function Scene(props: SceneProps) {
                           ? "Object labels"
                           : key === "trajectory"
                             ? "Rover trail"
-                            : "Occupancy grid"}
+                            : key === "weakObjects"
+                              ? `Low-evidence objects (${weakCount})`
+                              : "Occupancy grid"}
                   </label>
                 ))}
               </div>

@@ -25,10 +25,12 @@ final class PhoneRemoteLink: ObservableObject {
     private var sequence = 0
     private var replies: [[String: Any]] = []
     private var pendingStatus: [String: Any]?
+    private var startup = ComputerStartup()
+    private var serverReady = false
     private var now: Double { ProcessInfo.processInfo.systemUptime }
 
     func connect(capture: CaptureController, rover: RoverController, autonomy: RoverAutonomyLink,
-                 options: CaptureOptions, key: String) {
+                 options: CaptureOptions, key: String, automaticSetup: Bool = false) {
         disconnect()
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (32...128).contains(key.utf8.count), key.utf8.allSatisfy({
@@ -42,12 +44,15 @@ final class PhoneRemoteLink: ObservableObject {
         guard let address = url.url else { return }
         self.capture = capture; self.rover = rover; self.autonomy = autonomy
         self.options = options; self.key = key
+        if automaticSetup { startup.begin() }
+        rover.onOperatorStop = { [weak self] in self?.cancelAutomaticSetup() }
         var request = URLRequest(url: address)
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         let socket = URLSession.shared.webSocketTask(with: request)
         socket.maximumMessageSize = 2048
         self.socket = socket
         enabled = true; sequence = 0; lastServer = now
+        serverReady = false
         status = "Connecting dashboard remote…"
         UIApplication.shared.isIdleTimerDisabled = true
         socket.resume()
@@ -61,20 +66,24 @@ final class PhoneRemoteLink: ObservableObject {
     }
 
     func disconnect(reason: String = "Dashboard remote disabled") {
+        cancelAutomaticSetup()
         enabled = false; generation = UUID()
         timer?.invalidate(); timer = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         autonomy?.disconnect()
         rover?.stop()
+        rover?.onOperatorStop = nil
         UIApplication.shared.isIdleTimerDisabled = capture?.running == true
         capture = nil; rover = nil; autonomy = nil; key = ""
         sending = false; replies.removeAll(); pendingStatus = nil
+        serverReady = false
         status = reason
     }
 
     private func failed(_ reason: String) {
         guard enabled, let capture, let rover, let autonomy else { return }
         let options = self.options, key = self.key
+        let resumeSetup = startup.active
         disconnect(reason: reason)
         // Reconnect setup/telemetry only. Every failure stops the rover, retires
         // laptop control and discards all actions; no motion or arm is resumed.
@@ -83,7 +92,34 @@ final class PhoneRemoteLink: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard let self, self.enabled, self.generation == token else { return }
-            self.connect(capture: capture, rover: rover, autonomy: autonomy, options: options, key: key)
+            self.connect(capture: capture, rover: rover, autonomy: autonomy, options: options,
+                         key: key, automaticSetup: resumeSetup)
+        }
+    }
+
+    func cancelAutomaticSetup() { startup.stop() }
+
+    private func advanceStartup(capture: CaptureController, rover: RoverController, autonomy: RoverAutonomyLink) {
+        if rover.verified, let id = rover.selectedBluetoothPeer,
+           UserDefaults.standard.string(forKey: "preferredRoverIdentifier") != id.uuidString {
+            UserDefaults.standard.set(id.uuidString, forKey: "preferredRoverIdentifier")
+        }
+        guard serverReady else { return }
+        let snapshot = capture.controlSnapshot()
+        let fresh = snapshot.map { $0.ready && now >= $0.timestamp && now - $0.timestamp < 0.25 } ?? false
+        let preferred = UserDefaults.standard.string(forKey: "preferredRoverIdentifier").flatMap(UUID.init(uuidString:))
+        switch startup.next(captureRunning: capture.running, captureReady: fresh,
+                            roverConnected: rover.connected, roverConnecting: rover.connecting,
+                            roverReady: rover.autonomyAvailable, peers: rover.bluetoothPeers.map(\.id),
+                            preferred: preferred) {
+        case .startCapture:
+            var requested = options; requested.stream = true
+            capture.start(requested)
+        case .scanRover: rover.connectBluetooth()
+        case .selectRover(let id): rover.selectBluetoothPeer(id)
+        case .enableLaptop:
+            if !autonomy.enabled { autonomy.connect(rover: rover, capture: capture, key: key) }
+        case nil: break
         }
     }
 
@@ -96,6 +132,7 @@ final class PhoneRemoteLink: ObservableObject {
             return
         }
         UIApplication.shared.isIdleTimerDisabled = true
+        advanceStartup(capture: capture, rover: rover, autonomy: autonomy)
         sequence += 1
         pendingStatus = ["version": 1, "type": "status", "seq": sequence,
             "capture_running": capture.running, "capture_status": String(capture.status.prefix(512)),
@@ -123,6 +160,7 @@ final class PhoneRemoteLink: ObservableObject {
                           fields["version"] as? Int == 1 else { throw AutonomyCommand.Error.invalidCommand }
                     if fields["type"] as? String == "heartbeat", fields.count == 2 {
                         self.lastServer = self.now
+                        self.serverReady = true
                         self.status = "Dashboard remote connected · keep app open"
                     } else {
                         guard fields["type"] as? String == "action", let id = fields["id"] as? String,
@@ -153,9 +191,11 @@ final class PhoneRemoteLink: ObservableObject {
             capture.start(requested)
             return (capture.running, capture.status)
         case "capture_stop":
+            cancelAutomaticSetup()
             autonomy.disconnect(); rover.stop(); capture.stop()
             return (true, "Capture stopped; rover disarmed")
         case "rover_scan":
+            cancelAutomaticSetup()
             guard !rover.connected else { return (false, "Disconnect the current rover before scanning") }
             rover.connectBluetooth()
             return (true, "Scanning for Bluetooth rovers")
@@ -166,16 +206,20 @@ final class PhoneRemoteLink: ObservableObject {
             rover.selectBluetoothPeer(id)
             return (true, "Connecting to selected rover")
         case "rover_disconnect":
+            cancelAutomaticSetup()
             autonomy.disconnect(); rover.disconnect()
             return (true, "Rover disconnected")
         case "control_enable":
+            cancelAutomaticSetup()
             guard !autonomy.enabled else { return (true, "Laptop control is already enabled") }
             autonomy.connect(rover: rover, capture: capture, key: key)
             return (autonomy.enabled, autonomy.status)
         case "control_disable":
+            cancelAutomaticSetup()
             autonomy.disconnect(); rover.stop()
             return (true, "Laptop control disabled; rover stopped")
         case "stop":
+            cancelAutomaticSetup()
             autonomy.disconnect(); rover.stop()
             return (true, "Rover stopped")
         default: return (false, "Unknown phone setup action")

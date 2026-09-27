@@ -4,7 +4,7 @@ Follow [SPEC.md](SPEC.md), [SURFACES.md](SURFACES.md), [DISCOVERY.md](DISCOVERY.
 
 The approved goal is to preserve every observed region of a room with color while bounding memory, instead of showing only a rolling window of recent camera views. Keep a cumulative, spatially compacted triangle map beneath the existing recent textured views. Bake same-frame image color at calibrated UVs into linear vertex color before releasing each camera texture. Recent views supply detail; the accumulated map remains after those views are replaced/evicted. The point layer combines retained `/live` observations and native RGB-D samples, retiring samples covered by accepted mesh faces; see [VIEWER.md](VIEWER.md) for display freshness, counts and lifecycle.
 
-A worker owns geometry integration and spatial clustering, keeping large merges off the UI thread. Deduplicate identical observed vertices/triangles and simplify supported planar regions, retaining finer observed detail while below the 1,000,000-triangle / 500,000-vertex geometry budget. Apply spatial clustering only when that budget is exceeded, starting at approximately 2 cm and coarsening globally as necessary. Only observed triangle topology may contribute geometry. Preserve small disconnected observed components with representative observed geometry instead of silently erasing them. If fragmentation cannot fit the budget, retain the existing map and explicitly report capacity rather than dropping oldest regions. The scene shows accumulated-map resolution/count separately from recent-view detail. Limit each integration to one worker operation; an aborted caller must drain that operation before another can start. Bound coarsening to 12 iterations and 6,000,000 triangle visits per integration, with existing support-check limits unchanged, failing atomically at capacity if necessary.
+A worker owns geometry integration and spatial clustering, keeping large merges off the UI thread. Deduplicate identical observed vertices/triangles and simplify supported planar regions, retaining finer observed detail while below the 1,000,000-triangle / 500,000-vertex geometry budget. Apply spatial clustering only when that budget is exceeded; see [Capacity recovery](#capacity-recovery) for the block-local level of detail. Only observed triangle topology may contribute geometry. Preserve small disconnected observed components with representative observed geometry instead of silently erasing them. If fragmentation cannot fit the budget, retain the existing map and explicitly report capacity rather than dropping oldest regions. The scene shows accumulated-map resolution/count separately from recent-view detail. Limit each integration to one worker operation; an aborted caller must drain that operation before another can start.
 The triangle allowance supports dense meshes near the 500,000-vertex limit; the independent point cache retains up to 2,000,000 measured points. Mission snapshots separately retain up to 4,000 received chunks within the same two-million-point bound.
 Allow up to 30 seconds for one worker fusion at this larger budget while retaining the separate 4-second network/image deadline and one-outstanding-operation limit.
 
@@ -55,9 +55,24 @@ Budget coarsening still trades retained detail for bounded memory and may reduce
 Physical motion blur, tracking drift, overlapping noisy surfaces, and moving-object ghosts remain limitations; this change does not claim to repair them.
 
 Capacity coarsening also checks an 8-second cooperative processing deadline inside its long loops and bounds support indexing to four million bucket entries and 500,000 spatial buckets.
-If those limits are reached, fail atomically with explicit capacity status, preserve the prior accumulated map and continue showing bounded recent textures.
 The 30-second caller timeout remains an outer bound; the coarsening deadline excludes initial append/planar processing and small checkpoint intervals.
-This guard can stop accumulation during a long overlapping scan; export/reset remains necessary at capacity, and no indefinite scan quality is promised.
+
+## Capacity recovery
+
+A real handheld room scan filled the 500,000-vertex budget at about one million triangles and then stopped growing with "Map capacity reached; prior scan retained".
+The first whole-map coarsening built one support index over every retained triangle, exceeded the 500,000-bucket support-index bound, and failed on every later view; the worker then stopped offering views to the map.
+The separate 2,000,000-point cache (`MAX_POINTS`) is a FIFO voxel ring and never sets this status.
+
+Over budget, the map now coarsens per 1 m world-aligned block instead of globally:
+- The block with the most triangles coarsens first, one rung at a time: its grid doubles from 2 cm up to 2.56 m, and the last rung keeps one observed representative per component instead of two. Each support index covers one block, so the existing index bounds hold at full room scale.
+- Vertices shared with other blocks stay fixed, so block seams stay closed. The observed-support proof, hole preservation and component representatives are unchanged.
+- Coarsening aims for 85% of each budget so later views append without rework. Once the map fits its hard budget it stops after 250,000 triangle visits and continues on a later integration. Completed blocks survive the 8-second deadline when they already fit. Otherwise the integration fails atomically and the prior map stays intact.
+- Sparse blocks keep their full observed detail while dense, repeatedly revisited blocks coarsen. `cell_m` and the "adaptive grid up to" label report the coarsest grid applied anywhere, not a uniform resolution.
+- When no block can shrink further, as with very small test budgets, the previous whole-map coarsening runs as a fallback. If that fails for any reason other than the deadline, the map reports capacity and rejects later over-budget views without repeating the work.
+- The worker offers every distinct view to the map. Capacity status reflects the latest integration, or a saturated map.
+
+On a deterministic synthetic replay at production budgets, with noisy textured revisits of walls and floor on the development Mac, each recovery took 3–6 s and ran about every 8–10 over-budget views. Later ceiling views and every earlier view remained represented. `src/persistentSurfaceMap.capacity.test.ts` is the regression test.
+This bounds memory and per-integration work but does not promise unlimited detail: repeated overlapping scans progressively coarsen the densest blocks, and a room large enough to exhaust every block still reaches capacity. Export before reset remains the way to keep full-detail history.
 
 Persistent integration also selects approximately distinct observations while every decoded recent texture still refreshes.
 Compare against at most 16 successfully fused view descriptors from the same source/map: within 10 cm camera displacement and 5 degrees forward-direction change, skip fusion only if every referenced vertex and triangle centroid lies within 5 cm Euclidean distance of prior observed samples.

@@ -3,7 +3,7 @@ export interface ConnectionConfig {
   wsUrl: string;
   apiUrl: string;
   commands: boolean;
-  /** In-memory only. Never persisted in feed URLs or exports. */
+  /** Tab-session only. Never included in feed URLs or exports. */
   roverKey?: string;
 }
 export const defaultConfig: ConnectionConfig = {

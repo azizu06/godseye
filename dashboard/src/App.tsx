@@ -13,7 +13,7 @@ import {
   Settings2,
   X,
 } from "lucide-react";
-import Scene from "./Scene";
+import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { VoiceAsk } from "./VoiceAsk";
 import { PhoneControls } from "./PhoneControls";
@@ -21,6 +21,9 @@ import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
 import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
 import { useMission } from "./useMission";
+import { useDashboardActions } from "./useDashboardActions";
+import { hiddenByFilter } from "./dashboardActions";
+import { className } from "./detections";
 import {
   Dialog,
   EventList,
@@ -164,11 +167,44 @@ export default function App() {
   const persistent = capture.persistent;
   const mapCellM = capture.cellM;
   const object = mission.objects.find((o) => o.id === selected);
+  const sceneHandle = useRef<SceneHandle>({});
+  const actions = useDashboardActions({
+    mission,
+    apiUrl: config.apiUrl,
+    hasGeometry:
+      controller.cloud.count > 0 || !!persistent || surfaces.length > 0,
+    selected,
+    setSelected,
+    panel,
+    setPanel: (next) => (next ? setPanel(next) : closePanel()),
+    evidencePanel: "intelligence",
+    scene: sceneHandle,
+  });
+  const { controls } = actions;
+  // The class filter narrows only what is drawn, before the scene's evidence policy
+  // (objectDisplay.ts); stored objects, Spatial memory and raw detections stay intact.
+  // Like that policy, it always keeps the selected object discoverable.
+  const shownMission = useMemo(
+    () =>
+      controls.classes
+        ? {
+            ...mission,
+            objects: mission.objects.filter(
+              (o) => o.id === selected || controls.classes!.includes(o.class),
+            ),
+          }
+        : mission,
+    [mission, controls.classes, selected],
+  );
+  const hidden = hiddenByFilter(mission.objects, controls.classes, selected);
   const detectionsFresh = detectionsLive(mission.detections, now);
   const live = useMemo(
-    () => liveMarkers(mission.detections, now),
-    // Recompute only for new detector output or when it turns stale.
-    [mission.detections, detectionsFresh],
+    () =>
+      liveMarkers(mission.detections, now).filter(
+        (d) => !controls.classes || controls.classes.includes(d.class),
+      ),
+    // Recompute only for new detector output, when it turns stale, or for a new filter.
+    [mission.detections, detectionsFresh, controls.classes],
   );
   const approach = useApproachRoute(config.apiUrl, mission);
   const routeResult =
@@ -282,7 +318,7 @@ export default function App() {
         feedLabel={`External feed · ${config.wsUrl} · ${connection}`}
         cloud={controller.cloud}
         surfaceReason={capture.reason}
-        mission={mission}
+        mission={shownMission}
         surfaces={surfaces}
         persistentSurface={persistent}
         mapCellM={mapCellM}
@@ -301,8 +337,14 @@ export default function App() {
         onGoal={(x, z) => void controller.navigate(x, z)}
         liveDetections={live}
         approachRoute={approachDrawing}
+        now={now}
         pickingRouteStart={pickingRouteStart && !panel}
         onRouteStart={approach.pickStart}
+        view={controls.view}
+        onView={(view) => actions.setControls((c) => ({ ...c, view }))}
+        showBoxes={controls.boxes}
+        showLabels={controls.labels}
+        handle={sceneHandle}
       />
       <ApproachRouteCard
         state={approach.route}
@@ -314,6 +356,7 @@ export default function App() {
         detections={mission.detections}
         apiUrl={config.apiUrl}
         now={now}
+        classes={controls.boxes ? controls.classes : []}
       />
       <button
         className="workspace-launcher"
@@ -437,10 +480,12 @@ export default function App() {
                 objects={mission.objects}
                 selected={selected}
                 onSelect={select}
+                now={now}
               />
               <p className="drawer-note">
-                Objects appear as they are observed. Select one to inspect its
-                evidence.
+                Every stored detection is listed here. The 3D view hides
+                low-evidence objects (under 2 frames or 50%) except possible
+                people; turn them on under Scene layers.
               </p>
             </section>
           )}
@@ -520,7 +565,34 @@ export default function App() {
           )}
         </aside>
       )}
-      <VoiceAsk config={config} />
+      <VoiceAsk config={config} onActions={actions.run}>
+        {(controls.classes || !controls.boxes || !controls.labels) && (
+          <div className="view-filter" data-testid="view-filter">
+            <span>
+              {controls.classes
+                ? `Showing ${controls.classes.map(className).join(", ")}`
+                : "Showing all classes"}
+              {!controls.boxes && " · boxes hidden"}
+              {!controls.labels && " · labels hidden"}
+              {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
+              {hidden.people > 0 &&
+                `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
+            </span>
+            <button
+              onClick={() =>
+                actions.setControls((c) => ({
+                  ...c,
+                  classes: null,
+                  boxes: true,
+                  labels: true,
+                }))
+              }
+            >
+              Show all
+            </button>
+          </div>
+        )}
+      </VoiceAsk>
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>

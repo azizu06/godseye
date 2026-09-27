@@ -432,7 +432,8 @@ function coarsen(
   initialCellM: number,
   representatives: number,
   checkpoint: () => void,
-): Mesh {
+  locked?: (index: number) => boolean,
+): Triple[] {
   const originalFaces = new Set(
     mesh.triangles.map((triangle) => {
       checkpoint();
@@ -464,6 +465,8 @@ function coarsen(
   const anchors = new Map<string, number>();
   const remap = mesh.vertices.map((vertex, index) => {
     checkpoint();
+    // A vertex shared with an unprocessed block stays put, so seams stay closed.
+    if (locked?.(index)) return index;
     const key = regionKey(vertex.position, roots[index]);
     let anchor = anchors.get(key);
     if (anchor === undefined) {
@@ -514,20 +517,29 @@ function coarsen(
       }
     }
   }
+  const regionOf = (triangle: Triple) =>
+    regionKey(
+      [0, 1, 2].map(
+        (axis) =>
+          triangle.reduce(
+            (sum, index) => sum + mesh.vertices[index].position[axis],
+            0,
+          ) / 3,
+      ) as Triple,
+      roots[triangle[0]],
+    );
+  // A retained end already represents its own cluster region.
   for (const end of ends.values()) {
     retain(end.first);
-    if (representatives > 1) retain(end.far);
+    covered.add(regionOf(end.first));
+    if (representatives > 1) {
+      retain(end.far);
+      covered.add(regionOf(end.far));
+    }
   }
   for (const triangle of mesh.triangles) {
     checkpoint();
-    const center = [0, 1, 2].map(
-      (axis) =>
-        triangle.reduce(
-          (sum, index) => sum + mesh.vertices[index].position[axis],
-          0,
-        ) / 3,
-    ) as Triple;
-    const region = regionKey(center, roots[triangle[0]]);
+    const region = regionOf(triangle);
     const mapped = triangle.map((index) => remap[index]) as Triple;
     if (
       new Set(mapped).size === 3 &&
@@ -546,16 +558,25 @@ function coarsen(
   // an actual observed triangle there instead of erasing it or inventing a face.
   for (const [region, { triangle }] of fallbacks)
     if (!covered.has(region)) retain(triangle);
-  return compact(
-    { vertices: mesh.vertices, triangles, groups: roots },
-    checkpoint,
-  );
+  return triangles;
 }
+
+/** World-aligned blocks bound each coarsening index to one local room region. */
+const BLOCK_M = 1;
+/** Coarsen to this share of each budget so later views append without rework. */
+const LOW_WATER = 0.85;
+/** Rungs double a block's grid from the initial cell; the last keeps one representative. */
+const DOUBLING_RUNGS = 8;
+const MAX_VISITS = 6_000_000;
+/** Triangle visits after which a rebalance that already fits stops early. */
+const SOFT_VISITS = 250_000;
 
 /**
  * Cumulative colored mesh with adaptive spatial detail, never a FIFO view cache.
- * Disconnected components keep observed representatives. If even one triangle
- * per component cannot fit, add fails atomically and leaves prior coverage intact.
+ * Over budget, the densest room blocks coarsen first, so later views keep
+ * contributing while sparse areas keep their detail. Disconnected components
+ * keep observed representatives. If even one triangle per component cannot
+ * fit, add fails atomically and leaves prior coverage intact.
  */
 export class PersistentSurfaceMap {
   private mesh: Mesh = { vertices: [], triangles: [] };
@@ -568,6 +589,9 @@ export class PersistentSurfaceMap {
   private replaceDelta = true;
   private spacing: number;
   private clustered = false;
+  private saturated = false;
+  private blockRungs = new Map<string, number>();
+  private nextGroup = 0;
   private readonly maxTriangles: number;
   private readonly maxVertices: number;
   private readonly initialCellM: number;
@@ -588,11 +612,16 @@ export class PersistentSurfaceMap {
       );
     this.spacing = this.initialCellM;
   }
+  /** Coarsest grid applied anywhere in the map; finer detail may remain elsewhere. */
   get cellM() {
     return this.clustered ? this.spacing : 0;
   }
   get triangleCount() {
     return this.mesh.triangles.length;
+  }
+  /** True once no retained region can coarsen further to admit new geometry. */
+  get atCapacity() {
+    return this.saturated;
   }
   add(patch: SurfacePatch): { retained: SurfacePatch | null; reset: boolean } {
     const addition = prepareAppend(
@@ -622,6 +651,11 @@ export class PersistentSurfaceMap {
       this.revision++;
       return { retained: addition.retained, reset: false };
     }
+    // A saturated map fails fast instead of repeating futile whole-map work.
+    if (this.saturated)
+      throw Error(
+        "Surface map capacity reached: every retained region is already at its coarsest bounded detail.",
+      );
     const combined: Mesh = {
       vertices: [...this.mesh.vertices, ...addition.vertices],
       triangles: [...this.mesh.triangles, ...addition.triangles],
@@ -640,48 +674,35 @@ export class PersistentSurfaceMap {
           "Surface map capacity reached: coarsening exceeded its bounded processing time.",
         );
     };
-    const roots = components(combined, this.initialCellM, checkpoint);
-    const componentCount = new Set(roots).size;
-    const capacity = Math.min(
-      this.maxTriangles,
-      Math.floor(this.maxVertices / 3),
-    );
-    if (componentCount > capacity)
-      throw Error(
-        "Surface map capacity reached: the budget cannot retain another disconnected observed region.",
+    const blocks = this.rebalance(combined, checkpoint);
+    // Linear compaction of already accepted blocks is not discarded by the deadline.
+    let simplified = compact({
+        ...combined,
+        triangles: blocks.triangles,
+        groups: blocks.groups,
+      }),
+      spacing = Math.max(
+        this.spacing,
+        ...[...blocks.rungs.values()].map((rung) => this.rungCell(rung)),
       );
-    let spacing = this.spacing,
-      simplified = coarsen(
-        combined,
-        roots,
-        spacing,
-        this.initialCellM,
-        Math.min(2, Math.floor(capacity / componentCount)),
-        checkpoint,
-      );
-    let visits = combined.triangles.length;
-    for (
-      let step = 0;
-      simplified.triangles.length > this.maxTriangles ||
-      simplified.vertices.length > this.maxVertices;
-      step++
-    ) {
-      visits += combined.triangles.length;
-      // Bound a single fusion job as well as the retained geometry. A complex
-      // fragmented input must not keep a worker busy indefinitely.
-      if (step >= 12 || visits > 6000000 || !Number.isFinite(spacing * 2))
+    if (!blocks.fits) {
+      if (!blocks.exhausted)
         throw Error(
-          "Surface map capacity reached: preserving this geometry exceeds the bounded coarsening budget.",
+          "Surface map capacity reached: coarsening exceeded its bounded work for one integration.",
         );
-      spacing *= 2;
-      simplified = coarsen(
-        combined,
-        roots,
-        spacing,
-        this.initialCellM,
-        Math.min(2, Math.floor(capacity / componentCount)),
-        checkpoint,
-      );
+      // Blocks cannot shrink further on their own (tiny budgets); coarsen the
+      // whole map from its observed geometry instead.
+      try {
+        ({ mesh: simplified, spacing } = this.coarsenGlobally(
+          combined,
+          this.spacing,
+          checkpoint,
+        ));
+      } catch (error) {
+        if (!/processing time/.test((error as Error).message))
+          this.saturated = true;
+        throw error;
+      }
     }
     this.mesh = simplified;
     this.knownVertices = new Map(
@@ -692,8 +713,222 @@ export class PersistentSurfaceMap {
     this.revision++;
     this.clustered = true;
     this.spacing = spacing;
+    this.blockRungs = blocks.rungs;
     this.cached = null;
     return { retained: null, reset: true };
+  }
+  private rungCell(rung: number) {
+    return this.initialCellM * 2 ** Math.min(rung, DOUBLING_RUNGS - 1);
+  }
+  /** Fresh labels keep one region's provenance without aliasing another's. */
+  private relabel(
+    roots: number[],
+    groups: number[],
+    global = (i: number) => i,
+  ) {
+    const labels = new Map<number, number>();
+    roots.forEach((root, index) => {
+      let label = labels.get(root);
+      if (label === undefined) labels.set(root, (label = this.nextGroup++));
+      groups[global(index)] = label;
+    });
+  }
+  /**
+   * Coarsen the densest blocks one rung at a time until the map is back under
+   * its low-water mark. Each support index covers one block, never the room.
+   */
+  private rebalance(mesh: Mesh, checkpoint: () => void) {
+    const blocks = new Map<string, Triple[]>();
+    for (const triangle of mesh.triangles) {
+      checkpoint();
+      const key = [0, 1, 2]
+        .map((axis) =>
+          Math.floor(
+            triangle.reduce(
+              (sum, index) => sum + mesh.vertices[index].position[axis],
+              0,
+            ) /
+              3 /
+              BLOCK_M,
+          ),
+        )
+        .join(",");
+      const block = blocks.get(key);
+      if (block) block.push(triangle);
+      else blocks.set(key, [triangle]);
+    }
+    const references = new Uint32Array(mesh.vertices.length),
+      owners = new Int32Array(mesh.vertices.length).fill(-1),
+      shared = new Uint8Array(mesh.vertices.length);
+    let vertices = 0,
+      triangles = mesh.triangles.length,
+      id = 0;
+    for (const block of blocks.values()) {
+      for (const triangle of block)
+        for (const index of triangle) {
+          if (references[index]++ === 0) vertices++;
+          if (owners[index] < 0) owners[index] = id;
+          else if (owners[index] !== id) shared[index] = 1;
+        }
+      id++;
+    }
+    const groups = [...mesh.groups!],
+      rungs = new Map(this.blockRungs),
+      visited = new Set<string>();
+    const next = (key: string) =>
+      visited.has(key) ? rungs.get(key)! + 1 : Math.max(0, rungs.get(key) ?? 0);
+    let visits = 0,
+      exhausted = false;
+    const fits = () =>
+      triangles <= this.maxTriangles && vertices <= this.maxVertices;
+    while (
+      triangles > Math.floor(this.maxTriangles * LOW_WATER) ||
+      vertices > Math.floor(this.maxVertices * LOW_WATER)
+    ) {
+      // Amortize: once the map fits, later integrations continue from here.
+      if (visits >= SOFT_VISITS && fits()) break;
+      let key: string | undefined,
+        size = 0;
+      for (const [candidate, block] of blocks)
+        if (block.length > size && next(candidate) <= DOUBLING_RUNGS) {
+          key = candidate;
+          size = block.length;
+        }
+      if (key === undefined) {
+        exhausted = true;
+        break;
+      }
+      if ((visits += size) > MAX_VISITS) break;
+      const rung = next(key),
+        previous = blocks.get(key)!;
+      let coarse: Triple[];
+      try {
+        coarse = this.coarsenBlock(
+          mesh,
+          previous,
+          rung,
+          shared,
+          groups,
+          checkpoint,
+        );
+      } catch (error) {
+        // Completed blocks are valid geometry; keep them if they already fit.
+        if (fits() && /processing time/.test((error as Error).message)) break;
+        throw error;
+      }
+      visited.add(key);
+      rungs.set(key, rung);
+      for (const triangle of previous)
+        for (const index of triangle) if (--references[index] === 0) vertices--;
+      for (const triangle of coarse)
+        for (const index of triangle) if (references[index]++ === 0) vertices++;
+      triangles += coarse.length - previous.length;
+      blocks.set(key, coarse);
+    }
+    return {
+      triangles: [...blocks.values()].flat(),
+      groups,
+      rungs,
+      exhausted,
+      fits: fits(),
+    };
+  }
+  private coarsenBlock(
+    mesh: Mesh,
+    triangles: Triple[],
+    rung: number,
+    shared: Uint8Array,
+    groups: number[],
+    checkpoint: () => void,
+  ): Triple[] {
+    const local = new Map<number, number>(),
+      global: number[] = [];
+    const block: Mesh = { vertices: [], triangles: [], groups: [] };
+    for (const triangle of triangles) {
+      checkpoint();
+      block.triangles.push(
+        triangle.map((index) => {
+          let mapped = local.get(index);
+          if (mapped === undefined) {
+            mapped = global.length;
+            local.set(index, mapped);
+            global.push(index);
+            block.vertices.push(mesh.vertices[index]);
+            block.groups!.push(groups[index]);
+          }
+          return mapped;
+        }) as Triple,
+      );
+    }
+    const roots = components(block, this.initialCellM, checkpoint);
+    const coarse = coarsen(
+      block,
+      roots,
+      this.rungCell(rung),
+      this.initialCellM,
+      rung < DOUBLING_RUNGS ? 2 : 1,
+      checkpoint,
+      (index) => shared[global[index]] === 1,
+    );
+    this.relabel(roots, groups, (index) => global[index]);
+    return coarse.map(
+      (triangle) => triangle.map((index) => global[index]) as Triple,
+    );
+  }
+  /** Whole-map fallback for small budgets where one block cannot hold detail. */
+  private coarsenGlobally(
+    combined: Mesh,
+    start: number,
+    checkpoint: () => void,
+  ) {
+    const roots = components(combined, this.initialCellM, checkpoint);
+    const componentCount = new Set(roots).size;
+    const capacity = Math.min(
+      this.maxTriangles,
+      Math.floor(this.maxVertices / 3),
+    );
+    if (componentCount > capacity)
+      throw Error(
+        "Surface map capacity reached: the budget cannot retain another disconnected observed region.",
+      );
+    const groups = [...combined.groups!];
+    this.relabel(roots, groups);
+    const simplify = (spacing: number) =>
+      compact(
+        {
+          vertices: combined.vertices,
+          triangles: coarsen(
+            combined,
+            roots,
+            spacing,
+            this.initialCellM,
+            Math.min(2, Math.floor(capacity / componentCount)),
+            checkpoint,
+          ),
+          groups,
+        },
+        checkpoint,
+      );
+    let spacing = start,
+      simplified = simplify(spacing);
+    let visits = combined.triangles.length;
+    for (
+      let step = 0;
+      simplified.triangles.length > this.maxTriangles ||
+      simplified.vertices.length > this.maxVertices;
+      step++
+    ) {
+      visits += combined.triangles.length;
+      // Bound a single fusion job as well as the retained geometry. A complex
+      // fragmented input must not keep a worker busy indefinitely.
+      if (step >= 12 || visits > MAX_VISITS || !Number.isFinite(spacing * 2))
+        throw Error(
+          "Surface map capacity reached: preserving this geometry exceeds the bounded coarsening budget.",
+        );
+      spacing *= 2;
+      simplified = simplify(spacing);
+    }
+    return { mesh: simplified, spacing };
   }
   takeDelta(): SurfaceDelta {
     const vertexStart = this.replaceDelta ? 0 : this.sentVertices;

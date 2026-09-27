@@ -25,7 +25,7 @@ VITE_LIVE_URL=/live
 GODSEYE_BACKEND_URL=http://<phone-backend-IP>:8765
 ```
 
-Restart Vite after configuration changes. The phone keeps `ws://<phone-backend-IP>:8765/phone`; browsers use the dashboard laptop URL. The relay exposes `/live`, `/capture`, `/health`, `/autonomy`, `/device` and mission command routes to the configured backend. The iPhone adapter requires its pairing key for setup and motion commands; Stop remains available without it. Enable REST commands and enter the key in Connection settings, then use Rover controls for mounted-phone setup. The key stays in tab memory and is cleared on reload. Production hosting needs equivalent reverse-proxy routes. See [autonomy setup](../docs/AUTONOMY.md).
+Restart Vite after configuration changes. The phone keeps `ws://<phone-backend-IP>:8765/phone`; browsers use the dashboard laptop URL. The relay exposes `/live`, `/capture`, `/health`, `/autonomy`, `/device` and mission command routes to the configured backend. The iPhone adapter requires its pairing key for setup and motion commands; Stop remains available without it. Enable REST commands and enter the key in Connection settings, then use Rover controls for mounted-phone setup. Explicit pairing is remembered in session storage for the same tab and backend across reloads. Disabling REST commands clears it; changing either backend address does not inherit it. Arming and movement are never restored. Production hosting needs equivalent reverse-proxy routes. See [autonomy setup](../docs/AUTONOMY.md).
 
 RGB-D polling leaves **50 ms between completed jobs**, with one network/decode/fusion operation in flight. This is a scheduling target, not measured capture/display FPS. The preferred conditional `/capture/surface.bin` contains unchanged same-frame JPEG, raw depth and confidence bytes, excluding unrelated full-sensor sections. ETag/304 responses skip unchanged data. Older servers fall back to `/capture/status` plus rich or v1 frame packets; a native frame is preferred only when within 35 ms of the newest v1 capture. A failed fusion can retry the same capture.
 
@@ -34,6 +34,12 @@ Decoding, image sampling and fusion run off the UI thread. Transfers stay under 
 ## Received detections
 
 The top-right **Received detections** panel shows the newest backend `detections` message: detector source, phone frame number, capture wall time, and `LIVE` or `STALE` with the time since this viewer received it (stale after 3 s). Boxes, labels and confidence are drawn only over that frame's own JPEG from `/capture/detections.jpg`; if the image for a newer frame is refused, the previous frame keeps only its own boxes and the list below names the newer frame. Each listed box says whether the same capture's depth placed it (`3D placed · depth`) or it is `2D only`. Fresh placed detections also appear in the 3D view as a `LIVE · class %` marker at their measured position; stale output, 2D-only boxes and a previous map place nothing. A map reset or reconnect clears the panel. Browser coverage: `dashboard/tests/detections.spec.ts`.
+
+## Stored object labels
+
+The 3D view applies a display-only evidence policy (`src/objectDisplay.ts`) to stored objects. An object is drawn when it was seen in at least 2 frames with confidence of at least 50%. A `person` below that bar is still drawn as `Person?` with a dashed border, so a person seen once stays discoverable. Other low-evidence objects are hidden in 3D, and the Scene settings count says how many. **Scene layers → Low-evidence objects** draws them all, and a selected object is always drawn. Spatial memory lists every stored object with its confidence, frame count and evidence note. The backend, `/objects` and voice grounding are unchanged: hiding a detection does not make it false, and showing one does not make it right.
+
+A `present` object not re-observed for 30 s reads `Last seen Nm ago` in the label, list and inspector, never `Present`. Overlapping 3D labels yield by priority: selected, then live detections, then people, then confidence × frames. Rover, route and previous-location labels are never hidden, and a hidden label returns when zoom separates it. Browser coverage: `dashboard/tests/labelClarity.spec.ts`.
 
 ## Suggested approach route
 

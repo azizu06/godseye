@@ -47,12 +47,25 @@ final class CaptureController {
                 try await until { rover.autonomyAvailable }
                 relay.connect(rover: rover, capture: capture, key: CommandLine.arguments[2])
                 precondition(relay.enabled)
+                if CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "handshake-loss" {
+                    try await until { !relay.enabled }
+                    precondition(relay.status == "Stopped · laptop handshake timed out", relay.status)
+                    precondition(!rover.autonomyEnabled)
+                    precondition(!ble.packets.contains { [201, 202].contains($0["N"] as? Int ?? 0) })
+                    rover.disconnect()
+                    print("Silent laptop startup expired without arm or movement.")
+                    exit(0)
+                }
                 try await until { ble.packets.contains { $0["N"] as? Int == 202 } }
                 let count = ble.packets.filter { $0["N"] as? Int == 202 }.count
-                // Main-thread capture loss stops locally even while the server
-                // keeps sending valid heartbeats and movement.
-                capture.ready = false
+                let heartbeatLoss = CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "heartbeat-loss"
+                // Exercise both local capture loss and a silent laptop while
+                // the phone still sends healthy, unsolicited BLE feedback.
+                if !heartbeatLoss { capture.ready = false }
                 try await until { !relay.enabled && !rover.autonomyEnabled }
+                if heartbeatLoss {
+                    precondition(relay.status == "Stopped · laptop heartbeat timed out", relay.status)
+                }
                 try await Task.sleep(nanoseconds: 150_000_000)
                 precondition(ble.packets.filter { $0["N"] as? Int == 202 }.count == count)
                 precondition(ble.packets.contains { $0["N"] as? Int == 100 })
@@ -60,7 +73,7 @@ final class CaptureController {
                 try await Task.sleep(nanoseconds: 100_000_000)
                 precondition(!relay.enabled && !rover.enabled, "Capture recovery must not resume control")
                 rover.disconnect()
-                print("Real iPhone WebSocket relay: authenticated status, Stop/arm acknowledgement, BLE motion and local tracking-loss stop passed.")
+                print("Swift relay with fake BLE: authentication, arm/Stop, timed commands and loss handling passed.")
                 exit(0)
             } catch { print(error); exit(1) }
         }
@@ -70,13 +83,18 @@ final class CaptureController {
 '''
 
 
-async def check():
+async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
     completed = asyncio.Event()
     failures = []
     async def phone(ws):
         try:
             assert ws.request.headers['Authorization'] == 'Bearer ' + KEY
             assert ws.request.path == '/rover'
+            if handshake_loss:
+                async for raw in ws:
+                    raise AssertionError('Phone sent feedback before the server was ready')
+                return
+            await asyncio.sleep(handshake_delay)
             stop_id = 'TESTAUTONOMYSTOP'
             await ws.send(json.dumps(dict(version=1, type='stop', id=stop_id)))
             phase, stop_ack, arm_ack = 'stopping', False, False
@@ -99,7 +117,9 @@ async def check():
                         commands += 1
                         await ws.send(json.dumps(dict(version=1, type='command', session=SESSION,
                             permit=message['permit'], seq=commands, direction=3, power=40, lease_ms=200)))
-                    else:
+                        if heartbeat_loss:
+                            phase = 'silent'
+                    elif phase != 'silent':
                         await ws.send(json.dumps(dict(version=1, type='heartbeat')))
             assert stop_ack and arm_ack and commands > 0
         except Exception as error:
@@ -111,11 +131,15 @@ async def check():
         port = server.sockets[0].getsockname()[1]
         await asyncio.to_thread(run_check, SWIFT,
             extra_sources=(str(ROOT / 'ios/App/RoverAutonomyLink.swift'),),
-            args=(f'ws://127.0.0.1:{port}/phone', KEY))
+            args=(f'ws://127.0.0.1:{port}/phone', KEY,
+                  'handshake-loss' if handshake_loss else 'heartbeat-loss' if heartbeat_loss else 'capture-loss'))
         await asyncio.wait_for(completed.wait(), 2)
         if failures:
             raise failures[0]
+    print(f'Relay verified: startup delay={handshake_delay}s, heartbeat loss={heartbeat_loss}, handshake loss={handshake_loss}')
 
 
 if __name__ == '__main__':
     asyncio.run(check())
+    asyncio.run(check(handshake_delay=.8, heartbeat_loss=True))
+    asyncio.run(check(handshake_loss=True))
