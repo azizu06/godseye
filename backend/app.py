@@ -683,7 +683,9 @@ def create_app(db_path: str | None = None, build_points=None,
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
             view = depth_view(frame)
             if frame.mesh_points is not None:
-                mesh_points = (filter_prototype_self_mesh(frame.mesh_points, frame.transform, calibration)
+                mesh_points = (filter_prototype_self_mesh(frame.mesh_points, frame.transform, calibration,
+                                                          intrinsics=frame.intrinsics,
+                                                          image_size=frame.image.size)
                                if isinstance(calibration, PrototypeGeometry) else frame.mesh_points)
                 mesh_keys = frame_evidence(mesh_points).keys
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
