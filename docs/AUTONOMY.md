@@ -47,13 +47,14 @@ The phone remains the sole Bluetooth owner. Computer control is the default on
 foreground launch: remembered pairing starts setup, capture and the selected BLE rover,
 then enables the laptop link when sensing and Uno feedback are ready. It never arms.
 The operator can instead enable the link from the paired dashboard. In the explicitly
-armed uncalibrated prototype Explore mode, that choice stays latched until Stop,
-mode change, or a dashboard control-disable action. A sensing or permit gap clears
-pending movement and the ESP brakes after a full second without a new command; Explore waits for fresh data and
-replans. A real phone/rover disconnect retires the physical drive session, then
-foreground computer setup and the backend establish a fresh session when all live
-readiness checks recover. Backgrounding cannot capture or drive; foregrounding
-restarts setup. Measured navigation and manual control retain their stop behavior.
+armed uncalibrated prototype Explore mode, ordinary map blockage holds zero motion
+and replans in the same arm generation. A temporary sensing/permit gap clears
+pending movement immediately and may recover within one second; the ESP's
+independent command-loss brake remains unchanged. Invalid tracking, invalid floor,
+prolonged stale evidence, disconnection, actual faults and explicit Stop disarm.
+Fresh data cannot automatically rearm a stopped session. Foreground phone setup
+may reconnect sensing/Bluetooth, but a new explicit Arm is required for motion.
+Backgrounding cannot capture or drive.
 
 Before forwarding autonomous movement, the ESP must independently check a fresh
 permit it generated, the active drive session and strictly increasing sequence.
@@ -67,8 +68,7 @@ The existing timed Uno command and ESP watchdog remain independent final stops.
 An explicit stopped/armed handshake must precede each new drive session; latest-only
 command replacement cannot discard the session-opening handshake. A zero within a
 live session means idle; an explicit Stop or failed moving lease retires the session.
-Only a new arm handshake can start another; prototype Explore may repeat that
-handshake under the operator's still-active Explore choice. Legacy manual control remains available.
+Only a new explicit arm handshake can start another; yield/resume cannot open one. Legacy manual control remains available.
 
 Hardware-free integration covers synthetic RGB-D → calibrated occupancy → `/goal` →
 real adapter wire commands → stale-sensing Stop. The actual Swift relay also runs
@@ -187,7 +187,7 @@ A missing detector stays down; the setup controls still work, but driving stays 
    click **Enable laptop control** in this panel; recovery does not silently restore
    the link. Stop also cancels startup while it is waiting for tracking or Bluetooth.
    A fresh foreground launch may prepare control again; an active prototype Explore
-   choice can rearm only after the phone, rover, camera and map recover.
+   choice stops on a genuine fault and requires a new explicit Arm after readiness recovers.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
    Explore starts planning upon explicit arm. The dashboard joystick can take over
@@ -308,7 +308,8 @@ shortcutting, to leave room for steering around obstacle corners. Medium-or-high
 obstacle after two distinct views see through its former footprint.
 If the prototype starts inside obstacle clearance (including retained mesh of
 its own body behind a front-mounted phone), Explore may snap a route toward
-nearby clear space and move outward. Its camera cell must be unoccupied. Each
+nearby clear space and move outward only outside the conservative footprint
+bound without the extra margin. Its camera cell must be unoccupied. Each
 sampled step must preserve or increase distance to every overlapping obstacle
 and enter no new obstacle clearance region. Geometry is retained, not cleared
 or labeled as the rover. Measured mode is unchanged.
@@ -317,7 +318,7 @@ update continuously with no added pauses or run duration limit. Each command
 uses the firmware's 1 s command-loss brake; straight and pivot commands also
 have the Uno's 1.5 s timed fallback, while forward arcs do not. Stop, tracking/depth freshness,
 authenticated pairing, unique arm sessions, ESP permits, Uno feedback and link
-watchdogs remain enforced. A latched Explore request may rearm after transient loss.
+watchdogs remain enforced. Ordinary zero-motion waits may resume in-session; faults never auto-rearm.
 The dashboard labels this profile **Uncalibrated prototype**. Select Explore or Navigate,
 then explicitly Arm. Stop and reassess if the rover turns in the wrong direction.
 
@@ -419,6 +420,61 @@ command sink (`backend/tests/test_obstacle_replanning.py`), not a physical obsta
 avoidance demonstration. The active rover backend version and sensor/clearance
 conditions must still be checked before interpreting a physical stop.
 
+## Exploration memory and ordinary-obstacle test integration
+
+Explore keeps bounded visited 25 cm world-grid cells within the AR session/epoch.
+Visited and failed targets are excluded from frontier selection, never from the
+collision map or return paths. Failures survive hit-count/revision updates and
+clear on changed geometry; visited history resets on a new map identity. A repeat
+closed lap with no new cells forces a new frontier search. This improves reachable
+frontier coverage; it does not guarantee visiting every floor cell or never
+returning through a required passage.
+
+`GET /autonomy` exposes `exploration` counters, `generation`, `navigation_wait_reason`,
+`explore_yield`, and the configured `prototype_max_pwm`. Ordinary depth obstacles
+already trigger path checks, detour replanning or an armed zero-motion wait. When
+an external test monitor needs to yield for a confirmed crossing person or cannot
+establish that person's clearance, use authenticated `POST /explore/yield` with
+`{"generation": <current>, "reason": "person_path_crossing"}` (also accepts
+`person_clearance_unknown` or `obstacle_wait`). It immediately drops pending
+movement and holds zero indefinitely in the current session. After fresh evidence
+establishes clearance, authenticated `POST /explore/resume` with that same generation
+submits one clearance observation. Three distinct fresh clear samples followed by
+a one-second clear hold are required; unknown/stale evidence breaks the hold,
+and repeated samples cannot advance it. A 200 response is not immediate release:
+read `yielding` and `resumed`, and keep observing until `yielding` is false. Then it
+replans in the same session. Resume checks readiness; it never arms or releases
+a fault/Stop, and stale generations return 409. Sensor/transport faults remain
+active during a yield.
+
+The runtime test monitor must adopt this interface. A person label anywhere in
+an image, including a probable poster, is not metric evidence of an imminent
+collision. Match fresh same-frame depth/localized evidence to the rover footprint,
+intended swept path and proximity; do not issue emergency Stop for every label.
+Off-path localized objects use normal occupancy; crossing objects get a detour or
+zero wait. A confirmed person whose clearance cannot be established stays yielded
+until clearance is proven. Keep emergency Stop for explicit operator intent,
+actual imminent danger, control failure or safety-critical sensor failure. No
+person-class collision thresholds or occupancy clearance protections are relaxed.
+
+Hardware-free checks: `python -m unittest backend.tests.test_exploration_coverage
+backend.tests.test_explore_yield backend.tests.test_prototype_power -v` (put the
+module arguments on one command line). The real runner uses a fake matched clock,
+pose, occupancy and nominal kinematic plant. It does not simulate physical PWM
+response, motor coast, camera/chassis calibration or pedestrian detection accuracy.
+
+### Comparison-branch merge compatibility
+
+The merged backend accepts live frame versions 1, 2 and 3, retaining local classified-floor validity guards. The default prototype command format remains compatible with the published checkpoint-5 floor-capable phone/ESP: no optional inner-wheel field is emitted. `--prototype-variable-arcs` explicitly enables upstream's graduated inner-wheel command and 0.2 nominal follower cruise; that option requires a matching updated phone **and** ESP bridge. Leave it off with the currently installed checkpoint-5 pair. The all-direction `--prototype-max-pwm` ceiling applies in both modes. Neither policy is physical motor calibration.
+
+Recorded Explore02/03 on checkpoint 5 stopped at `start_blocked` before moving.
+Their camera-to-nearest occupied-cell distance was 0/0.0506–0.1002 m, below
+both the configured 0.4251 m inflation and the 0.2727 m conservative footprint
+bound without the extra margin. A free forward ray does not establish footprint
+clearance. These classified maps lack voxel height/confidence/current-return
+provenance, so they cannot distinguish self returns from real obstacles. Do not
+clear cells, shrink margins or force departure to bypass this decision. The
+regression `backend.tests.test_recorded_explore_start` preserves that guard.
 ### Advisory obstacle gate: clear-evidence interruption fixed
 
 Software status: **fixed** in `backend/explore_obstacle_gate.py`. Unknown/stale
@@ -426,6 +482,9 @@ depth and external holds invalidate the saved clear streak and resume timer,
 including when stale evidence keeps the same frame ID. A fresh distinct clear
 sequence must qualify again; duplicate usable frames still cannot advance it.
 The regression is `backend.tests.test_explore_obstacle_gate` (unknown-after-hold
-and repeated-sample interruption cases). This pure advisory helper is not wired
-into Navigator; this fix does not establish the cause or physical resolution of
+and repeated-sample interruption cases). The corrected helper is now wired into `/explore/resume` clearance acceptance;
+this fix does not establish the cause or physical resolution of
 the recorded pink-stand stop above. That physical pass remains unverified.
+
+`GET /autonomy.navigation_start` exposes that exact start guard and distances
+before a run. Sensor/adapter `ready` alone is not a promise of route clearance.

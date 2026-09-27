@@ -24,6 +24,7 @@ from typing import Callable
 
 import numpy as np
 
+from backend.exploration import ExplorationMemory
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
@@ -46,6 +47,7 @@ RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode i
 
 @dataclass(frozen=True)
 class NavSettings:
+    adaptive_explore: bool = False  # explicit prototype only; measured rate range stays intact
     rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
     start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
@@ -99,11 +101,11 @@ def planning_grid(snapshot, settings):
     return grid, config
 
 
-def obstacle_clearance_m(snapshot, x, z):
+def obstacle_clearance_m(snapshot, x, z, search_m=0.):
     """Distance from a camera-floor position to the nearest observed occupied cell."""
     if snapshot.cells is None or snapshot.origin is None:
         return 0.
-    radius = snapshot.inflation_m + snapshot.cell_m
+    radius = max(search_m, snapshot.inflation_m + snapshot.cell_m)
     row, col = snapshot._index(x, z)
     reach = math.ceil(radius / snapshot.cell_m) + 1
     r0, r1 = max(0, row - reach), min(snapshot.cells.shape[0], row + reach + 1)
@@ -118,15 +120,46 @@ def obstacle_clearance_m(snapshot, x, z):
     return float(np.min(np.hypot(dx, dz)))
 
 
-def recoverable_start(snapshot, x, z, extra_margin_m):
-    """A prototype already overlapping clearance may attempt an outward step.
+def exploration_command(snapshot, x, z, yaw, v, w, now, max_age_s):
+    """Reduce nominal speed near obstacles/unknown floor/aging sensing; preserve curvature.
 
-    The camera cell must remain unoccupied. The step check below, not an
-    assumed minimum starting clearance, decides whether an escape is possible.
+    This is an additional speed preference, never a substitute for swept-path
+    validation or a measured physical stopping-distance guarantee.
     """
+    if v <= 0:
+        return v, w
+    clearance = obstacle_clearance_m(snapshot, x, z, search_m=1.)
+    room = max(0., min(1., (clearance - snapshot.inflation_m) / .4))
+    freshness = max(0., min(1., 1. - (now - snapshot.accepted_at) / max_age_s))
+    quality = max(0., min(1., snapshot.sensing_confidence))
+    cap = .1 + .1 * room * freshness * quality
+    # Unknown support is accepted only under the existing profile policy;
+    # fewer observed free cells cannot justify the highest nominal cruise power.
+    if any(snapshot.cell(x + d * math.sin(yaw), z + d * math.cos(yaw)) != 1
+           for d in (.2, .4, .8)):
+        cap = min(cap, .12)
+    scale = min(1., cap / v)
+    return v * scale, w * scale
+
+
+def recoverable_start(snapshot, x, z, extra_margin_m):
+    """Only the explicit prototype may drive away from a wall inside its extra margin."""
     return bool(extra_margin_m > 0 and snapshot.ready and snapshot.unknown_traversable
-                and snapshot.cells is not None and snapshot.inflation_m is not None
-                and math.isfinite(x) and math.isfinite(z) and snapshot.cell(x, z) != OCCUPIED)
+                and snapshot.cell(x, z) != OCCUPIED and snapshot.inflation_m is not None
+                and obstacle_clearance_m(snapshot, x, z) >= snapshot.inflation_m - extra_margin_m)
+
+
+def start_clearance_diagnostics(snapshot, x, z, extra_margin_m):
+    """Report the exact start guard without granting a new motion permission."""
+    clearance = obstacle_clearance_m(snapshot, x, z)
+    clear = snapshot.traversable(x, z)
+    recoverable = recoverable_start(snapshot, x, z, extra_margin_m)
+    return dict(can_start=clear or recoverable, traversable=clear, recoverable=recoverable,
+                camera_cell=snapshot.cell(x, z),
+                nearest_occupied_m=clearance if math.isfinite(clearance) else None,
+                inflation_m=snapshot.inflation_m,
+                footprint_bound_m=max(0., snapshot.inflation_m-extra_margin_m),
+                reason=None if clear or recoverable else 'start_blocked')
 
 
 def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
@@ -203,6 +236,29 @@ def pursuit_step_allowed(snapshot, x, z, yaw, v, w, period, distance, extra_marg
     return True
 
 
+def pursuit_step_allowed(snapshot, x, z, yaw, v, w, period, distance, extra_margin_m):
+    """Check the immediate step and a sampled nominal arc up to the pursuit target.
+
+    This uses requested kinematics, not a physical PWM/stopping-distance model.
+    Each sample uses the same strict clearance/overlap-exit rule as the next tick.
+    """
+    heading = yaw + w * period / 2
+    if not recovery_step_allowed(snapshot, x, z, x + v * math.sin(heading) * period,
+                                 z + v * math.cos(heading) * period, extra_margin_m):
+        return False
+    if v == 0:
+        return True
+    steps = max(1, math.ceil(distance / (snapshot.cell_m / 2)))
+    dt = distance / (v * steps)
+    for _ in range(steps):
+        heading = yaw + w * dt / 2
+        nx, nz = x + v * math.sin(heading) * dt, z + v * math.cos(heading) * dt
+        if not recovery_step_allowed(snapshot, x, z, nx, nz, extra_margin_m):
+            return False
+        x, z, yaw = nx, nz, yaw + w * dt
+    return True
+
+
 def straight_runway_m(path, segment, x, z, yaw):
     """Length of the current route aligned with the rover, before its next bend."""
     fx, fz = math.sin(yaw), math.cos(yaw)
@@ -235,6 +291,7 @@ class Navigator:
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
         self.goal: tuple[float, float] | None = None
+        self.exploration = ExplorationMemory()
         self.waiting_reason: str | None = None
 
     @property
@@ -276,19 +333,20 @@ class Navigator:
         if problem:
             return 'plan', snapshot, goal, PlanResult([], problem)
         grid, config = planning_grid(snapshot, self.settings)
-        if not (snapshot.traversable(*start) or
-                recoverable_start(snapshot, *start, self.settings.start_recovery_margin_m)):
+        if not start_clearance_diagnostics(snapshot, *start, self.settings.start_recovery_margin_m)['can_start']:
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         heading = yaw if explore_yaw is None else explore_yaw
+
+        target_mask = self.exploration.targets(snapshot, grid) if explore else None
 
         def next_frontier():
             preferred = preferred_explore_frontier(grid, start, heading, config,
                                                     allow_unknown=snapshot.unknown_traversable,
-                                                    excluded=excluded)
+                                                    excluded=excluded, target_mask=target_mask)
             return (preferred if preferred is not None else
                     nearest_frontier(grid, start, config,
                                      allow_unknown=snapshot.unknown_traversable,
-                                     excluded=excluded))
+                                     excluded=excluded, target_mask=target_mask))
 
         if explore:
             if (goal is None or grid.world_to_cell(*goal) is None
@@ -301,7 +359,7 @@ class Navigator:
                 # floor. A goal that was yesterday's frontier should advance
                 # before the rover reaches it and brakes for another search.
                 farther = preferred_explore_frontier(grid, start, heading, config,
-                                                    allow_unknown=snapshot.unknown_traversable, excluded=excluded)
+                                                    allow_unknown=snapshot.unknown_traversable, excluded=excluded, target_mask=target_mask)
                 if farther is not None:
                     fx, fz = math.sin(heading), math.cos(heading)
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
@@ -309,6 +367,7 @@ class Navigator:
                         goal = farther
         result = plan_path(grid, start, goal, config)
         if explore and result.reason == 'no_path':
+            self.exploration.reject(snapshot.session, goal)
             # A new wall can disconnect an otherwise free implicit frontier.
             # First try its detour above; only proven unreachability permits a
             # different reachable frontier, with one bounded retry on this map.
@@ -560,6 +619,17 @@ class Navigator:
                         self._check, self._occupancy, remaining, 0,
                         checked_revision))
 
+                if explore and snapshot is not None:
+                    loop = self.exploration.observe(snapshot.session, x, z, yaw)
+                    if loop and goal is not None:
+                        self.exploration.reject(snapshot.session, goal)
+                        if job is not None:
+                            job.cancel()
+                            job = None
+                        follower, goal, progress, last_plan = None, None, None, -math.inf
+                        self.waiting_reason = 'explore_loop_replan'
+                        self._show([])
+
                 v = w = 0.
                 command_blocked = False
                 if follower is not None and snapshot is not None:
@@ -639,11 +709,15 @@ class Navigator:
                                 rejected = (snapshot.session, snapshot.revision, list(follower.path), x, z, yaw)
                                 progress = None  # zero wait is not commanded-motion stall
                                 self.waiting_reason = 'no_feasible_step'
+                                last_plan = now
                                 v = w = 0.
                             else:
                                 v = w = 0.
                                 command_blocked = True
                                 last_plan = -math.inf
+
+                if explore and s.adaptive_explore and snapshot is not None:
+                    v, w = exploration_command(snapshot, x, z, yaw, v, w, now, s.map_max_age_s)
 
                 if pacer is not None:
                     feasible_forward = v > 0. and abs(w) < .1 and self.waiting_reason is None

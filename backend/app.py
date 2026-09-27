@@ -31,6 +31,7 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
+from backend.explore_obstacle_gate import ExploreObstacleGate, PathObservation
 from backend.scan_pacing import CameraPose, ScanObservation, capture_observation
 from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
                              points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
@@ -46,10 +47,11 @@ from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env,
 from backend.occupancy import (CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S,
                                DepthView, Evidence, OccupancyGrid, depth_view, frame_evidence)
 from backend.navigation import Grid, path_message
-from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
+from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem, start_clearance_diagnostics
 from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
+from backend.prototype import PrototypeGeometry, filter_prototype_self_mesh
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 from backend.prototype import PrototypeGeometry, filter_prototype_self_mesh
 
@@ -79,6 +81,15 @@ class Manual(Input):
     expected_generation: int | None = Field(default=None, ge=0)
     v_mps: float = Field(ge=-.2, le=.2)
     yaw_rate_rps: float = Field(ge=-.5, le=.5)
+
+
+class ExploreYield(Input):
+    generation: int = Field(ge=0)
+    reason: Literal['person_path_crossing', 'person_clearance_unknown', 'obstacle_wait']
+
+
+class ExploreResume(Input):
+    generation: int = Field(ge=0)
 
 
 class Goal(Input):
@@ -150,11 +161,14 @@ class Confidence(Input):
 
 class Frame(Pose):
     version: Literal[1, 2, 3]
+    floor: dict | None = None
+    mesh_voxels: str | None = None
     type: Literal['frame']
     image: Image
     depth: Depth
     confidence: Confidence
     floor: dict | None = None
+    mesh_voxels: str | None = None
     mesh_voxels: str | None = None
 
 
@@ -256,6 +270,7 @@ def create_app(db_path: str | None = None, build_points=None,
     device = DeviceRelay(relay.authorized) if relay is not None else None
     if relay is not None and not relay.actuation.blockers:
         nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower(),
+                               adaptive_explore=getattr(relay.actuation, 'prototype', False),
                                replan_s=4. if getattr(relay.actuation, 'prototype', False)
                                else (nav_settings or NavSettings()).replan_s,
                                start_recovery_margin_m=.1524 if getattr(relay.actuation, 'prototype', False)
@@ -305,7 +320,11 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.pose_at = None
         app.state.tracking_lost_capture = -1.0  # frames captured at or before this are untrusted
         app.state.armed = False
-        app.state.auto_requested = False  # the operator's latched prototype Explore choice
+        app.state.auto_requested = False  # explicit active Explore; faults never auto-rearm
+        app.state.explore_yield = None
+        app.state.obstacle_gate = ExploreObstacleGate()
+        app.state.yield_path = []
+        app.state.input_gap_since = None
         app.state.auto_arm_task = None
         app.state.auto_retry_at = 0.
         app.state.arm_request_token = None
@@ -393,7 +412,7 @@ def create_app(db_path: str | None = None, build_points=None,
     @app.middleware('http')
     async def authorize_rover_commands(request, call_next):
         # Reading the map and emergency Stop remain available without a key.
-        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/nav/confirm', '/device/action'}
+        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/nav/confirm', '/device/action', '/explore/yield', '/explore/resume'}
                 and request.method == 'POST' and not relay.authorized(request.headers.get('authorization'))):
             return Response('Rover pairing key required', status_code=401)
         return await call_next(request)
@@ -465,12 +484,25 @@ def create_app(db_path: str | None = None, build_points=None,
     async def autonomy_readiness():
         reasons = autonomy_blockers()
         current = health()
+        snapshot, pose = map_snapshot(), rover_pose()
+        start = None
+        if (snapshot is not None and pose is not None and pose.tracking == 'normal'
+                and pose.age_s <= app.state.nav.settings.pose_max_age_s
+                and map_problem(snapshot, app.state.nav.settings.map_max_age_s) is None):
+            start = start_clearance_diagnostics(snapshot, pose.x, pose.z,
+                                               app.state.nav.settings.start_recovery_margin_m)
         reasons.extend(f'{part}_{current[part]}' for part in ('phone', 'detector') if current[part] != 'ok')
         return dict(version=1, adapter='iphone' if relay else 'logging',
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
+                    prototype_max_pwm=getattr(relay.actuation, 'max_pwm', None) if relay else None,
+                    prototype_variable_arcs=getattr(relay.actuation, 'variable_arc_pwm', False) if relay else False,
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
                     auto_requested=app.state.auto_requested, scan_pacing=app.state.nav.scan_status,
+                    generation=app.state.motion.generation,
+                    exploration=app.state.nav.exploration.stats(),
+                    navigation_wait_reason=current['navigation_wait_reason'],
+                    explore_yield=app.state.explore_yield, navigation_start=start,
                     manual_control=manual_capabilities(relay.actuation, app.state.motion.limits) if relay else None,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
@@ -479,12 +511,16 @@ def create_app(db_path: str | None = None, build_points=None,
         # Delayed pose bursts must not continually replace the pending Stop
         # acknowledgement. A new arm generation is active even while awaiting
         # its handshake, so the same hazard still cancels a new arm.
-        if reason in {'operator_stop', 'mode_change', 'shutdown'}:
-            app.state.auto_requested = False
-            app.state.arm_request_token = None
-            pending = app.state.auto_arm_task
-            if pending is not None and pending is not asyncio.current_task():
-                pending.cancel()
+        app.state.auto_requested = False
+        app.state.arm_request_token = None
+        pending = getattr(app.state, 'auto_arm_task', None)
+        if pending is not None and pending is not asyncio.current_task():
+            pending.cancel()
+        app.state.explore_yield = None
+        if hasattr(app.state, 'obstacle_gate'):
+            app.state.obstacle_gate.reset()
+            app.state.yield_path = []
+        app.state.input_gap_since = None
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
         if app.state.auto_requested:
@@ -562,18 +598,23 @@ def create_app(db_path: str | None = None, build_points=None,
                 and app.state.armed and app.state.mode == 'explore')
 
     def prototype_pause_reason():
-        """Only explicit prototype Explore may wait for recoverable input gaps.
-
-        The ESP command-loss timer still expires after a sustained gap; this preserves the arm session,
-        not motion. Disconnect, capture mismatch and hard map obstacles still stop.
-        """
-        if not persistent_explore():
+        """Ordinary yield is in-session; critical input gaps are bounded, never rearmed."""
+        if not app.state.armed or app.state.mode != 'explore':
             return None
         reason = hazard()
-        if reason in {'phone_stale', 'detector_stale', 'sensing_stale', 'map_unknown', 'no_floor'}:
-            return reason
-        if reason == 'car_stale' and relay.blockers() == ['rover_feedback_stale']:
-            return reason
+        if reason is None:
+            app.state.input_gap_since = None
+            return app.state.explore_yield
+        if app.state.pose is not None and app.state.pose.tracking != 'normal':
+            return None  # invalid tracking is a fault, not an ordinary obstruction
+        recoverable = persistent_explore() and (
+            reason in {'phone_stale', 'detector_stale', 'sensing_stale'} or
+            (reason == 'car_stale' and relay.blockers() == ['rover_feedback_stale']))
+        if recoverable:
+            if app.state.input_gap_since is None:
+                app.state.input_gap_since = time.monotonic()
+            if time.monotonic() - app.state.input_gap_since <= 1.:
+                return reason
         return None
 
     def motion_check(command):
@@ -727,9 +768,9 @@ def create_app(db_path: str | None = None, build_points=None,
             # their existing high-confidence policy. Decode the JPEG only once.
             evidence_points = (depth_to_points(frame, max_points=max(samples, 6000), min_confidence=1).positions
                                if prototype_depth else candidates.positions)
-            # ARKit's classified floor plane survives glossy surfaces whose
-            # scene-depth confidence is zero. Rasterize it into sparse free
-            # evidence at a bounded rate; observed obstacle voxels still win.
+            # Preserve the depth sample minimum: a floor polygon by itself
+            # cannot refresh collision sensing. Observed obstacle voxels win
+            # over these bounded same-frame free-floor samples.
             if frame.floor is not None and frame.frame_id % 5 == 0:
                 evidence_points = np.concatenate((evidence_points, floor_plane_points(frame)))
         else:
@@ -745,6 +786,11 @@ def create_app(db_path: str | None = None, build_points=None,
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')
+        if evidence is not None and view is not None:
+            accepted = ((view.confidence >= getattr(calibration, 'depth_confidence', 2))
+                        & (view.depth >= .05) & (view.depth <= 5.) & np.isfinite(view.depth))
+            confidence = float(np.mean(view.confidence[accepted]) / 2.) if np.any(accepted) else 0.
+            evidence = replace(evidence, sensing_confidence=confidence)
         retired = cursor = None
         if evidence is not None and view is not None:
             try:
@@ -875,7 +921,6 @@ def create_app(db_path: str | None = None, build_points=None,
 
     async def watchdog():
         ticks = 0
-        paused = False
         while True:
             await asyncio.sleep(.05)
             if (app.state.pose_at is not None
@@ -892,21 +937,13 @@ def create_app(db_path: str | None = None, build_points=None,
                 app.state.motion.desired = None
                 if relay is not None:
                     relay.command = None
-                if not paused and car_health() == 'ok' and not app.state.motion.zero():
+                if car_health() == 'ok' and not app.state.motion.zero():
                     stop('car_error')
-                paused = True
-            else:
-                paused = False
             # Explore runs whenever the rover is armed in explore mode, under the current generation.
             if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
                 app.state.nav.start_explore(app.state.motion.generation)
             if not pause_reason:
                 app.state.motion.tick()  # the 20 Hz dispatch pump
-            if (app.state.auto_requested and not app.state.armed and app.state.mode == 'explore'
-                    and app.state.arm_request_token is None and hazard() is None
-                    and time.monotonic() >= app.state.auto_retry_at
-                    and (app.state.auto_arm_task is None or app.state.auto_arm_task.done())):
-                app.state.auto_arm_task = asyncio.create_task(resume_explore())
             ticks += 1
             if ticks % 10 == 0:
                 view = app.state.approach_view
@@ -1109,15 +1146,89 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.stop_reason = None
         return health()
 
-    async def resume_explore():
-        if not app.state.auto_requested or app.state.mode != 'explore':
-            return
-        try:
-            await arm_once()
-        except HTTPException as error:
-            logger.info('Explore still requested; waiting to rearm: %s', error.detail)
-        except Exception:
-            logger.exception('Explore rearm failed; will retry while requested')
+    def check_explore_generation(generation):
+        if (not app.state.armed or app.state.mode != 'explore'
+                or generation != app.state.motion.generation):
+            raise HTTPException(409, 'Explore stopped or generation changed; resume cannot arm')
+
+    def yield_observation():
+        """Fresh metric proof along the held route; labels without depth cannot clear it."""
+        snapshot, pose = map_snapshot(), rover_pose()
+        if snapshot is None or pose is None or map_problem(snapshot, nav_settings.map_max_age_s):
+            return PathObservation(False, False, frame_id=('invalid', time.monotonic()))
+        view = app.state.detection_view
+        message = view[0] if view is not None else None
+        frame = (snapshot.session, snapshot.accepted_at)
+        if message is not None:
+            frame = (snapshot.session, message.get('frame_id'))
+            if ((message.get('session_id'), message.get('map_epoch')) != app.state.session
+                    or not isinstance(message.get('t_wall_ms'), (int, float))
+                    or not 0 <= time.time()*1000-message['t_wall_ms'] <= DETECTOR_OK_S*1000):
+                return PathObservation(False, False, frame_id=frame)
+        # Keep a bounded prefix of the route that existed when yield began.
+        # If no plan existed yet, require fresh known floor in the facing corridor.
+        points = [(pose.x, pose.z)]
+        route = app.state.yield_path
+        if route:
+            closest = min(range(len(route)), key=lambda i: math.dist(route[i], points[0]))
+            route = route[closest:]
+        else:
+            route = [(pose.x + .8*math.sin(pose.yaw_rad), pose.z + .8*math.cos(pose.yaw_rad))]
+        remaining = .8
+        for target in route:
+            origin = points[-1]
+            length = math.dist(origin, target)
+            if length <= 1e-9:
+                continue
+            travel = min(length, remaining)
+            for distance in np.arange(snapshot.cell_m, travel + snapshot.cell_m, snapshot.cell_m):
+                fraction = min(distance, travel)/length
+                points.append((origin[0]+fraction*(target[0]-origin[0]), origin[1]+fraction*(target[1]-origin[1])))
+            remaining -= travel
+            if remaining <= 1e-9:
+                break
+        known = all(snapshot.cell(*point) == 1 for point in points)
+        blocked = any(not snapshot.traversable(*point) for point in points)
+        for detection in message.get('detections', ()) if message else ():
+            if detection.get('class') not in {'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck'}:
+                continue
+            position = detection.get('position')
+            if position is None:
+                known = False  # unresolved image label is not a proven poster or clearance
+            elif min(math.dist((position[0], position[2]), point) for point in points) <= snapshot.inflation_m:
+                blocked = True
+        return PathObservation(blocked, known, frame_id=frame)
+
+    @app.post('/explore/yield')
+    async def yield_explore(body: ExploreYield):
+        check_explore_generation(body.generation)
+        app.state.explore_yield = body.reason
+        app.state.yield_path = list(app.state.nav.path)
+        app.state.obstacle_gate.reset()
+        # Explicit yield means brake immediately; no image threshold is invented.
+        app.state.obstacle_gate.decide(PathObservation(True, True, imminent=True), time.monotonic())
+        app.state.motion.desired = None
+        if relay is not None:
+            relay.command = None
+        if not app.state.motion.zero():
+            stop('car_error')
+            raise HTTPException(409, 'car_error')
+        publish(health())
+        return health()
+
+    @app.post('/explore/resume')
+    async def release_explore(body: ExploreResume):
+        check_explore_generation(body.generation)
+        if (reason := hazard()) is not None:
+            app.state.obstacle_gate.decide(PathObservation(False, False), time.monotonic(),
+                                           external_hold=True, external_reason=reason)
+            raise HTTPException(409, reason)
+        decision = app.state.obstacle_gate.decide(yield_observation(), time.monotonic())
+        if not decision.yielding:
+            app.state.explore_yield = None
+            app.state.yield_path = []
+        # 200 is an accepted observation, not permission to drive: read yielding.
+        return dict(health(), yielding=decision.yielding, resumed=decision.resumed_this_tick)
 
     @app.post('/mode')
     async def mode(body: Mode):
@@ -1439,7 +1550,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     last_capture = pose.t_capture
                     app.state.pose = pose
                     app.state.pose_at = time.monotonic()
-                    if pose.tracking != 'normal' and not persistent_explore():
+                    if pose.tracking != 'normal':
                         stop('tracking_lost')
                 app.state.db.execute(
                     'INSERT OR REPLACE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,tracking,intrinsics_json) VALUES(?,?,?,?,?,?,?,?)',

@@ -11,7 +11,7 @@ from tools.scout_benchmark import Footprint, Pose, SyntheticResponse, collides, 
 class FlowingDetourTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_hallway_obstacle_triggers_an_early_moving_detour(self):
         scene = next(s for s in make_scenarios() if s.name == 'obstacle_detour')
-        body, response, profile = Footprint(), SyntheticResponse(), PrototypeActuation()
+        body, response, profile = Footprint(), SyntheticResponse(), PrototypeActuation(variable_arc_pwm=True)
         clear = scene.grid.cells.copy()
         clear[52:64, 26:38] = 1  # obstacle at x=1.3..1.9, z=2.6..3.2 is not observed yet
 

@@ -9,7 +9,8 @@ origin is wherever the session started, so the floor height is estimated from th
 data. ARKit world Y is gravity-aligned, so the floor is a horizontal plane: a height
 slice covering many distinct cells that clearly outnumbers the slices 6-16 cm above
 and below it (a wall covers every slice about equally). The lowest such slice is the
-floor; a table top or ceiling can only win when no floor has been seen. The estimate
+floor; a table top can still win when no floor has been seen. A candidate less than
+5 cm below the accepted camera is rejected for both profiles. The estimate
 is recomputed from all evidence on every snapshot, so it settles as more floor
 appears; until a floor is found nothing is published. For the explicit flat-terrain
 prototype, a same-frame plane below the phone camera takes precedence over an
@@ -59,6 +60,7 @@ OCCUPIED_MIN_HITS = 3
 OCCUPIED_FREE_RATIO = .1
 FLOOR_MIN_CELLS = 25  # distinct cells in a 6 cm slab, about 0.06 m2 of floor
 FLOOR_PEAK_RATIO = 2.
+MIN_CAMERA_FLOOR_M = .05  # Same lower bound as classified-floor wire evidence.
 PUBLISH_INTERVAL_S = 1.  # contract rate: at most 1 Hz
 
 _PER_M = round(1 / CELL_M)  # integer scale keeps the 5 cm lattice exact
@@ -76,7 +78,8 @@ class Evidence:
     outside: int  # points outside the grid bounds
     camera_y: float | None = None  # same-frame ARKit camera height, when available
     camera_xz: tuple[float, float] | None = None
-    floor_y: float | None = None  # Same-frame classified ARKit floor anchor (v2).
+    floor_y: float | None = None  # Classified floor from the accepted same-frame anchor.
+    sensing_confidence: float = 1.  # accepted raw depth confidence, normalized [0, 1]
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,7 @@ class OccupancySnapshot:
     cells: np.ndarray | None
     floor_y: float | None
     unknown_traversable: bool = False  # Explicit flat-terrain prototype only.
+    sensing_confidence: float = 1.
 
     @property
     def ready(self) -> bool:
@@ -276,6 +280,7 @@ class OccupancyGrid:
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.evicted = 0  # distant world evidence replaced by nearby new voxels
         self.accepted_at = None
+        self.sensing_confidence = 1.
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
@@ -284,6 +289,7 @@ class OccupancyGrid:
         self._last_at = None
         self._last_picture = None
         self._floor_y = None  # Accepted floor in this AR map; reset with the grid.
+        self._floor_from_anchor = False
         self._camera_y = None
         self._camera_xz = (0., 0.)
         self._last_depth_view = None
@@ -376,14 +382,17 @@ class OccupancyGrid:
                     self._keys, self._hits = self._keys[keep], self._hits[keep]
             if evidence.camera_y is not None and math.isfinite(evidence.camera_y):
                 self._camera_y = evidence.camera_y
-                if (evidence.floor_y is not None and math.isfinite(evidence.floor_y)
-                        and .05 <= evidence.camera_y - evidence.floor_y <= 1.5):
-                    self._floor_y = evidence.floor_y
                 # A flat-terrain rover's floor is below its camera. Prefer the
                 # plane in a fresh frame over a ceiling dominating old voxels.
-                if getattr(self.calibration, 'unknown_traversable', False) and evidence.floor_y is None:
+                if (evidence.floor_y is not None and math.isfinite(evidence.floor_y)
+                        and Y_MIN_M <= evidence.floor_y < Y_MAX_M
+                        and .05 <= evidence.camera_y - evidence.floor_y <= 1.5):
+                    self._floor_y = evidence.floor_y
+                    self._floor_from_anchor = True
+                if (not self._floor_from_anchor
+                        and getattr(self.calibration, 'unknown_traversable', False)):
                     candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
-                    if candidate is not None and candidate < evidence.camera_y:
+                    if candidate is not None and evidence.camera_y - candidate >= MIN_CAMERA_FLOOR_M:
                         if self._floor_y is None or candidate <= self._floor_y + .15:
                             self._floor_y = candidate
             if (evidence.camera_xz is not None and len(evidence.camera_xz) == 2
@@ -391,6 +400,7 @@ class OccupancyGrid:
                 self._camera_xz = evidence.camera_xz
             self.dropped += evidence.outside
             self.accepted_at = now
+            self.sensing_confidence = evidence.sensing_confidence
             if not len(keys):
                 if removed or mesh_changed:
                     self._dirty = True
@@ -430,17 +440,32 @@ class OccupancyGrid:
             self.revision += 1
 
     def _classify(self, keys, hits):
-        # Looking toward walls must not erase a floor already observed in this
-        # map. Prefer a fresh valid estimate (including a newly seen lower
-        # floor); fall back to its last observed height, never old free cells.
+        # A ceiling can dominate glossy-floor depth. Neither measured nor
+        # prototype navigation may call a plane above the same-frame camera a
+        # floor. Require the same 5 cm minimum camera separation as anchor evidence.
+        # A classified anchor wins over this depth-only heuristic.
         with self._lock:
             floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
+            anchored, revision = self._floor_from_anchor, self.revision
             mesh_keys = self._mesh_keys.copy() if (self._mesh_at is not None
                 and self.accepted_at is not None and self.accepted_at - self._mesh_at <= 2.5) else None
-
-        def with_current_mesh(picture):
-            if picture is None or mesh_keys is None or not len(mesh_keys):
-                return picture
+        if mesh_keys is not None and len(mesh_keys):
+            keys = np.concatenate((keys, mesh_keys))
+            hits = np.concatenate((hits, np.full(len(mesh_keys), OCCUPIED_MIN_HITS, np.int32)))
+        if floor_y is not None and camera_y is not None and camera_y - floor_y < MIN_CAMERA_FLOOR_M:
+            floor_y = None
+        if not anchored:
+            candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
+            if candidate is not None and (camera_y is None or camera_y - candidate >= MIN_CAMERA_FLOOR_M):
+                # Preserve the prototype's flat-terrain floor against elevated
+                # furniture; measured depth may refine a valid existing floor.
+                if (floor_y is None or not getattr(self.calibration, 'unknown_traversable', False)
+                        or candidate <= floor_y + .15):
+                    floor_y = candidate
+        if floor_y is None:
+            return None
+        picture = classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
+        if picture is not None and mesh_keys is not None and len(mesh_keys):
             col0, row0, cells, floor = picture
             ix, iz = np.divmod(mesh_keys // _LEVELS, _SIDE)
             height = Y_MIN_M + (mesh_keys % _LEVELS + .5) / _SLICES_PER_M - floor
@@ -449,33 +474,13 @@ class OccupancyGrid:
                         & (ix >= col0) & (ix < col0 + cells.shape[1])
                         & (iz >= row0) & (iz < row0 + cells.shape[0]))
             cells[iz[obstacle] - row0, ix[obstacle] - col0] = OCCUPIED
-            return picture
-
-        if mesh_keys is not None and len(mesh_keys):
-            keys = np.concatenate((keys, mesh_keys))
-            hits = np.concatenate((hits, np.full(len(mesh_keys), OCCUPIED_MIN_HITS, np.int32)))
-        if getattr(self.calibration, 'unknown_traversable', False) and camera_y is not None:
-            if floor_y is not None:
-                return with_current_mesh(classify(keys, hits, self.obstacle_from_m,
-                                                  floor_y=floor_y, center_xz=camera_xz))
-            candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
-            if candidate is None or candidate >= camera_y:
-                return None
-            picture = classify(keys, hits, self.obstacle_from_m, floor_y=candidate, center_xz=camera_xz)
-            if picture is not None:
-                with self._lock:
-                    self._floor_y = candidate
-            return with_current_mesh(picture)
-        picture = classify(keys, hits, self.obstacle_from_m, center_xz=camera_xz)
         if picture is not None:
             with self._lock:
-                self._floor_y = picture[3]
-            return with_current_mesh(picture)
-        with self._lock:
-            floor_y = self._floor_y
-        return (with_current_mesh(classify(keys, hits, self.obstacle_from_m,
-                                           floor_y=floor_y, center_xz=camera_xz))
-                if floor_y is not None else None)
+                # A snapshot worker must not overwrite an anchor committed
+                # while it was classifying older depth evidence.
+                if self.revision == revision and not self._floor_from_anchor:
+                    self._floor_y = floor_y
+        return picture
 
     def snapshot(self):
         """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
@@ -508,7 +513,7 @@ class OccupancyGrid:
         if picture is None:
             return None
         col0, row0, cells, floor_y = picture
-        fingerprint = (col0, row0, cells.shape, cells.tobytes())
+        fingerprint = (col0, row0, cells.shape, cells.tobytes(), floor_y)
         with self._lock:
             if fingerprint == self._last_picture:
                 return None
@@ -525,6 +530,7 @@ class OccupancyGrid:
         """Classified picture of all accepted evidence, with readiness; blocking like `snapshot`."""
         with self._lock:
             revision, accepted_at = self.revision, self.accepted_at
+            sensing_confidence = self.sensing_confidence
             keys, hits = self._keys.copy(), self._hits.copy()
         picture = self._classify(keys, hits)
         origin = cells = floor_y = None
@@ -539,7 +545,7 @@ class OccupancyGrid:
         return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
                                  origin, CELL_M, cells, floor_y,
-                                 getattr(calibration, 'unknown_traversable', False))
+                                 getattr(calibration, 'unknown_traversable', False), sensing_confidence)
 
 
 def estimate_floor(levels: np.ndarray):

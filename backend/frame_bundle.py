@@ -11,6 +11,9 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 
+FLOOR_SUPPORT_RADIUS_M = 6.  # Same local window used to rasterize anchor evidence.
+
+
 class FrameValidationError(ValueError):
     """The bundle cannot safely be interpreted in the active map."""
 
@@ -117,7 +120,10 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
             span = polygon.max(axis=0) - polygon.min(axis=0)
             area = abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], -1))
                        - np.dot(polygon[:, 1], np.roll(polygon[:, 0], -1))) / 2
-            if (not .05 <= transform[1, 3] - y <= 1.5 or np.any(np.abs(polygon) > 100_000)
+            camera_xz = transform[[0, 2], 3]
+            local = (np.all(polygon.max(axis=0) >= camera_xz - FLOOR_SUPPORT_RADIUS_M)
+                     and np.all(polygon.min(axis=0) <= camera_xz + FLOOR_SUPPORT_RADIUS_M))
+            if (not local or not .05 <= transform[1, 3] - y <= 1.5 or np.any(np.abs(polygon) > 100_000)
                     or np.any(span > 20.) or area < .04):
                 raise FrameValidationError('floor plane is outside the camera/room bounds')
             polygon.setflags(write=False)

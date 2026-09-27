@@ -83,9 +83,15 @@ class PrototypeActuation:
         'PWM 60–180 for forward travel and arcs, PWM 60 for pivots; speed and stopping distance are unverified.',
     )
 
+    def __init__(self, max_pwm=180, *, variable_arc_pwm=False):
+        if type(max_pwm) is not int or not 1 <= max_pwm <= 180:
+            raise ValueError('prototype max PWM must be an integer in [1, 180]')
+        self.max_pwm = max_pwm
+        self.variable_arc_pwm = variable_arc_pwm
+
     def follower(self):
         return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
-                              lookahead_m=.6, cruise_mps=.2, min_mps=.05,
+                              lookahead_m=.6, cruise_mps=.2 if self.variable_arc_pwm else .15, min_mps=.05,
                               max_yaw_rate_rps=.5)
 
     def command(self, v_mps, yaw_rate_rps):
@@ -95,12 +101,19 @@ class PrototypeActuation:
             return None
         if not 0 <= v_mps <= .2 or abs(yaw_rate_rps) > .5:
             raise ValueError('prototype drive request outside motion limits')
+        if not self.variable_arc_pwm:
+            # Published b03 phone rejects the new optional inner_power field.
+            # Keep its exact command contract unless the paired update is explicit.
+            power = min(self.max_pwm, round(60 + 120 * max(0., (v_mps - .15) / .05)))
+            if v_mps and abs(yaw_rate_rps) >= .15:
+                return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, power)
+            return TimedMotorCommand(3 if v_mps else (1 if yaw_rate_rps > 0 else 2), power)
         if not v_mps:
-            return TimedMotorCommand(1 if yaw_rate_rps > 0 else 2, 60)
+            return TimedMotorCommand(1 if yaw_rate_rps > 0 else 2, min(60, self.max_pwm))
         # Smooth the requested duty from approach to cruise without boosting
         # power when steering crosses the straight/arc threshold. This is an
         # uncalibrated PWM policy, not an estimate of actual motor response.
-        power = round(60 + 120 * max(0., min(1., (v_mps - .05) / .15)))
+        power = min(self.max_pwm, round(60 + 120 * max(0., min(1., (v_mps - .05) / .15))))
         # Preserve small steering requests instead of switching between straight
         # and one fixed sharp arc. At the yaw request limit the inner wheel gets
         # half power; gentler bends keep both wheels closer to cruise. This is

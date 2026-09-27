@@ -274,7 +274,7 @@ class RelayHTTPTests(unittest.TestCase):
     def test_real_adapter_protects_motion_routes_and_exposes_measurement_blockers(self):
         car = RelayCar(KEY, fixture(forward=None))
         with TestClient(create_app(db_path=':memory:', car=car)) as client:
-            for path in ('/arm', '/mode', '/manual', '/goal'):
+            for path in ('/arm', '/mode', '/manual', '/goal', '/explore/yield', '/explore/resume'):
                 self.assertEqual(client.post(path, json={}).status_code, 401)
             self.assertEqual(client.post('/stop').status_code, 200)
             ready = client.get('/autonomy').json()

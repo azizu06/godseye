@@ -127,6 +127,14 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 
+`health` optionally includes `navigation_wait_reason`: `null` while navigation is
+not waiting, or an active Explore zero-motion reason such as `no_feasible_step`,
+`path_blocked`, `start_blocked`, `no_path`, `search_limit`, `explore_complete`, or
+the prototype sensor/relay pause reason. This does not disarm or grant motion
+authority. `no_feasible_step` retains the safe planned route but has no supported
+clear pursuit command; identical replans do not retry it until map, route or pose
+evidence changes. Terminal stops still use `stop_reason` and clear this wait reason.
+
 `health` optionally includes `mission_entry` (also in `GET /health` and arm responses):
 `null`, or `{ session_id, map_epoch, start: [x,z], frame_id, t_capture, started_at_ms,
 basis: "explore_start" }`. It is the measured camera-floor projection at the first
@@ -154,6 +162,9 @@ at zero awaiting new map evidence. It does not replace `stop_reason`.
 | POST | `/session` | none | New map session |
 | POST | `/arm` | none | Arm, only if health is all `ok` |
 | POST | `/stop` | none | Latch the stop state (always accepted) |
+| GET | `/autonomy` | none | Readiness, active arm generation, exploration counters, yield/wait reason and prototype power ceiling |
+| POST | `/explore/yield` | `{ "generation": 1, "reason": "person_path_crossing" / "person_clearance_unknown" / "obstacle_wait" }` | Authenticated in-session zero-motion hold; requires armed Explore and matching generation |
+| POST | `/explore/resume` | `{ "generation": 1 }` | Authenticated clearance observation; returns `yielding`/`resumed`. Requires 3 distinct clear samples plus 1 s hold; unknown/stale breaks it. Replans in the same generation, cannot arm or release a Stop/fault |
 | POST | `/mode` | `{ "mode": "manual" / "navigate" / "explore" }` | Stops first, then switches |
 | POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0, "expected_generation"?: integer, "takeover"?: boolean, "release"?: boolean }` | Already-armed held joystick control; zero takeover/release manage generation ownership (backend README). Renews every 100 ms; lease expiry zeroes motion |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |

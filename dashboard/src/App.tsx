@@ -17,7 +17,7 @@ import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { useReconApproaches } from "./useReconApproaches";
 import { VoiceAsk } from "./VoiceAsk";
-import { Joystick } from "./Joystick";
+import { Joystick } from "./JoystickControl";
 import { PhoneControls } from "./PhoneControls";
 import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";

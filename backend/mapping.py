@@ -5,7 +5,7 @@ import struct
 
 import numpy as np
 
-from .frame_bundle import FrameBundle, parse_frame_bundle
+from .frame_bundle import FLOOR_SUPPORT_RADIUS_M, FrameBundle, parse_frame_bundle
 
 
 POINTS_PROTOCOL = "godseye.points.v2"

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -67,6 +68,7 @@ class PrototypeDepthTests(unittest.TestCase):
             self.assertEqual(snapshot.blockers, ())
             self.assertAlmostEqual(snapshot.floor_y, -1.2, delta=.03)
             self.assertIsNotNone(snapshot.accepted_at)
+            self.assertEqual(snapshot.sensing_confidence, .5)
             self.assertEqual(state.chunk_id, 0)
             self.assertEqual(state.map_stats['no_new_points'], 3)
             self.assertFalse(client.get('/health').json()['armed'])
@@ -84,6 +86,7 @@ class PrototypeDepthTests(unittest.TestCase):
                 snapshot = state.occupancy.map_snapshot()
                 if accepted:
                     self.assertEqual(snapshot.blockers, ())
+                    self.assertEqual(snapshot.sensing_confidence, 1.)
                 else:
                     self.assertIsNone(snapshot.accepted_at)
                     self.assertIn('no_floor', snapshot.blockers)
@@ -133,27 +136,28 @@ class PrototypeDepthTests(unittest.TestCase):
             self.assertEqual(state.map_stats['rejected'], len(cases))
 
     def test_high_to_medium_transition_keeps_floor_fresh_but_replays_old_and_untracked_data_do_not(self):
-        with phone_link() as (client, phone):
-            first_packet = packet(1, 2)
-            send(client, phone, first_packet)
-            wait_for(lambda: client.app.state.occupancy.revision == 1)
+        # These are replay/tracking cases, not an encoder-speed benchmark. Four
+        # prebuilt RGB-D packets can otherwise age the first replay past 250 ms
+        # and correctly hit wall-age rejection before the replay gate. Monotonic
+        # sensing age below remains real, including the deliberate stale wait.
+        wall = time.time()
+        with patch('time.time', return_value=wall), \
+                patch('time.time_ns', return_value=int(wall * 1e9)), phone_link() as (client, phone):
+            send(client, phone, packet(1, 2))
             first = client.app.state.occupancy.accepted_at
-            second_packet = packet(2)
-            send(client, phone, second_packet)
-            third_packet = packet(3)
-            send(client, phone, third_packet)
+            send(client, phone, packet(2))
+            send(client, phone, packet(3))
             state = client.app.state
-            wait_for(lambda: state.occupancy.revision == 3)
             stamp = state.occupancy.accepted_at
             self.assertGreater(stamp, first)
             self.assertEqual(state.occupancy.revision, 3)
             self.assertEqual(state.chunk_id, 1)
-            for payload in (third_packet, second_packet, with_wall_time(packet(4), 0),
+            for payload in (packet(3), packet(2), with_wall_time(packet(4), 0),
                             fresh(packet(5), tracking='limited')):
                 send(client, phone, payload)
                 self.assertEqual((state.occupancy.accepted_at, state.occupancy.revision), (stamp, 3))
-            self.assertEqual(state.map_stats['discarded_order'] +
-                             state.map_stats['discarded_wall_time'], 3)
+            self.assertEqual(state.map_stats['discarded_order'], 2)
+            self.assertEqual(state.map_stats['discarded_wall_time'], 1)
             self.assertEqual(state.map_stats['discarded_tracking'], 1)
             # Still reject actual stale accepted sensing; receipt of invalid data
             # and pose updates must not refresh this clock.

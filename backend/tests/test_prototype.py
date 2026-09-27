@@ -60,7 +60,7 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(client.get('/autonomy').json()['auto_requested'])
 
-    def test_latched_explore_rearms_after_a_recoverable_disconnect(self):
+    def test_tracking_fault_and_stop_never_rearm_explore(self):
         from fastapi.testclient import TestClient
         from backend.app import create_app
         from backend.occupancy import OccupancySnapshot
@@ -74,6 +74,7 @@ class PrototypeTests(unittest.TestCase):
         async def prepare(session):
             car.armed_session = session.upper()
         car.prepare = prepare
+        car.send = lambda command: None  # fake transport; this test targets app fault transitions
         app = create_app(db_path=':memory:', car=car, detector=FakeDetector(),
                          calibration=prototype_geometry(.24, .14), capture_directory='')
         with TestClient(app) as client, client.websocket_connect('/phone') as phone:
@@ -93,7 +94,9 @@ class PrototypeTests(unittest.TestCase):
             wait_for(lambda: state.pose is not None)
             state.detected_at = time.monotonic()
             state.mode = 'explore'
-            state.auto_requested = True  # a previously armed Explore survived relay loss
+            state.motion.begin()  # synthetic accepted arm generation; no physical transport
+            state.armed = True
+            state.auto_requested = True
             self.assertEqual(client.get('/autonomy').json()['blockers'], [])
             wait_for(lambda: state.armed, timeout=1.)
             self.assertTrue(client.get('/autonomy').json()['auto_requested'])
@@ -102,33 +105,37 @@ class PrototypeTests(unittest.TestCase):
             self.assertTrue(state.armed, 'An old pose must not disarm persistent Explore')
             phone.send_json(pose(3, tracking='limited'))
             wait_for(lambda: state.pose.tracking == 'limited')
-            self.assertTrue(state.armed, 'Tracking loss pauses the motor without losing Explore')
+            wait_for(lambda: not state.armed)
+            self.assertEqual(state.stop_reason, 'tracking_lost')
+            self.assertFalse(state.auto_requested)
             phone.send_json(pose(4))
             wait_for(lambda: state.pose.tracking == 'normal')
+            time.sleep(.1)
+            self.assertFalse(state.armed, 'Fresh tracking cannot reopen a faulted drive session')
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(state.auto_requested)
 
-    def test_bounded_forward_arcs_and_no_reverse_or_rate_claims(self):
+    def test_bounded_power_forward_arcs_and_no_reverse_or_rate_claims(self):
         profile = PrototypeActuation()
         for v, w, direction in [(.05, 0., 3), (0., .2, 1), (0., -.2, 2)]:
             command = profile.command(v, w)
             self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 1500))
-        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 140))
-        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 140))
+        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 60))
+        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 60))
         self.assertIsNone(profile.command(0., 0.))
         self.assertIsNone(profile.stopping_distance_m)
         for v, w in [(-.01, 0.), (.21, 0.), (0., .51), (math.nan, 0.)]:
             with self.assertRaises(ValueError): profile.command(v, w)
 
     def test_forward_power_changes_gradually_across_the_requested_speed_range(self):
-        profile = PrototypeActuation()
+        profile = PrototypeActuation(variable_arc_pwm=True)
         powers = [profile.command(speed / 1000, 0.).pwm for speed in range(50, 201)]
         self.assertEqual((powers[0], powers[100], powers[-1]), (60, 140, 180))
         self.assertTrue(all(0 <= after - before <= 1 for before, after in zip(powers, powers[1:])))
         self.assertEqual(profile.command(.001, 0.).pwm, 60)
 
     def test_gentle_steering_reaches_wheels_without_a_fixed_sharp_arc(self):
-        profile = PrototypeActuation()
+        profile = PrototypeActuation(variable_arc_pwm=True)
         for yaw, inner in ((.05, 171), (.1, 162), (.3, 126), (.5, 90)):
             for sign, direction in ((1, 5), (-1, 6)):
                 with self.subTest(yaw=sign * yaw):
@@ -142,7 +149,7 @@ class PrototypeTests(unittest.TestCase):
         self.assertIsNone(profile.command(0., .5).inner_power)
 
     def test_steering_threshold_does_not_raise_power_during_slow_approach(self):
-        profile = PrototypeActuation()
+        profile = PrototypeActuation(variable_arc_pwm=True)
         for speed in (.05, .075, .1, .15, .18, .2):
             straight = profile.command(speed, 0.)
             for yaw in (-.5, -.15, -.149, .149, .15, .5):
@@ -152,7 +159,7 @@ class PrototypeTests(unittest.TestCase):
         self.assertEqual(profile.command(0., -.5).pwm, 60)
 
     def test_open_path_follower_requests_full_cruise_without_slowing_for_heading_noise(self):
-        profile = PrototypeActuation()
+        profile = PrototypeActuation(variable_arc_pwm=True)
         for yaw in (-.05, 0., .05):
             follower = PurePursuit([(0., 0.), (0., 3.)], profile.follower())
             command = follower.step(0., .5, yaw)
@@ -184,5 +191,5 @@ class PrototypeTests(unittest.TestCase):
             car.send(DriveCommand(session_id=session, seq=seq, v_mps=.15, yaw_rate_rps=0.,
                                   issued_at_ms=round(now[0]*1000), valid_for_ms=250))
             packet = car.next_message()
-            self.assertEqual((packet['power'], packet['lease_ms']), (140, 1500))
+            self.assertEqual((packet['power'], packet['lease_ms']), (60, 1500))
             self.assertEqual(car.armed_session, session.upper())

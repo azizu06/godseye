@@ -75,7 +75,7 @@ async def exploring(cells=None, *, start=(2.5, .8, 0.), moves=True):
     occupancy = FreshOccupancy(hallway() if cells is None else cells, clock)
     rover = Rover(*start, moves=moves, sim_dt=.1)
     h = Harness(rover, occupancy, mode='explore', follower=PrototypeActuation().follower(),
-                rate_hz=10., replan_s=4., blocked_check_s=.25, no_progress_s=5.,
+                rate_hz=10., replan_s=4., blocked_check_s=.25, no_progress_s=5., adaptive_explore=True,
                 start_recovery_margin_m=.1524)
     with patch.object(navigator, 'time', SimpleNamespace(monotonic=clock.now)), \
             patch.object(navigator, 'asyncio', TickLoop(clock)):
@@ -202,43 +202,41 @@ class DetourFollowingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot.traversable(1.5, 1.))
         self.assertTrue(allowed(snapshot, 1.5, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
         self.assertFalse(allowed(snapshot, 1.5, 1., math.pi / 2, .15, 0., .1, .15, .1524))
-        self.assertTrue(allowed(snapshot, 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
-        self.assertFalse(allowed(snapshot, 1.7, 1., math.pi / 2, .15, 0., .1, .15, .1524))
-        self.assertFalse(allowed(replace(snapshot, unknown_traversable=False),
-                                 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
+        self.assertFalse(allowed(snapshot, 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
 
     async def test_rejected_action_waits_across_identical_replans_then_retries_new_evidence(self):
         async with exploring() as (h, clock):
             await advance(h, clock, 2., until=lambda: bool(h.nav.path))
-            # Force the local arc check to reject the current revision while
-            # keeping the route clear. This isolates the runner's wait/retry
-            # behavior from the exact pure-pursuit geometry in this scene.
-            real_allowed = navigator.pursuit_step_allowed
-            def blocked_until_rescan(snapshot, *args):
-                return snapshot.revision > 1 and real_allowed(snapshot, *args)
-            with patch.object(navigator, 'pursuit_step_allowed', blocked_until_rescan):
-                count = len(h.rover.commands)
+            # Upstream clearance routing can now pass this corner. Explicitly
+            # reject every action to model an unsupported actuation step; this
+            # test verifies zero-wait retention, not the corner's geometry.
+            h.rover.x, h.rover.z, h.rover.yaw = 3.07, 1.58, .4
+            count = len(h.rover.commands)
+            with patch.object(navigator, 'pursuit_step_allowed', return_value=False):
                 await advance(h, clock, 12.)
-                self.assertLessEqual(len(h.paths), 2, 'identical replans must not clear/reinstall the path')
-                self.assertEqual(h.nav.waiting_reason, 'no_feasible_step')
-                self.assertEqual(set(h.rover.commands[count:]), {(0., 0.)})
-                self.assertTrue(h.nav.active)
-                self.assertEqual(h.stops, [])
-                opened = h.occupancy.cells.copy()
-                opened[38:50, 44:56] = 1
-                h.occupancy.set(opened)
-                await advance(h, clock, 20., until=lambda: h.rover.z > 3.3)
-                self.assertGreater(h.rover.z, 3.3)
-                self.assertIsNone(h.nav.waiting_reason)
-                self.assertEqual(h.stops, [])
+            self.assertLessEqual(len(h.paths), 2, 'identical replans must not clear/reinstall the path')
+            self.assertEqual(getattr(h.nav, 'waiting_reason', None), 'no_feasible_step')
+            self.assertEqual(set(h.rover.commands[count:]), {(0., 0.)})
+            self.assertTrue(h.nav.active)
+            self.assertEqual(h.stops, [])
+            opened = h.occupancy.cells.copy()
+            opened[38:50, 44:56] = 1
+            h.occupancy.set(opened)
+            await advance(h, clock, 20., until=lambda: h.rover.z > 3.3)
+            self.assertGreater(h.rover.z, 3.3)
+            self.assertIsNone(h.nav.waiting_reason)
+            self.assertEqual(h.stops, [])
 
     async def test_waiting_cannot_resume_after_stop_stale_pose_tracking_or_generation_loss(self):
         for reason in ('operator_stop', 'pose_stale', 'tracking_lost', 'sensing_stale', 'command_stale'):
             with self.subTest(reason=reason):
                 async with exploring() as (h, clock):
                     await advance(h, clock, 2., until=lambda: bool(h.nav.path))
-                    with patch.object(navigator, 'pursuit_step_allowed', return_value=False):
-                        await advance(h, clock, 2., until=lambda: h.nav.waiting_reason == 'no_feasible_step')
+                    h.rover.x, h.rover.z, h.rover.yaw = 3.07, 1.58, .4
+                    rejection = patch.object(navigator, 'pursuit_step_allowed', return_value=False)
+                    rejection.start()
+                    self.addCleanup(rejection.stop)
+                    await advance(h, clock, 2., until=lambda: h.nav.waiting_reason == 'no_feasible_step')
                     self.assertEqual(h.nav.waiting_reason, 'no_feasible_step')
                     if reason == 'operator_stop':
                         h.stop(reason)

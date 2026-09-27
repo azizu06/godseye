@@ -16,6 +16,10 @@ def main():
     parser.add_argument('--env-file', type=Path, default=Path(__file__).resolve().parents[1] / '.env',
                         help='Server settings (default: repository-root .env); existing environment wins')
     parser.add_argument('--prototype', action='store_true', help='Uncalibrated prototype; never auto-arms')
+    parser.add_argument('--prototype-max-pwm', type=int, default=180,
+                        help='Ceiling for EVERY prototype move, including arcs/pivots (1–180; not a calibrated speed)')
+    parser.add_argument('--prototype-variable-arcs', action='store_true',
+                        help='Enable variable inner-wheel power; requires paired updated phone/ESP firmware')
     parser.add_argument('--estimated-length-m', type=float)
     parser.add_argument('--estimated-width-m', type=float)
     parser.add_argument('--host', default='0.0.0.0')
@@ -53,7 +57,9 @@ def main():
         if args.estimated_length_m is None or args.estimated_width_m is None:
             parser.error('--prototype requires explicit estimated length and width in meters')
         from backend.prototype import PrototypeActuation, prototype_geometry
-        actuation = PrototypeActuation()
+        if not 1 <= args.prototype_max_pwm <= 180:
+            parser.error('--prototype-max-pwm must be in [1, 180]')
+        actuation = PrototypeActuation(max_pwm=args.prototype_max_pwm, variable_arc_pwm=args.prototype_variable_arcs)
         geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
         print('UNCALIBRATED PROTOTYPE: PWM 60–180 proportional forward/arc power, PWM 60 pivot; actual speed unmeasured.', flush=True)
     else:
