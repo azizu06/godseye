@@ -2,6 +2,8 @@
 
 A native SwiftUI/ARKit sensor app for a physical iPhone running iOS 16 or later. A LiDAR-equipped Pro model is needed for scene depth and reconstruction. Devices without LiDAR can capture RGB and pose, but do not fabricate depth.
 
+The **ELEGOO V4 rover** panel provides a separate manual remote over stock ELEGOO Wi-Fi, Bluetooth with God's Eye firmware on the ESP, or a laptop-to-Uno USB relay. Bluetooth and the tethered USB relay leave the phone's normal Wi-Fi available for mapping. See [ROVER.md](ROVER.md) for firmware requirements, connection, motor-power limits, timed commands and verification.
+
 ## Captured data
 
 One `ARSession` owns the rear camera. Images, calibration, depth, confidence, and pose come from the same `ARFrame`; the app never pairs an image with a later cached pose.
@@ -52,7 +54,7 @@ Live RGB-D targets 30 Hz by default, with a dedicated high-priority encoder sepa
 
 Full upload uses one request plus one pending packet per kind, with a weighted frame/telemetry/frame/geometry/frame/still schedule. It prioritizes frames without starving other sensor kinds and exposes replacement/failure counts. Raw motion is sampled at a target 100 Hz and batched at 5 Hz. At serious thermal load, full frame upload and recordings fall to 1 Hz, geometry to 0.5 Hz, and live bundles are capped at 15 Hz (never above the selected rate). Critical temperature stops capture. These policies need sustained testing on the actual mounted phone. Local mesh recording and high-resolution photos can reduce achieved sample rates.
 
-The frozen [v1 interface](../docs/INTERFACES.md) is unchanged. Extra data uses HTTP `/capture/ingest` and does not refresh drive health. The backend also publishes v1 live map points and object memory as documented in its README. Neither app nor backend drives hardware.
+The frozen [v1 interface](../docs/INTERFACES.md) is unchanged. Extra data uses HTTP `/capture/ingest` and does not refresh drive health. The backend also publishes v1 live map points and object memory as documented in its README. Its default drive adapter remains logging-only. The iPhone's separate [ELEGOO manual remote](ROVER.md) can send hardware commands only after a verified Uno reply and explicit user enablement.
 
 ## Validation
 

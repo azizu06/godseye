@@ -11,14 +11,18 @@
 		03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD35F1C133775241800AEABA /* PhoneSensors.swift */; };
 		2DB90CC52A2DEA61BC337914 /* CaptureArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5372276C167819EC2BE48104 /* CaptureArchive.swift */; };
 		597311B703E52ED7139F8D55 /* PhoneStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EA470F2C29DD230C4E32C /* PhoneStream.swift */; };
+		A147B1FB242CC13C89417A53 /* RoverController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E507055019068885A150916 /* RoverController.swift */; };
+		AC2A2A2CA4973CC56DD5E336 /* RoverControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7FF429CA842BEF32803D3C7 /* RoverControlView.swift */; };
 		AF786B52146FFB7B8C36ED56 /* FullFrameEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDF70B8F25925C386B950F2C /* FullFrameEncoder.swift */; };
 		B331BACA726E454127DA7AC8 /* RichUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BD6C843425D221F2038BB1F /* RichUploader.swift */; };
+		BD8F3FD382F6E6C1EC120CF4 /* RoverBLELink.swift in Sources */ = {isa = PBXBuildFile; fileRef = D611CE9061FE2CC09309A68D /* RoverBLELink.swift */; };
 		DE32B8241CD239C035F15BE4 /* GodsEyeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */; };
 		E9A41C4CC1F51112CD8AFA5D /* SensorEncoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */; };
 		EFE2D69A85C969C9945AC2EA /* CaptureController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F240158F56D5C0A62B06D540 /* CaptureController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0E507055019068885A150916 /* RoverController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoverController.swift; sourceTree = "<group>"; };
 		16776C52BB9C61D4673176D7 /* GodsEyeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GodsEyeApp.swift; sourceTree = "<group>"; };
 		25329B30A6B57F4B351B2382 /* GodsEye.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GodsEye.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorEncoding.swift; sourceTree = "<group>"; };
@@ -26,7 +30,9 @@
 		508C056C7F19760AC87352F1 /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ios; path = .; sourceTree = SOURCE_ROOT; };
 		5372276C167819EC2BE48104 /* CaptureArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureArchive.swift; sourceTree = "<group>"; };
 		8BD6C843425D221F2038BB1F /* RichUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichUploader.swift; sourceTree = "<group>"; };
+		B7FF429CA842BEF32803D3C7 /* RoverControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoverControlView.swift; sourceTree = "<group>"; };
 		D55EA470F2C29DD230C4E32C /* PhoneStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneStream.swift; sourceTree = "<group>"; };
+		D611CE9061FE2CC09309A68D /* RoverBLELink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoverBLELink.swift; sourceTree = "<group>"; };
 		EDF70B8F25925C386B950F2C /* FullFrameEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullFrameEncoder.swift; sourceTree = "<group>"; };
 		F240158F56D5C0A62B06D540 /* CaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureController.swift; sourceTree = "<group>"; };
 		FD35F1C133775241800AEABA /* PhoneSensors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSensors.swift; sourceTree = "<group>"; };
@@ -80,6 +86,9 @@
 				FD35F1C133775241800AEABA /* PhoneSensors.swift */,
 				D55EA470F2C29DD230C4E32C /* PhoneStream.swift */,
 				8BD6C843425D221F2038BB1F /* RichUploader.swift */,
+				D611CE9061FE2CC09309A68D /* RoverBLELink.swift */,
+				0E507055019068885A150916 /* RoverController.swift */,
+				B7FF429CA842BEF32803D3C7 /* RoverControlView.swift */,
 				2A1BF0AD27F6A02E6BB7981F /* SensorEncoding.swift */,
 			);
 			path = App;
@@ -156,6 +165,9 @@
 				03F9754BE5892F3336B3F54B /* PhoneSensors.swift in Sources */,
 				597311B703E52ED7139F8D55 /* PhoneStream.swift in Sources */,
 				B331BACA726E454127DA7AC8 /* RichUploader.swift in Sources */,
+				BD8F3FD382F6E6C1EC120CF4 /* RoverBLELink.swift in Sources */,
+				AC2A2A2CA4973CC56DD5E336 /* RoverControlView.swift in Sources */,
+				A147B1FB242CC13C89417A53 /* RoverController.swift in Sources */,
 				E9A41C4CC1F51112CD8AFA5D /* SensorEncoding.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

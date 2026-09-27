@@ -4,11 +4,13 @@ import ARKit
 @main
 struct GodsEyeApp: App {
     @StateObject private var capture = CaptureController()
+    @StateObject private var rover = RoverController()
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            CaptureView(capture: capture)
+            CaptureView(capture: capture, rover: rover)
                 .onChange(of: scenePhase) { phase in
+                    if phase != .active { rover.disconnect(reason: "Rover disconnected while app inactive") }
                     if phase == .background { capture.stop(reason: "Capture stopped in background") }
                 }
         }
@@ -29,6 +31,7 @@ struct CameraPreview: UIViewRepresentable {
 
 struct CaptureView: View {
     @ObservedObject var capture: CaptureController
+    @ObservedObject var rover: RoverController
     @AppStorage("laptopEndpoint") private var endpoint = ""
     @State private var stream = true
     @State private var fullSensorUpload = true
@@ -60,6 +63,8 @@ struct CaptureView: View {
                         Text("Temperature: \(capture.thermalStatus)")
                         if !capture.sensorStats.isEmpty { Text(capture.sensorStats).font(.caption.monospaced()) }
                     }.font(.subheadline)
+
+                    RoverControlView(rover: rover)
 
                     GroupBox("Capture settings") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -113,7 +118,7 @@ struct CaptureView: View {
                     }
                     Text("After stopping, open Files → On My iPhone → God's Eye → Captures to export or delete recordings. Each session is capped at 2 GB.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("Mount the rear cameras and LiDAR facing forward. This app captures sensor data; rover control is not implemented.")
+                    Text("Mount the rear cameras and LiDAR facing forward. The ELEGOO remote provides manual control; autonomous driving still requires a calibrated hardware adapter.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding()
             }
