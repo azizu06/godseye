@@ -50,6 +50,9 @@ function probes(patch: Observation): Point[] | null {
  */
 export class SurfaceKeyframes {
   private references: Reference[] = [];
+  clear() {
+    this.references = [];
+  }
   get size() {
     return this.references.length;
   }

@@ -1,3 +1,4 @@
+import type { DepthContradiction } from "./depthRetirement";
 import type { SurfacePatch } from "./surfaceTypes";
 import type { SurfaceDelta } from "./surfaceBuffer";
 import { simplifyPlanarPatch } from "./planarSurface";
@@ -592,6 +593,14 @@ export class PersistentSurfaceMap {
   private saturated = false;
   private blockRungs = new Map<string, number>();
   private nextGroup = 0;
+  private retirementCursor = 0;
+  private recentRetirementCursor = 0;
+  private vertexUses: number[] = [];
+  private orphanCount = 0;
+  private retirementJournal: {
+    vertices: [string, number][];
+    triangles: string[];
+  } | null = null;
   private readonly maxTriangles: number;
   private readonly maxVertices: number;
   private readonly initialCellM: number;
@@ -640,16 +649,33 @@ export class PersistentSurfaceMap {
     ) {
       for (const vertex of addition.vertices) {
         this.mesh.vertices.push(vertex);
+        this.vertexUses.push(0);
         this.mesh.groups?.push(-1);
       }
-      for (const triangle of addition.triangles)
+      for (const triangle of addition.triangles) {
         this.mesh.triangles.push(triangle);
+        for (const id of triangle) this.vertexUses[id]++;
+      }
       for (const [key, id] of addition.localVertices)
         this.knownVertices.set(key, id);
       for (const key of addition.localTriangles) this.knownTriangles.add(key);
       this.cached = null;
       this.revision++;
       return { retained: addition.retained, reset: false };
+    }
+    // Reclaim retired vertex slots only under budget pressure, not on every observation.
+    if (this.orphanCount) {
+      const compacted = compact(this.mesh);
+      this.mesh = compacted;
+      this.knownVertices = new Map(
+        compacted.vertices.map((v, i) => [positionKey(v.position), i]),
+      );
+      this.knownTriangles = new Set(compacted.triangles.map(triangleKey));
+      this.recountUses();
+      this.replaceDelta = true;
+      this.cached = null;
+      this.revision++;
+      return this.add(patch);
     }
     // A saturated map fails fast instead of repeating futile whole-map work.
     if (this.saturated)
@@ -705,6 +731,7 @@ export class PersistentSurfaceMap {
       }
     }
     this.mesh = simplified;
+    this.recountUses();
     this.knownVertices = new Map(
       simplified.vertices.map((v, i) => [positionKey(v.position), i]),
     );
@@ -716,6 +743,112 @@ export class PersistentSurfaceMap {
     this.blockRungs = blocks.rungs;
     this.cached = null;
     return { retained: null, reset: true };
+  }
+  private recountUses() {
+    this.vertexUses = this.mesh.vertices.map(() => 0);
+    for (const face of this.mesh.triangles)
+      for (const id of face) this.vertexUses[id]++;
+    this.orphanCount = 0;
+  }
+  /** Roll back confirmed retirement if this capture later fails before publication. */
+  retirementCheckpoint(): () => void {
+    const saved = {
+      mesh: this.mesh,
+      cached: this.cached,
+      knownVertices: this.knownVertices,
+      knownTriangles: this.knownTriangles,
+      revision: this.revision,
+      replaceDelta: this.replaceDelta,
+      saturated: this.saturated,
+      retirementCursor: this.retirementCursor,
+      recentRetirementCursor: this.recentRetirementCursor,
+      spacing: this.spacing,
+      clustered: this.clustered,
+      blockRungs: this.blockRungs,
+      nextGroup: this.nextGroup,
+      vertexUses: this.vertexUses.slice(),
+      orphanCount: this.orphanCount,
+    };
+    const journal = {
+      vertices: [] as [string, number][],
+      triangles: [] as string[],
+    };
+    this.retirementJournal = journal;
+    return () => {
+      Object.assign(this, saved);
+      for (const [key, id] of journal.vertices) this.knownVertices.set(key, id);
+      for (const key of journal.triangles) this.knownTriangles.add(key);
+      this.retirementJournal = null;
+    };
+  }
+  commitRetirement() {
+    this.retirementJournal = null;
+  }
+  /** Fair bounded proof work; compact only when confirmed old faces disappear. */
+  retire(evidence: DepthContradiction): number {
+    const triangles = this.mesh.triangles;
+    if (!triangles.length) return 0;
+    const removed = new Set<number>();
+    const startTime = performance.now();
+    const deadline = startTime + 32;
+    const recentStart = Math.max(0, triangles.length - 4096);
+    let visits = 0;
+    const inspect = (index: number) => {
+      const [a, b, c] = triangles[index];
+      if (
+        evidence.triangle(
+          this.mesh.vertices[a].position,
+          this.mesh.vertices[b].position,
+          this.mesh.vertices[c].position,
+        )
+      )
+        removed.add(index);
+    };
+    // Recent additions contain typical moving foreground; historic progress remains fair.
+    const recentCount = triangles.length - recentStart;
+    for (let i = 0; i < recentCount; i++) {
+      const offset = this.recentRetirementCursor % recentCount;
+      inspect(triangles.length - 1 - offset);
+      this.recentRetirementCursor = (offset + 1) % recentCount;
+      visits++;
+      if (visits % 128 === 0 && performance.now() >= startTime + 16) break;
+    }
+    for (let i = 0; i < Math.min(100_000, recentStart); i++) {
+      if (visits % 128 === 0 && performance.now() >= deadline) break;
+      const index = this.retirementCursor % Math.max(1, recentStart);
+      inspect(index);
+      visits++;
+      this.retirementCursor = (index + 1) % Math.max(1, recentStart);
+    }
+    if (!removed.size) return 0;
+    // Retain stable vertex IDs and delete only affected dedup entries. Unused
+    // slots are reclaimed by the existing budget path, while exports compact them.
+    for (const index of removed) {
+      const face = triangles[index],
+        key = triangleKey(face);
+      this.knownTriangles.delete(key);
+      this.retirementJournal?.triangles.push(key);
+      for (const id of face)
+        if (--this.vertexUses[id] === 0) {
+          const vertexKey = positionKey(this.mesh.vertices[id].position);
+          if (this.knownVertices.get(vertexKey) === id) {
+            this.knownVertices.delete(vertexKey);
+            this.retirementJournal?.vertices.push([vertexKey, id]);
+          }
+          this.orphanCount++;
+        }
+    }
+    const next = {
+      ...this.mesh,
+      triangles: triangles.filter((_, i) => !removed.has(i)),
+    };
+    this.mesh = next;
+    this.cached = null;
+    this.replaceDelta = true;
+    this.revision++;
+    this.saturated = false;
+    this.retirementCursor %= Math.max(1, next.triangles.length);
+    return removed.size;
   }
   private rungCell(rung: number) {
     return this.initialCellM * 2 ** Math.min(rung, DOUBLING_RUNGS - 1);
@@ -964,15 +1097,17 @@ export class PersistentSurfaceMap {
   }
   snapshot(): SurfacePatch | null {
     if (!this.mesh.triangles.length) return null;
-    if (!this.cached)
+    if (!this.cached) {
+      const visible = this.orphanCount ? compact(this.mesh) : this.mesh;
       this.cached = {
         id: "persistent-colored-map",
         positions: new Float32Array(
-          this.mesh.vertices.flatMap((v) => v.position),
+          visible.vertices.flatMap((v) => v.position),
         ),
-        colors: new Float32Array(this.mesh.vertices.flatMap((v) => v.color)),
-        indices: new Uint32Array(this.mesh.triangles.flat()),
+        colors: new Float32Array(visible.vertices.flatMap((v) => v.color)),
+        indices: new Uint32Array(visible.triangles.flat()),
       };
+    }
     return this.cached;
   }
 }

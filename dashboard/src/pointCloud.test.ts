@@ -1,4 +1,5 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import { DepthContradiction } from "./depthRetirement";
 import {
   MAX_POINTS,
   linearColor,
@@ -328,4 +329,244 @@ test("worker patches match the cache, preserve map resets, and skip unchanged GP
   expect(
     worker.ingest(binaryPoints([0, 1, 2], [255, 0, 0], { t_capture: 3 })),
   ).toBe("ignored");
+});
+
+const depthView = (capturedAt: number, depth = 3, sessionId = "phone-a") => ({
+  sessionId,
+  mapEpoch: 1,
+  capturedAt,
+  width: 16,
+  height: 16,
+  depth: new Float32Array(256).fill(depth),
+  confidence: new Uint8Array(256).fill(2),
+  projection: {
+    transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    intrinsics: [16, 0, 0, 0, 16, 0, 8, 8, 1],
+    imageWidth: 16,
+    imageHeight: 16,
+  },
+});
+const clearingCapture = (
+  capturedAt: number,
+  retirement = [depthView(capturedAt - 1), depthView(capturedAt)],
+) => ({
+  sessionId: "phone-a",
+  mapEpoch: 1,
+  frameId: capturedAt,
+  capturedAt,
+  positions: new Float32Array([0, 0, -3]),
+  colors: new Float32Array([0.5, 0.5, 0.5]),
+  retirement,
+});
+
+test("two newer depth views retire old foreground but preserve hidden and unobserved points in mirrored exports", () => {
+  const cloud = new PointCloudStore(16),
+    renderer = new PointCloudStore(16);
+  cloud.ingest(
+    chunk(1, [0, 0, -1, 0, 0, -4, 10, 0, -1], [1, 0, 0, 0, 1, 0, 0, 0, 1]),
+  );
+  renderer.applyUpdate(cloud.takeUpdate());
+  cloud.ingestCaptured(clearingCapture(4));
+  renderer.applyUpdate(cloud.takeUpdate());
+  const points = Array.from({ length: renderer.count }, (_, i) => [
+    ...renderer.positions.slice(i * 3, i * 3 + 3),
+  ]);
+  expect(points).not.toContainEqual([0, 0, -1]);
+  expect(points).toContainEqual([0, 0, -4]);
+  expect(points).toContainEqual([10, 0, -1]);
+  expect(points).toContainEqual([0, 0, -3]);
+  expect(renderer.visibleCount).toBe(3);
+  cloud.restoreCoverage();
+  expect(cloud.visibleCount).toBe(3);
+});
+
+test("repeated captures, wrong scopes and newer foreground cannot establish point retirement", () => {
+  const cloud = new PointCloudStore(16);
+  cloud.ingest(chunk(5, [0, 0, -1]));
+  cloud.ingestCaptured(clearingCapture(6, [depthView(6), depthView(6)]));
+  expect(cloud.count).toBe(2);
+  cloud.ingestCaptured(
+    clearingCapture(7, [depthView(6, 3, "other"), depthView(7, 3, "other")]),
+  );
+  expect(cloud.count).toBe(2);
+  cloud.ingestCaptured(clearingCapture(8, [depthView(4), depthView(8)]));
+  expect(cloud.count).toBe(2);
+});
+
+test("spatial retirement blocks old ghosts after camera turns but admits unrelated late detail and newer reoccupation", () => {
+  const cloud = new PointCloudStore(8);
+  cloud.ingest(chunk(1, [0, 0, -1]));
+  cloud.ingestCaptured(clearingCapture(4));
+  const away = [depthView(5), depthView(6)];
+  for (const view of away) view.projection.transform[12] = 20;
+  cloud.ingestCaptured(clearingCapture(6, away));
+  cloud.reconnect();
+  cloud.ingest(chunk(2, [0, 0, -1, 10, 0, -2], [1, 0, 0, 0, 1, 0]));
+  expect(cloud.count).toBe(2);
+  expect([...cloud.positions.subarray(0, cloud.count * 3)]).toContain(10);
+  cloud.ingest(chunk(7, [0, 0, -1]));
+  expect(cloud.count).toBe(3);
+  cloud.announce({
+    version: 1,
+    type: "objects",
+    session_id: "phone-a",
+    map_epoch: 2,
+  });
+  cloud.ingest({ ...chunk(1, [0, 0, -1]), map_epoch: 2 });
+  expect(cloud.count).toBe(1);
+});
+
+test("point retirement preserves packed draw indices and ring reuse after deleting multiple slots", () => {
+  const cloud = new PointCloudStore(4);
+  cloud.ingest(
+    chunk(
+      1,
+      [-0.05, 0, -1, 0, 0, -1, 0.05, 0, -1, 10, 0, -1],
+      new Array(12).fill(0.5),
+    ),
+  );
+  cloud.ingestCaptured(clearingCapture(4));
+  expect(cloud.count).toBe(2);
+  cloud.ingest(
+    chunk(5, [20, 0, -1, 30, 0, -1, 40, 0, -1], new Array(9).fill(0.5)),
+  );
+  expect(cloud.count).toBe(4);
+  expect(
+    new Set(cloud.visibleIndices.subarray(0, cloud.visibleCount)).size,
+  ).toBe(cloud.visibleCount);
+  expect(
+    [...cloud.visibleIndices.subarray(0, cloud.visibleCount)].every(
+      (i) => i < cloud.count,
+    ),
+  ).toBe(true);
+});
+
+test("final same-frame retirement publishes compaction after its point preview already arrived", () => {
+  const cloud = new PointCloudStore(8);
+  cloud.ingest(chunk(1, [0, 0, -1]));
+  const capture = clearingCapture(4);
+  cloud.ingestCaptured({ ...capture, retirement: undefined });
+  expect(cloud.ingestCaptured(capture)).toBe("accepted");
+  expect(cloud.count).toBe(1);
+});
+
+test("bounded tombstone capacity retains additional ghosts rather than allow old deleted ones to resurrect", () => {
+  const cloud = new PointCloudStore(4);
+  cloud.ingest(
+    chunk(
+      1,
+      [-0.12, 0, -1, -0.04, 0, -1, 0.04, 0, -1, 0.12, 0, -1],
+      new Array(12).fill(0.5),
+    ),
+  );
+  cloud.ingestCaptured(clearingCapture(4));
+  expect(cloud.count).toBe(1);
+  cloud.ingest(chunk(5, [0.2, 0, -1]));
+  cloud.ingestCaptured(clearingCapture(8));
+  expect(cloud.count).toBe(2); // all four spatial tombstone slots are occupied
+  const renderer = new PointCloudStore(4);
+  renderer.applyUpdate(cloud.takeUpdate());
+  expect(renderer.retirementCapacity).toBe(true);
+  expect(renderer.retiredVoxelCount).toBe(4);
+  cloud.reconnect();
+  cloud.ingest(chunk(2, [-0.12, 0, -1]));
+  expect(cloud.count).toBe(2);
+  cloud.clear();
+  renderer.applyUpdate(cloud.takeUpdate());
+  expect(renderer.retirementCapacity).toBe(false);
+  expect(renderer.retiredVoxelCount).toBe(0);
+});
+
+test("retirement never erases untimestamped observations or rejects captures after oldest clearing evidence", () => {
+  const cloud = new PointCloudStore(8);
+  const undated = chunk(1, [0, 0, -1]);
+  delete (undated as { t_capture?: number }).t_capture;
+  cloud.ingest(undated);
+  cloud.ingestCaptured(clearingCapture(4));
+  expect(cloud.count).toBe(2);
+  cloud.clear();
+  cloud.ingest(chunk(1, [0, 0, -1]));
+  cloud.ingestCaptured(clearingCapture(4));
+  cloud.ingest({ ...chunk(2, [0, 0, -1]), t_capture: 3.5 });
+  expect(cloud.count).toBe(2);
+});
+
+test("retirement sweeps yield at their work budget and resume fairly on newer pairs", () => {
+  const cloud = new PointCloudStore(1024);
+  const positions = Array.from({ length: 512 * 3 }, (_, i) =>
+    i % 3 === 0 ? Math.floor(i / 3) * 0.02 : i % 3 === 2 ? -1 : 0,
+  );
+  cloud.ingest(chunk(1, positions, new Array(positions.length).fill(0.5)));
+  const queried: number[] = [];
+  const predicate = vi
+    .spyOn(DepthContradiction.prototype, "point")
+    .mockImplementation((x) => {
+      queried.push(x);
+      return false;
+    });
+  let clock = 0;
+  const timing = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => (clock += 20));
+  try {
+    cloud.ingestCaptured(clearingCapture(4));
+    expect(queried).toHaveLength(128);
+    cloud.ingestCaptured(clearingCapture(6));
+    expect(queried).toHaveLength(256);
+    expect(queried[128]).toBeCloseTo(128 * 0.02);
+    cloud.ingestCaptured({
+      ...clearingCapture(6),
+      covered: new Uint8Array([0]),
+    });
+    expect(queried).toHaveLength(256); // same pair cannot spend another sweep or count twice
+  } finally {
+    predicate.mockRestore();
+    timing.mockRestore();
+  }
+});
+
+test("spatial tombstones cover perturbed positions in the same voxel but do not invent adjacent free-space history", () => {
+  const cloud = new PointCloudStore(8);
+  cloud.ingest(chunk(1, [0.005, 0.005, -1.005]));
+  cloud.ingestCaptured(clearingCapture(4));
+  const away = [depthView(5), depthView(6)];
+  for (const view of away) view.projection.transform[12] = 20;
+  cloud.ingestCaptured(clearingCapture(6, away));
+  cloud.reconnect();
+  cloud.ingest(
+    chunk(
+      2,
+      [0.008, 0.008, -1.008, 0.011, 0.005, -1.005],
+      new Array(6).fill(0.5),
+    ),
+  );
+  expect(cloud.count).toBe(2);
+  const retained = Array.from(cloud.positions.subarray(0, cloud.count * 3));
+  expect(retained.some((x) => Math.abs(x - 0.011) < 1e-6)).toBe(true);
+  expect(retained.some((x) => Math.abs(x - 0.008) < 1e-6)).toBe(false);
+});
+
+test("recent point candidates receive priority without starving the historical sweep", () => {
+  const cloud = new PointCloudStore(1024);
+  const positions = Array.from({ length: 512 * 3 }, (_, i) =>
+    i % 3 === 0 ? Math.floor(i / 3) * 0.02 : i % 3 === 2 ? -1 : 0,
+  );
+  cloud.ingest(chunk(1, positions, new Array(positions.length).fill(0.5)));
+  const queried: number[] = [];
+  const predicate = vi
+    .spyOn(DepthContradiction.prototype, "point")
+    .mockImplementation((x) => {
+      queried.push(x);
+      return false;
+    });
+  const timing = vi.spyOn(performance, "now").mockReturnValue(0);
+  try {
+    cloud.ingestCaptured(clearingCapture(4));
+    expect(queried[0]).toBeCloseTo(511 * 0.02);
+    expect(queried[256]).toBe(0);
+    expect(new Set(queried).size).toBe(512);
+  } finally {
+    predicate.mockRestore();
+    timing.mockRestore();
+  }
 });

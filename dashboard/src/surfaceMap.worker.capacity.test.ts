@@ -9,6 +9,13 @@ vi.mock("./persistentSurfaceMap", () => ({
     get atCapacity() {
       return state.saturated;
     }
+    commitRetirement() {}
+    retirementCheckpoint() {
+      return () => {};
+    }
+    retire() {
+      return 0;
+    }
     add() {
       if (++state.adds === 1)
         throw Error(

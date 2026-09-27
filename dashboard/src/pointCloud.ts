@@ -1,3 +1,6 @@
+import { DepthContradiction, type DepthObservation } from "./depthRetirement";
+export const MAX_POINT_RETIREMENTS = 100_000;
+export const POINT_RETIREMENT_VISITS = 100_000;
 export const MAX_POINTS = 2_000_000;
 export const VOXEL_SIZE = 0.01;
 export const MAX_CHUNK_POINTS = 2500;
@@ -22,6 +25,7 @@ export type CapturedPoints = {
   capturedAt: number;
   positions: Float32Array;
   colors: Float32Array; // Already linear, sampled from the calibrated camera image.
+  retirement?: DepthObservation[]; // Two calibrated observations, distinct from coverage culling.
   covered?: Uint8Array; // Same-frame measured samples replaced by retained triangles.
 };
 export type CloudBounds = { center: [number, number, number]; radius: number };
@@ -155,6 +159,8 @@ function voxelKey(x: number, y: number, z: number, size: number): VoxelKey {
 export type CloudUpdate = {
   count: number;
   evicted: number;
+  retirementCapacity: boolean;
+  retiredVoxelCount: number;
   spans: Uint32Array; // pairs of starting component and component count
   positions: Float32Array;
   colors: Float32Array;
@@ -186,6 +192,8 @@ export class PointCloudStore {
   private visibleUploads: { start: number; count: number }[] = [];
   count = 0;
   evicted = 0;
+  retirementCapacity = false;
+  retiredVoxelCount = 0;
   private dirty = new Set<number>();
   private uploadRanges: { start: number; count: number }[] = [];
   private cursor = 0;
@@ -196,6 +204,12 @@ export class PointCloudStore {
   private lastCapture = -1;
   private lastMeasured = -1;
   private observedAt?: Float64Array;
+  private retirementCursor = 0;
+  private recentRetirementSlots = new Uint32Array(1024);
+  private recentRetirementCursor = 0;
+  private recentRetirementCount = 0;
+  private lastRetirement = -1;
+  private retiredVoxels = new Map<VoxelKey, number>();
   private slots = new Map<VoxelKey, number>();
   private keys: (VoxelKey | undefined)[] = [];
   private listeners = new Set<() => void>();
@@ -239,6 +253,12 @@ export class PointCloudStore {
     this.lastChunk = -1;
     this.lastCapture = -1;
     this.lastMeasured = -1;
+    this.retirementCursor = 0;
+    this.recentRetirementCursor = this.recentRetirementCount = 0;
+    this.lastRetirement = -1;
+    this.retiredVoxels.clear();
+    this.retirementCapacity = false;
+    this.retiredVoxelCount = 0;
     this.dirty.clear();
     this.uploadRanges = [];
     this.slots.clear();
@@ -303,6 +323,8 @@ export class PointCloudStore {
     return {
       count: this.count,
       evicted: this.evicted,
+      retirementCapacity: this.retirementCapacity,
+      retiredVoxelCount: this.retiredVoxelCount,
       spans,
       positions,
       colors,
@@ -340,6 +362,8 @@ export class PointCloudStore {
     if (this.visibleUploads.length > 256)
       this.visibleUploads = mergeRanges(this.visibleUploads);
     this.evicted = update.evicted;
+    this.retirementCapacity = update.retirementCapacity;
+    this.retiredVoxelCount = update.retiredVoxelCount;
     // Hidden tabs may receive points while animation frames are paused. Keep
     // their upload backlog bounded by buffer coverage, not elapsed time.
     if (this.uploadRanges.length > 256)
@@ -428,7 +452,13 @@ export class PointCloudStore {
       !value.colors.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)
     )
       return "invalid";
-    return this.ingestChunk(
+    const removed =
+      value.retirement &&
+      keyFor({ session_id: value.sessionId, map_epoch: value.mapEpoch }) ===
+        this.mapKey
+        ? this.retireDepth(value.retirement, value.capturedAt)
+        : false;
+    const result = this.ingestChunk(
       {
         version: 1,
         type: "points",
@@ -442,6 +472,111 @@ export class PointCloudStore {
       true,
       value.covered,
     );
+    if (removed && result !== "accepted") {
+      this.changed();
+      return "accepted";
+    }
+    return result;
+  }
+  /** Retire only disproven samples; bounded work advances fairly across the cache. */
+  private retireDepth(observations: DepthObservation[], capturedAt: number) {
+    if (
+      !this.count ||
+      !observations[1] ||
+      observations[1].capturedAt <= this.lastRetirement ||
+      observations[1].capturedAt !== capturedAt
+    )
+      return;
+    let proof: DepthContradiction;
+    try {
+      proof = new DepthContradiction(observations);
+    } catch {
+      return;
+    }
+    if (proof.mapKey !== this.mapKey) return;
+    this.lastRetirement = proof.capturedAt;
+    let removed = false;
+    const wasAtCapacity = this.retirementCapacity;
+    const limit = Math.min(this.count, POINT_RETIREMENT_VISITS);
+    const started = performance.now();
+    const deadline = started + 12;
+    const visit = (slot: number) => {
+      if (slot >= this.count) return false;
+      const key = this.keys[slot]!;
+      const canRemember =
+        this.retiredVoxels.has(key) ||
+        this.retiredVoxels.size <
+          Math.min(this.capacity, MAX_POINT_RETIREMENTS);
+      if (
+        (canRemember || !this.retirementCapacity) &&
+        this.observedAt![slot] < proof.before &&
+        proof.point(
+          this.positions[slot * 3],
+          this.positions[slot * 3 + 1],
+          this.positions[slot * 3 + 2],
+        )
+      ) {
+        if (!canRemember) {
+          this.retirementCapacity = true;
+          return false;
+        }
+        // Keep exact spatial tombstones until map reset. At capacity, preserve
+        // further samples rather than delete without resurrection protection.
+        this.retiredVoxels.set(
+          key,
+          Math.max(this.retiredVoxels.get(key) ?? -1, proof.before),
+        );
+        this.retiredVoxelCount = this.retiredVoxels.size;
+        this.removeSlot(slot);
+        removed = true;
+        return true;
+      }
+      return false;
+    };
+    // Recent insertions get a small bounded head start; historical work keeps
+    // its own cursor and the majority of the time budget, so neither can starve.
+    let visited = 0;
+    for (let i = 0; i < Math.min(this.recentRetirementCount, 256); i++) {
+      if (
+        visited >= limit ||
+        (i % 32 === 0 && performance.now() >= started + 4)
+      )
+        break;
+      const index = (this.recentRetirementCursor - 1 - i + 1024) % 1024;
+      visit(this.recentRetirementSlots[index]);
+      visited++;
+    }
+    for (; visited < limit && this.count; visited++) {
+      if (visited && visited % 128 === 0 && performance.now() >= deadline)
+        break;
+      this.retirementCursor %= this.count;
+      if (!visit(this.retirementCursor)) this.retirementCursor++;
+    }
+    return removed || wasAtCapacity !== this.retirementCapacity;
+  }
+  private removeSlot(slot: number) {
+    const last = this.count - 1;
+    this.slots.delete(this.keys[slot]!);
+    this.setVisible(slot, false);
+    if (slot !== last) {
+      this.positions.copyWithin(slot * 3, last * 3, last * 3 + 3);
+      this.colors.copyWithin(slot * 3, last * 3, last * 3 + 3);
+      this.observedAt![slot] = this.observedAt![last];
+      this.keys[slot] = this.keys[last];
+      this.slots.set(this.keys[slot]!, slot);
+      const at = this.visibleSlots![last];
+      this.visibleSlots![slot] = at;
+      if (at) {
+        this.visibleIndices[at - 1] = slot;
+        this.visibleDirty.add((at - 1) >>> 5);
+      }
+      this.dirty.add(slot);
+    }
+    this.visibleSlots![last] = 0;
+    this.keys[last] = undefined;
+    this.dirty.delete(last);
+    this.count--;
+    this.cursor = this.count;
   }
   private ingestChunk(
     chunk: PointChunk,
@@ -475,6 +610,12 @@ export class PointCloudStore {
       const y = chunk.positions[i + 1];
       const z = chunk.positions[i + 2];
       const voxel = voxelKey(x, y, z, this.voxelSize);
+      const retiredAt = this.retiredVoxels.get(voxel);
+      if (
+        retiredAt !== undefined &&
+        (chunk.t_capture === undefined || chunk.t_capture <= retiredAt)
+      )
+        continue;
       let slot = this.slots.get(voxel);
       const isNew = slot === undefined;
       const displacement =
@@ -508,6 +649,14 @@ export class PointCloudStore {
         this.cursor = (this.cursor + 1) % this.capacity;
         this.count = Math.min(this.capacity, this.count + 1);
       }
+      if (isNew || displacement > 0.003 ** 2) {
+        this.recentRetirementSlots[this.recentRetirementCursor] = slot;
+        this.recentRetirementCursor = (this.recentRetirementCursor + 1) % 1024;
+        this.recentRetirementCount = Math.min(
+          1024,
+          this.recentRetirementCount + 1,
+        );
+      }
       const index = slot * 3;
       const hidden = covered
         ? covered[i / 3] === 1
@@ -530,7 +679,7 @@ export class PointCloudStore {
         this.colors[index + channel] = c;
       }
       if (updated) this.dirty.add(slot);
-      this.observedAt[slot] = chunk.t_capture ?? 0;
+      this.observedAt[slot] = chunk.t_capture ?? NaN;
     }
     if (measured) this.lastMeasured = chunk.t_capture!;
     else {

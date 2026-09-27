@@ -1,3 +1,4 @@
+import { MAX_SURFACE_PATCHES } from "./surfaceStore";
 import { SurfaceBuffer, type SurfaceDelta } from "./surfaceBuffer";
 import type { CapturedPoints } from "./pointCloud";
 import type { CapturedSurface } from "./surfaceTypes";
@@ -11,6 +12,7 @@ export interface MapSnapshot {
   coverageEpoch?: number;
   capacity?: boolean;
   delta?: SurfaceDelta;
+  retiredSurfaces?: { id: string; indices: Uint32Array }[];
 }
 /** At most one posted operation, even after its caller aborts while fusion continues. */
 export class SurfaceMapClient {
@@ -18,6 +20,8 @@ export class SurfaceMapClient {
   private sequence = 0;
   private buffer = new SurfaceBuffer();
   private outstanding = false;
+  private displayedIds = new Set<string>();
+  private pendingRetirement = new Map<string, Uint32Array>();
   private cancelPending: (() => void) | null = null;
   get busy() {
     return this.outstanding;
@@ -33,15 +37,20 @@ export class SurfaceMapClient {
     expectedMap: string,
     expiresAt: number,
     signal: AbortSignal,
-    preview: (surface: CapturedSurface, points: CapturedPoints) => void,
+    preview: (
+      surface: CapturedSurface,
+      points: CapturedPoints,
+    ) => readonly string[] | void,
     trackingLostCapture = -1,
     latest = -Infinity,
+    completedAfterAbort?: (points: CapturedPoints) => void | Promise<unknown>,
   ): Promise<MapSnapshot> {
     return this.request(
       { buffer, expectedMap, expiresAt, trackingLostCapture, latest },
       signal,
       preview,
       [buffer],
+      completedAfterAbort,
     );
   }
   add(
@@ -55,8 +64,12 @@ export class SurfaceMapClient {
   private request(
     payload: object,
     signal: AbortSignal,
-    preview?: (surface: CapturedSurface, points: CapturedPoints) => void,
+    preview?: (
+      surface: CapturedSurface,
+      points: CapturedPoints,
+    ) => readonly string[] | void,
     transfer: Transferable[] = [],
+    completedAfterAbort?: (points: CapturedPoints) => void | Promise<unknown>,
   ): Promise<MapSnapshot> {
     if (this.outstanding) return Promise.reject(Error("Map worker busy"));
     if (signal.aborted)
@@ -99,9 +112,16 @@ export class SurfaceMapClient {
       ) => {
         if (event.data.id !== id) return;
         if (event.data.preview) {
-          if (!settled)
-            preview?.(event.data.preview.surface, event.data.preview.points);
-          else
+          if (!settled) {
+            const retainedIds = preview?.(
+              event.data.preview.surface,
+              event.data.preview.points,
+            );
+            if (retainedIds)
+              this.displayedIds = new Set(
+                retainedIds.slice(-MAX_SURFACE_PATCHES),
+              );
+          } else
             (
               event.data.preview.surface.image as ImageBitmap | undefined
             )?.close?.();
@@ -110,18 +130,46 @@ export class SurfaceMapClient {
         // Drain deltas even when a caller aborted, so the next append stays aligned.
         if (event.data.delta)
           event.data.patch = this.buffer.apply(event.data.delta);
+        for (const update of event.data.retiredSurfaces ?? [])
+          if (this.displayedIds.has(update.id))
+            this.pendingRetirement.set(update.id, update.indices);
+        for (const id of this.pendingRetirement.keys())
+          if (!this.displayedIds.has(id)) this.pendingRetirement.delete(id);
+        if (settled) {
+          if (
+            !event.data.error &&
+            event.data.points?.retirement &&
+            completedAfterAbort
+          ) {
+            // Preserve single-flight until confirmed point cleanup is acknowledged.
+            // Disposal/reset can settle the callback without touching a new map.
+            Promise.resolve()
+              .then(() => completedAfterAbort(event.data.points!))
+              .catch(() => {})
+              .finally(cleanup);
+          } else cleanup();
+          return;
+        }
         cleanup();
-        if (settled) return;
         settled = true;
         if (event.data.error) reject(Error(event.data.error));
-        else resolve(event.data);
+        else {
+          event.data.retiredSurfaces = [...this.pendingRetirement].map(
+            ([id, indices]) => ({ id, indices }),
+          );
+          this.pendingRetirement.clear();
+          resolve(event.data);
+        }
       };
       this.cancelPending = () => fail(Error("Map integration cancelled"));
       signal.addEventListener("abort", abort, { once: true });
       this.worker.addEventListener("message", message);
       this.worker.addEventListener("error", error);
       try {
-        this.worker.postMessage({ id, ...payload }, transfer);
+        this.worker.postMessage(
+          { id, ...payload, retainedSurfaceIds: [...this.displayedIds] },
+          transfer,
+        );
       } catch {
         fail(Error("Map worker unavailable"));
       }

@@ -459,6 +459,9 @@ export function decodeCaptureSurface(
   if (includeAllDepth)
     for (let row = 0; row < dh; row++)
       for (let col = 0; col < dw; col++) vertexAt(row, col);
+  const nativeDepth = new Float32Array(dw * dh);
+  for (let i = 0; i < nativeDepth.length; i++)
+    nativeDepth[i] = view.getFloat32(depthOffset + i * 4, true);
   return {
     id: JSON.stringify([sessionId, mapEpoch, frameId, capturedAt]),
     sessionId,
@@ -466,6 +469,16 @@ export function decodeCaptureSurface(
     frameId,
     capturedAt,
     projection: { transform, intrinsics: k, imageWidth: iw, imageHeight: ih },
+    depthObservation: {
+      sessionId,
+      mapEpoch,
+      capturedAt,
+      width: dw,
+      height: dh,
+      depth: nativeDepth,
+      confidence: new Uint8Array(buffer, confidenceOffset, dw * dh).slice(),
+      projection: { transform, intrinsics: k, imageWidth: iw, imageHeight: ih },
+    },
     depthWidth: dw,
     depthHeight: dh,
     cameraPosition: [transform[12], transform[13], transform[14]],

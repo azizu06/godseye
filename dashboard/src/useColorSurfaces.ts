@@ -23,6 +23,7 @@ type Retention = SurfaceState & {
   latest: number;
   capacity: boolean;
   coverageEpoch: number;
+  cleanupFailed: boolean;
 };
 const closeImage = (patch: SurfacePatch) => {
   if (patch.image && "close" in patch.image) patch.image.close();
@@ -32,7 +33,10 @@ export function useColorSurfaces(
   config: ConnectionConfig,
   map: string | null,
   connected: boolean,
-  ingestCaptured: (points: CapturedPoints, restore?: boolean) => void,
+  ingestCaptured: (
+    points: CapturedPoints,
+    restore?: boolean,
+  ) => Promise<boolean>,
 ) {
   const key = JSON.stringify([config.source, config.wsUrl, config.apiUrl, map]);
   const blank = (): SurfaceState => ({
@@ -52,6 +56,7 @@ export function useColorSurfaces(
       latest: -Infinity,
       capacity: false,
       coverageEpoch: 0,
+      cleanupFailed: false,
     };
     retained.current = bucket;
     if (config.source === "external" && map) {
@@ -76,10 +81,16 @@ export function useColorSurfaces(
     if (!bucket || bucket.key !== key) return;
     const publish = (status: SurfaceStatus, reason: string) => {
       if (disposed) return;
-      bucket.status = bucket.capacity ? "capacity" : status;
+      bucket.status = bucket.capacity
+        ? "capacity"
+        : bucket.cleanupFailed && status === "receiving"
+          ? "paused"
+          : status;
       bucket.reason = bucket.capacity
         ? "Map capacity reached; prior scan retained"
-        : reason;
+        : bucket.cleanupFailed
+          ? "Point cleanup interrupted; some old points may remain until a new session"
+          : reason;
       const next: SurfaceState = {
         key,
         patches: bucket.patches,
@@ -166,21 +177,57 @@ export function useColorSurfaces(
             bucket.patches = next;
             ingestCaptured(points);
             publish("receiving", reason);
+            return bucket.patches.map((patch) => patch.id);
           },
           capture.trackingLostCapture,
           bucket.latest,
+          async (points) => {
+            // A timed-out/disconnected caller still drains confirmed cleanup.
+            // Source/map disposal changes this bucket and terminates its worker.
+            if (retained.current !== bucket || bucket.key !== key) return;
+            try {
+              if (!(await ingestCaptured(points))) bucket.cleanupFailed = true;
+            } catch {
+              bucket.cleanupFailed = true;
+            }
+            if (bucket.cleanupFailed)
+              publish("paused", "Point cleanup interrupted");
+          },
         );
         if (disposed || signal.aborted) return;
         // Worker validates age before integration. A large retained mesh remains
         // historical geometry even if its fusion finishes after display freshness.
+        if (result.retiredSurfaces?.length) {
+          const updates = new Map(
+            result.retiredSurfaces.map((p) => [p.id, p.indices]),
+          );
+          bucket.patches = bucket.patches.flatMap((patch) => {
+            const indices = updates.get(patch.id);
+            if (!indices) return [patch];
+            if (!indices.length) {
+              closeImage(patch);
+              return [];
+            }
+            return [{ ...patch, indices }];
+          });
+        }
         bucket.persistent = result.patch;
         bucket.cellM = result.cellM;
         bucket.capacity = result.capacity ?? false;
         if (result.points && capturedAt > bucket.latest) {
-          ingestCaptured(
-            result.points,
-            result.coverageEpoch !== bucket.coverageEpoch,
-          );
+          let applied = false;
+          try {
+            applied = await ingestCaptured(
+              result.points,
+              result.coverageEpoch !== bucket.coverageEpoch,
+            );
+          } catch {
+            if (result.points.retirement) bucket.cleanupFailed = true;
+          }
+          if (!applied && result.points.retirement) bucket.cleanupFailed = true;
+          if (disposed || signal.aborted) return;
+          if (!applied)
+            throw Error("Point cleanup unavailable; prior scan retained");
           bucket.coverageEpoch = result.coverageEpoch ?? bucket.coverageEpoch;
           bucket.latest = capturedAt;
         }
