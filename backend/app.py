@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from backend.approach import approach_route
+from backend.approach import ASSUMPTIONS as APPROACH_ASSUMPTIONS, approach_route, route_still_clear, person_evidence_reason
 from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
@@ -268,6 +268,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.approach_view = None
         app.state.approach_basis = None  # fingerprint of the occupancy cells it was planned on
         app.state.route_requests = 0
+        app.state.route_lifecycle = 0
         app.state.session = None
         app.state.phone = None
         app.state.pose = None
@@ -701,8 +702,10 @@ def create_app(db_path: str | None = None, build_points=None,
                     message['origin'], (message['height'], message['width']), base64.b64decode(message['cells'])):
                 retire_route()
 
-    def retire_route():
+    def retire_route(*, invalidate_pending=False):
         app.state.approach_view = app.state.approach_basis = None
+        if invalidate_pending:
+            app.state.route_lifecycle += 1
 
     def cells_fingerprint(origin, shape, cells: bytes):
         return (tuple(float(v) for v in origin), tuple(int(v) for v in shape), hash(bytes(cells)))
@@ -753,8 +756,11 @@ def create_app(db_path: str | None = None, build_points=None,
         if (view := app.state.approach_view) is not None and (sightings or changed):
             person = next((o for o in app.state.objects.snapshot(session, limit=None)
                            if o['id'] == view['object_id']), None)
-            if person is None or [person['position'][0], person['position'][2]] != view['person']:
+            if (person is None or person_evidence_reason(person, time.time()) is not None
+                    or [person['position'][0], person['position'][2]] != view['person']):
                 retire_route()
+            else:
+                view['person_last_seen'] = person['last_seen']
         if sightings or changed:
             publish(objects_message(session))
         for record in events:
@@ -796,6 +802,10 @@ def create_app(db_path: str | None = None, build_points=None,
                 app.state.auto_arm_task = asyncio.create_task(resume_explore())
             ticks += 1
             if ticks % 10 == 0:
+                view = app.state.approach_view
+                if view is not None and person_evidence_reason(
+                        dict(state='present', last_seen=view.get('person_last_seen')), time.time()):
+                    retire_route()
                 publish(health())
 
     def set_session(session):
@@ -808,7 +818,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
         app.state.detection_view = None
-        retire_route()
+        retire_route(invalidate_pending=True)
         app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
@@ -1047,6 +1057,7 @@ def create_app(db_path: str | None = None, build_points=None,
         started = app.state.changes.start(session, int(time.time()*1000))
         if started is None:
             raise HTTPException(409, 'Nothing observed in this map yet')
+        retire_route(invalidate_pending=True)
         publish(objects_message(session))
         return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
                     baseline_objects=len(started.baseline))
@@ -1069,24 +1080,58 @@ def create_app(db_path: str | None = None, build_points=None,
             retire_route()  # a failed selection never leaves an older route standing
             raise HTTPException(404, 'No localized person with that id in the active map')
         target = (person['position'][0], person['position'][2])
+        lifecycle = app.state.route_lifecycle
         grid = active_grid()
 
-        def plan():
+        def unavailable(reason):
+            return dict(status='unavailable', reason=reason, assumptions=APPROACH_ASSUMPTIONS)
+
+        def snapshot():
             revision, origin, cells = (None, None, None) if grid is None else grid.snapshot()
-            planned = approach_route(None if cells is None else
-                                     Grid.from_array(cells, origin=origin, cell_m=CELL_M), body.start, target)
-            basis = ('no_map',) if cells is None else cells_fingerprint(origin, cells.shape, cells.tobytes())
-            return revision, planned, basis
+            basis = (('no_map',) if cells is None else
+                     cells_fingerprint(origin, cells.shape, cells.tobytes()))
+            nav_grid = None if cells is None else Grid.from_array(cells, origin=origin, cell_m=CELL_M)
+            return revision, nav_grid, basis
+
+        def plan():
+            revision, nav_grid, basis = snapshot()
+            reason = person_evidence_reason(person, time.time())
+            planned = unavailable(reason) if reason else approach_route(nav_grid, body.start, target)
+            # Planning is off-loop: a new obstacle can arrive before it finishes.
+            # Revalidate the actual path against the newest snapshot, accepting
+            # unrelated map changes rather than restarting an expensive search.
+            current_revision, current_grid, current_basis = snapshot()
+            if current_basis != basis:
+                if planned['status'] != 'ok' or not route_still_clear(current_grid, target, planned['points']):
+                    planned = unavailable('map_changed')
+            return current_revision, planned, current_basis
 
         revision, planned, basis = await asyncio.to_thread(plan)
         if app.state.session != session:
-            raise HTTPException(409, 'Map reset while planning')
+            raise HTTPException(409, 'The map changed while planning')
+        current_person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                               if o['id'] == body.object_id and o['class'] == 'person'), None)
+        if request != app.state.route_requests:
+            planned = unavailable('route_superseded')
+        elif lifecycle != app.state.route_lifecycle:
+            planned = unavailable('route_evidence_changed')
+        elif current_person is None:
+            planned = unavailable('person_not_in_map')
+        elif (reason := person_evidence_reason(current_person, time.time())) is not None:
+            planned = unavailable(reason)
+        elif current_person['position'] != person['position']:
+            planned = unavailable('person_changed')
+        elif active_grid() is not grid or (grid is not None and grid.revision != revision):
+            # Evidence changed again after validation. Fail closed without an
+            # unbounded retry loop; the next explicit/new-evidence request can plan.
+            planned = unavailable('map_changed')
         response = dict(version=1, session_id=session[0], map_epoch=session[1], object_id=body.object_id,
                         person=list(target), start=list(body.start), occupancy_revision=revision, **planned)
-        if request == app.state.route_requests:
-            # Success or not, this is now the selected route; an unavailable result
-            # replaces (invalidates) any earlier success.
-            app.state.approach_view = dict(response, t_wall_ms=int(time.time() * 1000))
+        if request == app.state.route_requests and lifecycle == app.state.route_lifecycle:
+            # A failed selection replaces an earlier success. A disconnected or
+            # reset lifecycle cannot repopulate the read-only voice route cache.
+            app.state.approach_view = dict(response, t_wall_ms=int(time.time() * 1000),
+                                           person_last_seen=current_person['last_seen'] if current_person else None)
             app.state.approach_basis = basis
         return response
 
@@ -1219,6 +1264,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 worker.cancel()
             if app.state.phone is owner:
                 app.state.phone = None
+                retire_route(invalidate_pending=True)
                 app.state.pose = app.state.pose_at = app.state.detected_at = None
                 app.state.detection_view = None
                 app.state.tracking_lost_capture = -1.0
