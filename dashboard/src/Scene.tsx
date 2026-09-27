@@ -15,7 +15,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Edges, Grid, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -39,6 +39,8 @@ import type { LiveMarker } from "./detections";
 import { displayedStoredObjects, type PersonTrack } from "./personMemory";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 import { displayFloorY, overlayY } from "./floor";
+import { pickApproachTarget } from "./goalPick";
+import { panSpeedForDistance } from "./cameraPan";
 
 export const objectName = (o: WorldObject) =>
   o.class === "potted plant"
@@ -205,6 +207,19 @@ function Controls({
       if (view.camera === api) view.camera = undefined;
     };
   }, [handle, camera, invalidate]);
+  useEffect(() => {
+    const controls = ref.current;
+    if (!controls) return;
+    // A drag pans about the same world distance at any zoom; rotate and zoom are unchanged.
+    const pace = () => {
+      controls.panSpeed = panSpeedForDistance(
+        camera.position.distanceTo(controls.target),
+      );
+    };
+    pace();
+    controls.addEventListener("change", pace);
+    return () => controls.removeEventListener("change", pace);
+  }, [camera]);
   return (
     <OrbitControls
       ref={ref}
@@ -434,6 +449,25 @@ function World({
     mission.people,
     selected,
   );
+  // Navigate clicks approach the first measured thing under the cursor. The
+  // nearest R3F hit wins and stops propagation, so one click sends one goal.
+  const pickGoal = (e: ThreeEvent<MouseEvent>) => {
+    if (e.button !== 0 || e.delta >= 4) return;
+    e.stopPropagation();
+    const target = pickApproachTarget(
+      e.ray.origin.toArray(),
+      e.ray.direction.toArray(),
+      cloud.positions,
+      cloud.count,
+      pick,
+    );
+    if (target) onGoal(target[0], target[1]);
+  };
+  const pickObject = (e: ThreeEvent<MouseEvent>) => {
+    if (e.button !== 0 || e.delta >= 4) return;
+    e.stopPropagation();
+    onGoal(e.point.x, e.point.z);
+  };
   return (
     <>
       {canGoal && (
@@ -441,12 +475,23 @@ function World({
           name="goal-pick-plane"
           rotation={[-Math.PI / 2, 0, 0]}
           position={[0, pick, 0]}
-          onClick={(e) => {
-            if (e.button === 0 && e.delta < 4) onGoal(e.point.x, e.point.z);
-          }}
+          onClick={pickGoal}
         >
           <planeGeometry args={[40, 40]} />
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
+      {canGoal && (
+        // Catches clicks on walls above the horizon that never meet the floor plane.
+        <mesh name="goal-pick-backdrop" onClick={pickGoal}>
+          <sphereGeometry args={[80, 16, 12]} />
+          <meshBasicMaterial
+            transparent
+            opacity={0}
+            depthWrite={false}
+            side={THREE.BackSide}
+            fog={false}
+          />
         </mesh>
       )}
       {pickingRouteStart && (
@@ -575,7 +620,11 @@ function World({
       {layers.objects &&
         displayedObjects(storedObjects, layers.weakObjects, selected).map(
           (o) => (
-            <group key={o.id} position={o.position}>
+            <group
+              key={o.id}
+              position={o.position}
+              onClick={canGoal ? pickObject : undefined}
+            >
               <mesh>
                 <boxGeometry
                   args={

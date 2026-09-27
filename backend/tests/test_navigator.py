@@ -474,6 +474,18 @@ class LiveNavigationTests(unittest.TestCase):
             self.stream(phone, .2)
             self.assertNotIn('send', [call[0] for call in self.car.calls[stopped:]])
 
+    def test_approach_goal_reports_the_followed_stand_off_and_the_clicked_target(self):
+        with TestClient(self.app()) as client, client.websocket_connect('/phone') as phone:
+            phone.send_json(self.hello())
+            self.arm(client, phone, 'navigate')
+            response = client.post('/goal', json={'x': 0., 'z': .5, 'approach': True})
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            self.assertEqual(body['target'], [0., .5])
+            self.assertEqual(body['goal'], body['points'][-1])
+            self.assertEqual(tuple(body['goal']), client.app.state.nav.goal)
+            client.post('/stop')
+
     def test_navigation_has_no_drive_path_around_the_motion_pump(self):
         self.assertFalse(hasattr(backend.app, 'drive'))
         self.assertFalse(hasattr(backend.navigator, 'drive'))

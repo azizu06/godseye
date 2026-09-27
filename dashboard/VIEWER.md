@@ -45,6 +45,12 @@ While detections keep arriving, a marker follows its person: a detection within 
 
 The scan keeps measured ARKit world coordinates. The grid, rover/phone glyph and its labels, LiDAR scope, trajectory, navigation path, occupancy plane, approach-route drawing and the goal/route-start picking planes sit at the backend occupancy `floor_y` plus their existing small offsets (`src/floor.ts`). A missing, non-finite or out-of-range floor is shown as `Floor unknown · overlays at AR origin height` and keeps the previous Y = 0 placement; nothing is levelled, rotated or calibrated. The floor clears with the map and survives a same-map reconnect. The rover glyph remains an illustrative camera-position marker, not a calibrated chassis pose.
 
+## Click-to-approach and panning
+
+In Navigate mode a 3D click drives toward the first measured thing under the cursor (`src/goalPick.ts`): the nearest live point within a few centimetres of the click ray (0.04 m, growing 0.012 m per metre of range, up to 30 m), else where the ray meets the floor. A stored object box takes the click at its own hit point. The nearest R3F hit stops propagation, so one click sends one goal; an invisible backdrop sphere catches walls clicked above the horizon. Every Navigate click, 2D map included, sends `/goal` with `approach: true`, and the backend follows a reachable stand-off near an occupied or unknown target (see `backend/README.md`, Navigation); the drawn path ends at that stand-off. Distant points are sparse, so a far click can miss the object and land on the floor behind it. Outside Navigate mode no pick handler is attached.
+
+Left-drag pan speed scales as 12 m / camera-to-target distance (clamped 0.3..6, `src/cameraPan.ts`), so a drag moves about the same world distance at any zoom. Rotate, zoom and button mapping are unchanged.
+
 ## Stored object labels
 
 The 3D view applies a display-only evidence policy (`src/objectDisplay.ts`) to stored objects. An object is drawn when it was seen in at least 2 frames with confidence of at least 50%. A `person` below that bar is still drawn as `Person?` with a dashed border, so a person seen once stays discoverable. Other low-evidence objects are hidden in 3D, and the Scene settings count says how many. **Scene layers → Low-evidence objects** draws them all, and a selected object is always drawn. Spatial memory lists every stored object with its confidence, frame count and evidence note. The backend, `/objects` and voice grounding are unchanged: hiding a detection does not make it false, and showing one does not make it right.

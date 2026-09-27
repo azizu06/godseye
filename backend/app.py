@@ -96,6 +96,7 @@ class ExploreResume(Input):
 class Goal(Input):
     x: float
     z: float
+    approach: bool = False  # clicked a thing: drive to a reachable stand-off near it
 
 
 class Ask(Input):
@@ -1314,16 +1315,22 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/goal')
     async def goal(body: Goal):
-        return await begin_goal(body.x, body.z)
+        return await begin_goal(body.x, body.z, approach=body.approach)
 
-    async def begin_goal(x, z):
-        """/goal's plan-and-follow path, shared by confirmed voice proposals."""
+    async def begin_goal(x, z, approach=False):
+        """/goal's plan-and-follow path, shared by confirmed voice proposals.
+
+        ``approach`` accepts an occupied or unknown clicked target and follows the planner's
+        nearest reachable stand-off instead (``plan_approach``); the response then reports
+        the followed ``goal`` and the clicked ``target``.
+        """
         # No disarmed preview: a drawn path must mean the rover is about to follow it.
         if not app.state.armed or app.state.mode != 'navigate':
             raise HTTPException(409, 'Arm in navigate mode before choosing a goal')
         session = app.state.session
         generation = app.state.motion.generation  # before the await: a stop and re-arm meanwhile must not revive it
-        result = await app.state.nav.plan_once((x, z))
+        result = await (app.state.nav.plan_once((x, z), approach=True) if approach
+                        else app.state.nav.plan_once((x, z)))
         if (not app.state.armed or app.state.mode != 'navigate' or app.state.session != session
                 or app.state.motion.generation != generation):
             raise HTTPException(409, 'Stopped while planning')
@@ -1334,8 +1341,12 @@ def create_app(db_path: str | None = None, build_points=None,
             reason = PLAN_STOP_REASONS.get(result.reason, result.reason)
             nav_stop(reason)
             raise HTTPException(409, reason)
-        app.state.nav.start_goal((x, z), result, generation)
-        return dict(version=1, goal=[x, z], points=result.points)
+        if not approach:
+            app.state.nav.start_goal((x, z), result, generation)
+            return dict(version=1, goal=[x, z], points=result.points)
+        goal = [float(v) for v in result.points[-1]]
+        app.state.nav.start_goal(tuple(goal), result, generation)
+        return dict(version=1, goal=goal, target=[x, z], points=result.points)
 
     def execution(kind):
         """Why a proposal cannot be confirmed now: a health hazard, or no deliberate arm for a destination

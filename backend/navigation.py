@@ -413,6 +413,68 @@ def plan_path(grid: Grid, start_xz, goal_xz, config: PlannerConfig = PlannerConf
     return PlanResult(_densify(corners, config.waypoint_spacing_m), None, expansions)
 
 
+APPROACH_RADIUS_M = 1.5  # an approach stand-off never lands farther than this from the clicked thing
+APPROACH_ATTEMPTS = 8  # bounded plan attempts before the original refusal stands
+APPROACH_FAR_SIDE_M = .5  # cost added to a stand-off directly behind the target, as seen from the rover
+
+
+def plan_approach(grid: Grid, start_xz, target_xz, config: PlannerConfig = PlannerConfig(),
+                  radius_m: float = APPROACH_RADIUS_M) -> PlanResult:
+    """Plan to a clicked thing: the target itself when the planner accepts it, else a stand-off.
+
+    When the target cell is occupied, unknown or inside the inflation band, candidates are
+    the planner's own traversable cells within ``radius_m`` of the target, ordered by
+    distance to the target plus a penalty for lying behind it along the rover-to-target
+    line. Each candidate is planned with the unchanged ``plan_path``, so a stand-off is only
+    ever a goal the planner itself accepts. The result's last waypoint is the stand-off; if
+    no candidate plans, the target's original refusal is returned.
+    """
+    direct = plan_path(grid, start_xz, target_xz, config)
+    if direct.ok or direct.reason not in ('goal_occupied', 'goal_unknown'):
+        return direct
+    sx, sz = (float(v) for v in start_xz)
+    tx, tz = (float(v) for v in target_xz)
+    fitted = _fit(grid, [(sx, sz), (tx, tz)], config)
+    if fitted is None:
+        return direct
+    mask = traversable_mask(fitted, config)
+    row, col = fitted.world_to_cell(tx, tz)
+    r = int(math.ceil(radius_m / fitted.cell_m))
+    r0, r1 = max(row - r, 0), min(row + r + 1, fitted.height)
+    c0, c1 = max(col - r, 0), min(col + r + 1, fitted.width)
+    rows, cols = np.nonzero(mask[r0:r1, c0:c1])
+    if rows.size == 0:
+        return direct
+    cx = fitted.origin[0] + (cols + c0 + .5) * fitted.cell_m
+    cz = fitted.origin[1] + (rows + r0 + .5) * fitted.cell_m
+    distance = np.hypot(cx - tx, cz - tz)
+    keep = distance <= radius_m
+    cx, cz, distance = cx[keep], cz[keep], distance[keep]
+    away = math.hypot(sx - tx, sz - tz)
+    if away > 1e-9:
+        # cos of the angle between target->candidate and target->rover: 1 on the rover's side.
+        facing = ((cx - tx) * (sx - tx) + (cz - tz) * (sz - tz)) / (np.maximum(distance, 1e-9) * away)
+    else:
+        facing = np.ones_like(distance)
+    cost = distance + APPROACH_FAR_SIDE_M * (1. - facing) / 2.
+    order = np.lexsort((np.hypot(cx - sx, cz - sz), cost))
+    failed: list[tuple[float, float]] = []
+    attempts = 0
+    for i in order:
+        point = (float(cx[i]), float(cz[i]))
+        # Neighbors of an unreachable stand-off are almost always unreachable too.
+        if any(math.hypot(point[0] - fx, point[1] - fz) < .3 for fx, fz in failed):
+            continue
+        if attempts >= APPROACH_ATTEMPTS:
+            break
+        attempts += 1
+        result = plan_path(grid, (sx, sz), point, config)
+        if result.ok:
+            return result
+        failed.append(point)
+    return direct
+
+
 def path_blocked(grid: Grid, points, config: PlannerConfig = PlannerConfig(), start_index: int = 0) -> bool:
     """True when any remaining leg of ``points`` (from ``start_index``) now crosses a cell
     within radius + margin of an occupied cell, or unknown/off-map space the config forbids.
