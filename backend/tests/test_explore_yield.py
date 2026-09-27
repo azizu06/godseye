@@ -30,7 +30,7 @@ def running_explore():
             state.db.execute('INSERT INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)', ('TEST', 1, 0))
             state.db.commit()
             state.phone = object()
-            state.pose = SimpleNamespace(tracking='normal', transform=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,1.,1.,1.,1.])
+            state.pose = SimpleNamespace(tracking='normal', t_capture=1., frame_id=1, transform=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,1.,1.,1.,1.])
             state.pose_at = state.detected_at = time.monotonic()
             grid = FakeOccupancy(np.ones((80, 80), np.uint8))
             state.occupancy = SimpleNamespace(session=state.session, map_snapshot=grid.snapshot)

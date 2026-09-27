@@ -50,6 +50,54 @@ int main() {
     assert(motor["D2"].as<int>() == (left ? 90 : 180));
     assert(b.next(1006, out) && command(out) == 100); // ESP brakes untimed Uno arc.
   }
+  struct ArcPower { int direction, outer, inner, first, second; };
+  for (const ArcPower sample : {ArcPower{5, 180, 160, 180, 160}, {6, 180, 160, 160, 180},
+                               {5, 180, 90, 180, 90}, {6, 180, 180, 180, 180},
+                               {5, 179, 89, 179, 89}, {6, 1, 0, 0, 1}}) {
+    BridgeCore b; arm(b);
+    char input[192];
+    snprintf(input, sizeof(input),
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":%d,\"D2\":%d,\"D3\":%d,\"T\":1500}",
+      sample.direction, sample.outer, sample.inner);
+    // The optional wheel value must also survive default-MTU fragmentation.
+    for (size_t i = 0; i < strlen(input); i += 20)
+      b.feed(reinterpret_cast<const uint8_t*>(input + i), strlen(input) - i < 20 ? strlen(input) - i : 20, 5 + i / 20);
+    assert(b.next(20, out) && command(out) == 4);
+    StaticJsonDocument<256> motor;
+    assert(!deserializeJson(motor, out.bytes));
+    assert(motor["D1"].as<int>() == sample.first);
+    assert(motor["D2"].as<int>() == sample.second);
+    assert(!motor.containsKey("D3") && !motor.containsKey("T"));
+    assert(b.next(1020, out) && command(out) == 100);
+  }
+  struct InvalidArcPower { int direction, outer; const char* inner; };
+  for (const InvalidArcPower sample : {
+      InvalidArcPower{5, 180, "null"}, {5, 180, "true"}, {5, 180, "false"},
+      {5, 180, "90.0"}, {5, 180, "9e1"}, {5, 180, "90.5"}, {5, 180, "\"90\""},
+      {5, 180, "[]"}, {5, 180, "89"}, {5, 180, "181"}, {5, 180, "-1"},
+      {0, 0, "0"}, {1, 180, "160"}, {2, 180, "160"}, {3, 180, "160"}, {4, 180, "160"}}) {
+    BridgeCore b; arm(b);
+    char input[192];
+    snprintf(input, sizeof(input),
+      "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":%d,\"D2\":%d,\"D3\":%s,\"T\":1500}",
+      sample.direction, sample.outer, sample.inner);
+    feed(b, input, 5);
+    assert(b.next(6, out) && command(out) == 100);
+    assert(strcmp(out.notification, "{X}") == 0);
+  }
+  for (const char* input : {
+      "{\"N\":201,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000001\",\"D3\":160}",
+      "{\"N\":2,\"H\":\"M\",\"D1\":3,\"D2\":40,\"D3\":30,\"T\":200}",
+      "{\"N\":22,\"H\":\"Q\",\"D1\":1,\"D3\":160}",
+      "{\"N\":100,\"H\":\"S\",\"D3\":160}"}) {
+    BridgeCore b;
+    b.session(true);
+    assert(b.next(0, out) && command(out) == 100);
+    assert(b.issuePermit(1, 1));
+    feed(b, input, 2);
+    assert(b.next(3, out) && command(out) == 100);
+    assert(!out.notification[0]); // D3 is reserved for autonomous forward arcs.
+  }
   {
     BridgeCore b; arm(b);
     // The longer autonomy message also works at ATT MTU 23.

@@ -213,6 +213,7 @@ test("failed Arm response reasserts Stop after the backend applied it", async ({
     .getByRole("button", { name: "Connect source", exact: true })
     .click();
   await closeWorkspace(page);
+  await panel(page, "Rover controls");
   await page.getByRole("button", { name: "Arm rover", exact: true }).click();
   await expect.poll(() => stops).toBe(1);
   expect(armed).toBe(false);

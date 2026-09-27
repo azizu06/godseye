@@ -47,6 +47,14 @@ all-null geometry/actuation profiles. Run without `--init` to serve the opt-in p
 relay; pass `--weights /absolute/path/to/yolo11n.pt` for the detector. Unknown
 measurements prevent driving. See [autonomy setup](../docs/AUTONOMY.md).
 
+The rover launcher loads server settings from the repository-root `.env` before
+creating the app, including the [voice provider settings](../backend/VOICE.md#live-configuration).
+Keep that gitignored file private (`chmod 600 .env`); provider keys belong only on
+the backend. `--env-file /path/to/settings.env` selects another file. Existing
+process environment values take precedence; `--weights` also overrides
+`GODSEYE_YOLO_WEIGHTS` from either source. A missing file is optional, and `--init`
+only creates local pairing/calibration files without loading provider settings.
+
 `python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy`
 checks the real ESP/Uno with Stop, sensor queries, an arm barrier and idle zeros;
 it sends no nonzero motor command. Disconnect the phone's BLE connection first.
@@ -95,3 +103,28 @@ $HOME/.venvs/godseye/bin/python -m unittest discover -s tools/tests -v
 For an explicitly requested uncalibrated rover test, `run_rover_backend --prototype`
 requires `--estimated-length-m` and `--estimated-width-m` with no dimension defaults.
 See [prototype limits and setup](../docs/AUTONOMY.md#uncalibrated-prototype-option).
+
+## Scout driving benchmark
+
+```sh
+$HOME/.venvs/godseye/bin/python -m tools.scout_benchmark --output-dir /tmp/scout-after
+$HOME/.venvs/godseye/bin/python -m tools.scout_benchmark --revision 94d64f9 --output-dir /tmp/scout-before
+$HOME/.venvs/godseye/bin/python -m unittest tools.tests.test_scout_benchmark -v
+```
+
+The benchmark uses the real live planner settings, path follower, replanning and
+prototype packet conversion against deterministic invented differential-drive
+response. It covers an off-center corridor, obstacle detour, right-angle corridor
+and close goal. `benchmark.json` records source hashes, fixture dimensions,
+response assumptions, metrics and complete traces. Open `replay.html` for
+playback, scrubbing, route overlays and command inspection. Everything is labeled
+synthetic; it opens no hardware connections and is not a video of the rover.
+
+Use `--synthetic-wheel-speed-mps` and `--synthetic-track-width-m` to test different synthetic responses,
+`--response-mode ideal` to compare an ideal velocity follower, and `--scenario`
+to select a case. The actual async Navigator and changing-map behavior are
+covered separately by `backend.tests.test_scout_navigation`,
+`backend.tests.test_navigator`, and `backend.tests.test_flowing_detour`; the last
+introduces a hallway obstacle after driving starts and checks early steering,
+continued translation and nominal cruise through the pass. This benchmark does not emulate network timing
+or raw sensor reconstruction.

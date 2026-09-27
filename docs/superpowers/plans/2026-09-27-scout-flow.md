@@ -1,0 +1,89 @@
+# Scout Flow Implementation Plan
+
+> **For agentic workers:** Use executing-plans; independent protocol and mission work may be delegated through dispatching-parallel-agents.
+
+**Goal:** Early flowing obstacle detours and persistent explicitly selected Explore.
+
+**Architecture:** Optional inner-wheel PWM in the existing autonomy relay, with
+legacy arc fallback. Explore intent remains separate from temporary motor readiness.
+
+**Tech Stack:** Python, Swift, Arduino C++.
+
+**Spec:** `docs/superpowers/specs/2026-09-27-scout-flow-design.md`
+
+## Global Constraints
+
+- No invented physical calibration; prototype policy only.
+- Frozen sensor wire unchanged; magnitude, permit, session and Stop validation retained.
+- Use existing worktree; preserve concurrent main changes.
+
+## Review Focus
+
+- Missing optional wheel power retains legacy behavior.
+- Null, boolean, out-of-range and wrong-direction wheel power is refused.
+- Replay/disconnect still stops physical movement.
+- Explicit admin cancellation wins over a pending recovery.
+- Synthetic result claims never imply a physical driving test.
+
+## Tasks
+
+1. Wire: tests first for Swift optional `inner_power` -> ESP `D3`, legacy omission,
+   invalid types and range; implement in AutonomyWire and BridgeCore, run Swift,
+   host sanitizer tests and firmware build. Document protocol.
+2. Backend: add `TimedMotorCommand.inner_power: int | None = None`; relay includes
+   it only when supplied. Prototype computes continuous differential at unchanged
+   outer PWM. Test gentle steering, bounded power, relay serialization, and run
+   real packet-driven detour with fewer than 20 steering switches, yaw steps
+   below 0.1 rad/s in the nominal synthetic response, no pivots or
+   pre-goal slowdowns. Update benchmark model and report format compatibly.
+3. Mission: reproduce navigation endings that lose Explore; fix recovery with
+   bounded retries and cancellation precedence. Run lifecycle regressions and
+   complete backend suite.
+4. Review all changes, fix findings, run integrated suites, record evidence,
+   merge into main preserving concurrent work. Build/install matching phone and
+   firmware while devices are connected; verify results explicitly.
+
+## Execution evidence
+
+- Baseline regression: gentle commands discarded, missing inner-wheel field,
+  and 51 direction switches; tests failed before implementation.
+- Ruling: direction-category counts include harmless one-PWM changes around
+  straight. Test actual yaw-step magnitude (<0.1 rad/s) and total variation
+  (<2 rad/s) as the primary smoothness checks; retain <20 coarse switches.
+  Baseline maximum jump 0.536, total 26.33; first new run 0.0655 and 0.899.
+- Protocol/profile/mission backend committed as `a67c346` after independent
+  review. Initial full backend run: 474 passed; the two additional mission
+  cases also passed in the seven-test lifecycle suite. Tools: 25 passed.
+  Swift: 34 passed; actual Swift relay loopback: five scenarios passed;
+  firmware: four sanitizer suites passed and ESP32-S3 build succeeded.
+- ESP32-S3 `dc:b4:d9:27:22:d0` application updated at `0x10000`; both the
+  write hash and independent esptool verify-flash digest matched, followed by
+  hard reset. Replaced region backed up locally; original full backup retained.
+- The running server used the separate scan checkout. Ruling: merge its
+  committed `21f4218` mesh work into this branch (`d5f66a1`) and preserve its
+  database/capture paths on restart; leave its unfinished mesh-cache edits
+  untouched. Integrated Swift v1/v2/v3 sensor and full-capture contract passed.
+- Review found telemetry reconnect and delayed startup cleanup could cancel
+  requested Explore in the dashboard. These need explicit cancellation and
+  operation ownership, separately from connection freshness.
+- The scan work completed `db2822f` while integration was running; merged it as
+  `1246c06`. This retains current mesh in coalesced phone frames and corrects
+  an existing map test's stale-pose timing assumption. Final combined backend
+  suite: **482 passed**. Swift: **35 passed**, including real v1/v2/v3 sensor
+  and full-capture fixtures through both Python decoders. Signed iPhone build
+  succeeded and the combined app was installed on `The Batman`.
+- Hardware-free car smoke passed: real socket mapping and calibrated FakeCar
+  goal/refusal/reconnect rehearsal. No physical motor command was sent.
+- Independent dashboard regressions now pass for telemetry reconnect during
+  startup and an old Arm response arriving after a newer Arm. Explicit admin
+  cancellation remains authoritative.
+- Final dashboard verification: seven persistent Explore browser cases and
+  two legacy Arm/Stop/source cases passed on isolated ports. All 257 unit
+  tests passed with `--maxWorkers=1`; the unchanged throughput assertions had
+  exceeded their existing five-second limits under simultaneous test load.
+  Production build and formatting passed (existing bundle-size warning).
+- Integrated main at `0631368`, verified the final phone installation, and
+  restarted the live prototype backend from main. Existing database and capture
+  paths remain in the scan checkout and are still in use; do not archive it
+  while those data paths are needed. Live API startup and updated dashboard
+  module were checked. All implementation and deployment tasks are complete.

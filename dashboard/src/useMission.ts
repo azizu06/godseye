@@ -124,6 +124,8 @@ export function useMission() {
   const manual = useRef<ManualController | null>(null);
   const generation = useRef(0);
   const stopEpoch = useRef(0);
+  const exploreCancelEpoch = useRef(0);
+  const armOwners = useRef(new Map<string, object>());
   const stopLatchRef = useRef(true);
   const controlEpoch = useRef(0);
   const armSetupPending = useRef(false);
@@ -190,6 +192,7 @@ export function useMission() {
   }, [notice]);
   useEffect(() => {
     const gen = ++generation.current;
+    armSetupPending.current = false;
     cancelControl();
     controlBusy.current = null;
     activeMap.current = null;
@@ -301,6 +304,7 @@ export function useMission() {
     // REST permission changes revoke in-flight control authority without closing
     // the telemetry connection or erasing a scan from the same source/map.
     stopEpoch.current++;
+    exploreCancelEpoch.current++;
     latchStop(true);
     cancelControl();
   }, [config.commands, cancelControl, latchStop]);
@@ -506,9 +510,40 @@ export function useMission() {
       if (path === "/arm") armSetupPending.current = true;
       const gen = generation.current;
       if (["/stop", "/mode", "/session"].includes(path)) latchStop(true);
-      if (["/stop", "/mode", "/session"].includes(path)) stopEpoch.current++;
+      if (["/stop", "/mode", "/session"].includes(path)) {
+        stopEpoch.current++;
+        exploreCancelEpoch.current++;
+      }
       if (path === "/stop") setPending(null);
       const commandEpoch = stopEpoch.current;
+      const exploreEpoch = exploreCancelEpoch.current;
+      const endpoint = config.apiUrl.replace(/\/$/, "");
+      const armOwner = path === "/arm" ? {} : null;
+      if (armOwner) armOwners.current.set(endpoint, armOwner);
+      const supersededArm = () =>
+        armOwner !== null && armOwners.current.get(endpoint) !== armOwner;
+      const exploreStillRequested = () =>
+        gen === generation.current &&
+        exploreEpoch === exploreCancelEpoch.current;
+      const knownExploreRequest =
+        !standard &&
+        autonomy?.adapter === "iphone" &&
+        autonomy.profile === "prototype" &&
+        (autonomy.auto_requested === true ||
+          mission.health?.mode === "explore" ||
+          (config.serverPaired && mission.health?.mode === "manual"));
+      // A retired source still needs its own cleanup, without changing the
+      // current source's UI state. A newer arm on that endpoint supersedes it.
+      const stopThisArm = () =>
+        gen === generation.current
+          ? send("/stop")
+          : sendCommand(
+              config.apiUrl,
+              "/stop",
+              undefined,
+              undefined,
+              config.roverKey,
+            );
       const requestMap = activeMap.current;
       if (path !== "/stop") setPending(path);
       try {
@@ -546,11 +581,15 @@ export function useMission() {
             `Baseline saved for ${ack.baseline_objects} objects. Watching new observations.`,
           );
         }
+        if (path === "/arm" && supersededArm()) return false;
         if (
           path === "/arm" &&
-          (gen !== generation.current || commandEpoch !== stopEpoch.current)
+          (gen !== generation.current ||
+            (knownExploreRequest
+              ? !exploreStillRequested()
+              : commandEpoch !== stopEpoch.current))
         ) {
-          await send("/stop");
+          await stopThisArm();
           return false;
         }
         if (gen !== generation.current) return false;
@@ -560,11 +599,54 @@ export function useMission() {
       } catch (e) {
         let message = e instanceof Error ? e.message : "Command failed.";
         if (path === "/arm") {
+          if (supersededArm()) return false;
           if (gen === generation.current) latchStop(true);
+          // A prototype Explore request can remain selected while its motors
+          // wait for readiness. Confirm that intent on this request's backend
+          // before cleanup; a later Stop, source change or mode choice wins.
+          if (!standard && config.commands && exploreStillRequested()) {
+            try {
+              const response = await fetch(
+                `${config.apiUrl.replace(/\/$/, "")}/autonomy`,
+                {
+                  cache: "no-store",
+                  signal: AbortSignal.timeout(1500),
+                },
+              );
+              if (!response.ok) throw Error("Explore status unavailable");
+              const status = await response.json();
+              if (
+                status.version === 1 &&
+                status.adapter === "iphone" &&
+                status.profile === "prototype" &&
+                status.mode === "explore" &&
+                status.auto_requested === true &&
+                exploreStillRequested() &&
+                !supersededArm()
+              ) {
+                notify(
+                  "Explore is still on. Waiting for the phone, rover, and map to recover.",
+                );
+                return true;
+              }
+            } catch {
+              if (
+                knownExploreRequest &&
+                exploreStillRequested() &&
+                !supersededArm()
+              ) {
+                notify(
+                  "Explore request is waiting for confirmation. Use Stop to cancel.",
+                );
+                return true;
+              }
+            }
+          }
+          if (supersededArm()) return false;
           // An error response does not prove the backend never applied Arm.
           // Use this operation's captured endpoint even after a source change.
           try {
-            await send("/stop");
+            await stopThisArm();
           } catch {
             message += " Stop could not be confirmed.";
           }
@@ -572,11 +654,26 @@ export function useMission() {
         if (gen === generation.current) notify(message);
         return false;
       } finally {
-        if (path === "/arm") armSetupPending.current = false;
-        if (gen === generation.current && path !== "/stop") setPending(null);
+        if (gen === generation.current && !supersededArm()) {
+          if (path === "/arm") armSetupPending.current = false;
+          if (path !== "/stop") setPending(null);
+        }
+        if (armOwner && !supersededArm()) armOwners.current.delete(endpoint);
       }
     },
-    [send, notify, config.source, cancelControl, latchStop],
+    [
+      send,
+      notify,
+      config.source,
+      config.apiUrl,
+      config.commands,
+      config.serverPaired,
+      config.roverKey,
+      autonomy,
+      mission.health?.mode,
+      cancelControl,
+      latchStop,
+    ],
   );
   const handoff = useCallback(
     async (

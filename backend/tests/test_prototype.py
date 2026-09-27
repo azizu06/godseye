@@ -127,12 +127,44 @@ class PrototypeTests(unittest.TestCase):
         for v, w in [(-.01, 0.), (.21, 0.), (0., .51), (math.nan, 0.)]:
             with self.assertRaises(ValueError): profile.command(v, w)
 
-    def test_open_straight_cruise_has_more_power_than_slow_approach_or_pivot(self):
-        profile = PrototypeActuation()
-        self.assertEqual(profile.command(.05, 0.).pwm, 60)
+    def test_forward_power_changes_gradually_across_the_requested_speed_range(self):
+        profile = PrototypeActuation(variable_arc_pwm=True)
+        powers = [profile.command(speed / 1000, 0.).pwm for speed in range(50, 201)]
+        self.assertEqual((powers[0], powers[100], powers[-1]), (60, 140, 180))
+        self.assertTrue(all(0 <= after - before <= 1 for before, after in zip(powers, powers[1:])))
+        self.assertEqual(profile.command(.001, 0.).pwm, 60)
+
+    def test_gentle_steering_reaches_wheels_without_a_fixed_sharp_arc(self):
+        profile = PrototypeActuation(variable_arc_pwm=True)
+        for yaw, inner in ((.05, 171), (.1, 162), (.3, 126), (.5, 90)):
+            for sign, direction in ((1, 5), (-1, 6)):
+                with self.subTest(yaw=sign * yaw):
+                    command = profile.command(.2, sign * yaw)
+                    self.assertEqual(command.direction, direction)
+                    self.assertEqual(command.pwm, 180)
+                    self.assertEqual(command.inner_power, inner)
+        straight = profile.command(.2, 0.)
+        self.assertEqual(straight.direction, 3)
+        self.assertIsNone(straight.inner_power)
+        self.assertIsNone(profile.command(0., .5).inner_power)
+
+    def test_steering_threshold_does_not_raise_power_during_slow_approach(self):
+        profile = PrototypeActuation(variable_arc_pwm=True)
+        for speed in (.05, .075, .1, .15, .18, .2):
+            straight = profile.command(speed, 0.)
+            for yaw in (-.5, -.15, -.149, .149, .15, .5):
+                with self.subTest(speed=speed, yaw=yaw):
+                    self.assertEqual(profile.command(speed, yaw).pwm, straight.pwm)
         self.assertEqual(profile.command(0., .5).pwm, 60)
-        self.assertEqual(profile.command(.15, 0.).pwm, 60)
-        self.assertEqual(profile.command(.2, 0.).pwm, 180)
+        self.assertEqual(profile.command(0., -.5).pwm, 60)
+
+    def test_open_path_follower_requests_full_cruise_without_slowing_for_heading_noise(self):
+        profile = PrototypeActuation(variable_arc_pwm=True)
+        for yaw in (-.05, 0., .05):
+            follower = PurePursuit([(0., 0.), (0., 3.)], profile.follower())
+            command = follower.step(0., .5, yaw)
+            self.assertEqual(command.v_mps, .2)
+            self.assertEqual(profile.command(command.v_mps, command.yaw_rate_rps).pwm, 180)
 
     def test_small_heading_noise_follows_with_a_moving_turn(self):
         path = [(0., 0.), (0., 3.)]

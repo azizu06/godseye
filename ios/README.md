@@ -10,7 +10,7 @@ One `ARSession` owns the rear camera. Images, calibration, depth, confidence, an
 
 The laptop receives native camera images, lossless color planes, raw and smoothed depth/confidence, feature points, scene meshes/planes, optional people masks/body landmarks, exposure/lighting/calibration, and high-resolution stills. It also receives timestamped raw and fused motion, pressure/altitude, location/heading with accuracy, and device/permission status.
 
-See [the full capture contract](../docs/CAPTURE.md) for the complete inventory, units, rates, availability, binary format and recording limits. The live stream uses v1 frames, or a backwards-compatible v2 frame when ARKit has a classified floor anchor; the separate full-sensor v2 upload remains visible at `http://<laptop IP>:8765/capture`. **Upload full sensor data** turns that bulk upload off without stopping the live stream.
+See [the full capture contract](../docs/CAPTURE.md) for the complete inventory, units, rates, availability, binary format and recording limits. The live stream uses v1 frames, v2 frames with classified floor anchors, and v3 frames that repeat a compact current ARKit mesh snapshot resampled about once per second. The separate full-sensor v2 upload remains visible at `http://<laptop IP>:8765/capture`. **Upload full sensor data** turns that bulk upload off without stopping the live stream.
 
 Rates are targets, not guaranteed throughput. The app requests both raw and smoothed depth when the combined semantics are supported. "Raw" here means ARKit's unsmoothed scene depth, not access to the LiDAR's underlying laser returns. Confidence is preserved so mapping can reject weak depth measurements. ARKit exposes the camera stream selected by its world-tracking configuration; this app does not claim simultaneous capture from every iPhone lens.
 
@@ -54,7 +54,7 @@ Live RGB-D targets 30 Hz by default, with a dedicated high-priority encoder sepa
 
 Full upload uses one request plus one pending packet per kind, with a weighted frame/telemetry/frame/geometry/frame/still schedule. It prioritizes frames without starving other sensor kinds and exposes replacement/failure counts. Raw motion is sampled at a target 100 Hz and batched at 5 Hz. At serious thermal load, full frame upload and recordings fall to 1 Hz, geometry to 0.5 Hz, and live bundles are capped at 15 Hz (never above the selected rate). Critical temperature stops capture. These policies need sustained testing on the actual mounted phone. Local mesh recording and high-resolution photos can reduce achieved sample rates.
 
-The [wire interface](../docs/INTERFACES.md) retains v1 pose/hello and accepts optional v2 floor-frame evidence. Other full sensor data uses HTTP `/capture/ingest` and does not refresh drive health. The backend also publishes v1 live map points and object memory as documented in its README. Its default drive adapter remains logging-only. The iPhone's separate [ELEGOO manual remote](ROVER.md) can send hardware commands only after a verified Uno reply and explicit user enablement.
+The [wire interface](../docs/INTERFACES.md) retains v1 pose/hello and accepts optional v2 floor and v3 mesh frame evidence. Other full sensor data uses HTTP `/capture/ingest` and does not refresh drive health. The backend also publishes v1 live map points and object memory as documented in its README. Its default drive adapter remains logging-only. The iPhone's separate [ELEGOO manual remote](ROVER.md) can send hardware commands only after a verified Uno reply and explicit user enablement.
 
 ## Validation
 

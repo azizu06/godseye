@@ -94,8 +94,16 @@ after three seconds, and no drive command uses a stale permit.
 becomes the bounded stock `N=2` packet for directions 1–4, or a restricted stock
 `N=4` differential-speed forward arc for direction 5 (left) or 6 (right), only
 when the session, sequence and permit are valid again at UART dispatch. Arcs run
-the two forward motors at full/half PWM and rely on the ESP's 1 s command-loss
-Stop because stock `N=4` has no Uno timer. `D1=0,D2=0` is an idle zero in the live session.
+the two forward motors at full/half PWM when `D3` is omitted. An optional integer
+`D3=<inner PWM>` selects a gentler arc, with `D2 // 2 <= D3 <= D2`; `D2` remains
+the outer-wheel PWM. Direction 5 produces stock `N=4,D1=<outer>,D2=<inner>`;
+direction 6 produces `N=4,D1=<inner>,D2=<outer>`. The phone's autonomous command
+WebSocket accepts this as optional `inner_power` and forwards it as `D3`. Both
+phone and ESP reject null, booleans, floats, out-of-range values, and inner power
+on non-arc commands. Omission preserves the legacy half/full behavior. This
+extension does not change the frozen sensor wire, session rules or magnitude
+limits. All arcs rely on the ESP's 1 s command-loss Stop because stock `N=4`
+has no Uno timer. `D1=0,D2=0` is an idle zero in the live session.
 The legacy `N=100` Stop always retires it. After the UART Stop handoff,
 `{Z<request H>}` acknowledges that specific Stop; use a unique request ID for an
 arm barrier. `{X}` reports malformed input or a retired session. Manual movement while an autonomous session is
@@ -264,29 +272,43 @@ Actual motor speed, yaw sign and stopping distance remain unverified. This is on
 for supervised tests in open space, not a claim of accurate autonomous driving.
 
 The prototype pose/map follower chooses forward or moving left/right arcs, reserving
-a pivot for turns above about 69°. In an open room, Explore favors reachable
-frontiers with more unmapped area nearby, then covers the remaining frontiers
-until the mapped room has none. When both hallway walls are observed, it first
-moves toward their center and follows the far end. A straight path with at least 1 m of
-clear route ahead can request up to the prototype's 0.2 m/s nominal command.
-Nearby obstacles, unknown floor, lower accepted depth confidence and aging evidence
-reduce this request while preserving the nominal turn curvature. Forward and arc
-power varies from PWM 60 toward 180 as nominal speed rises from 0.15 to 0.2;
-pivots and slower requests use 60. `--prototype-max-pwm` (1–180, default 180) caps
-**every** direction, including arcs and pivots. This is a power preference, not a
-measured speed curve or stopping-distance model. Stock manual control remains
-capped at 80. The phone app and ESP firmware must both
+an initial pivot for turns above about 69°. Once pivoting it finishes alignment to
+within about 11° before moving; replanning preserves that state. At a tight
+inside corner, a rejected pursuit step switches to a nearer route point and
+aligns before advancing, instead of repeatedly recomputing the same unusable arc. In an open room,
+Explore favors reachable frontiers with more unmapped area nearby and remembers
+reached regions, then covers remaining frontiers. When both hallway walls are
+observed, it first moves toward their center and follows the far end.
+The follower cruises at a **nominal** 0.20 m/s. Forward and arc PWM interpolate
+continuously from 60 at 0.05 m/s to 180 at 0.20 m/s, with 140 at 0.15 m/s;
+steering at the same requested speed no longer jumps from 60 to 180. The bridge
+keeps that outer-wheel PWM and receives optional inner-wheel PWM for gradual arcs.
+The prototype rounds `outer PWM * (1 - abs(requested yaw rate))` to an integer,
+with requested yaw bounded to 0.5 rad/s; a 0.5 request uses half power and smaller
+requests use less differential. A request that rounds both wheel powers equal
+uses straight motion. This is an uncalibrated duty policy; actual turning radius
+is unmeasured. Older arc packets without inner power retain their half/full split.
+Approaches slow with distance and pivots retain PWM 60. The
+autonomous phone/ESP command path permits up to PWM 180; stock manual control
+remains capped at 80. This is three times the former prototype duty setting,
+not a measured threefold travel speed. The phone app and ESP firmware must both
 be updated before using it. The occupancy planning window follows the rover
 through consecutive hallways rather than ending at 10 m from the AR origin;
 Explore holds a reachable forward destination across minor map updates and
 extends that destination as fresh depth reveals more hallway, avoiding a stop at
 each old frontier. It checks its route for new obstacles between full replans
-every four seconds, or sooner when the destination is near or blocked. Medium-or-high-confidence depth can clear a departed
+every four seconds, or sooner when the destination is near or blocked. An
+independent map-check worker continues during planning, and a new obstacle
+requests a detour without discarding the clear part of the current route.
+Routes prefer additional clearance where space permits, including through
+shortcutting, to leave room for steering around obstacle corners. Medium-or-high-confidence depth can clear a departed
 obstacle after two distinct views see through its former footprint.
-If a wall newly overlaps only the prototype's extra six-inch clearance around
-the camera point, Explore may snap a route toward nearby clear space and continue
-only while each step maintains or increases obstacle clearance. An obstacle
-inside the estimated chassis footprint still blocks this recovery.
+If the prototype starts inside obstacle clearance (including retained mesh of
+its own body behind a front-mounted phone), Explore may snap a route toward
+nearby clear space and move outward. Its camera cell must be unoccupied. Each
+sampled step must preserve or increase distance to every overlapping obstacle
+and enter no new obstacle clearance region. Geometry is retained, not cleared
+or labeled as the rover. Measured mode is unchanged.
 The prototype never invents reverse motion or synthetic speed curves. Commands
 update continuously with no added pauses or run duration limit. Each command
 uses the firmware's 1 s command-loss brake; straight and pivot commands also
@@ -302,6 +324,13 @@ provenance, unchanged measured gates, API readiness, command bounds and continuo
 Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
+The prototype ignores unclassified ARKit mesh voxels within the estimated chassis
+and clearance envelope **behind** the forward-facing camera. It also excludes
+nearby mesh outside the current camera image: ARKit can retain a departed person's
+mesh anchor beside the rover after current depth sees open space. Current RGB-D,
+visible forward mesh, and farther room mesh remain in navigation occupancy.
+For a visible mesh voxel, two distinct confident depth views that see through
+its former location also remove it from the current navigation snapshot.
 Navigation acceptance is independent of display extraction: at least 16 valid
 medium-or-high-confidence depth samples can update prototype occupancy with an
 empty display cloud. Sparse accepted geometry still needs a valid floor and the
@@ -324,6 +353,68 @@ Bluetooth and laptop-control setup via `/device/action`, then checks current
 readiness and completes the normal arm barrier. This uses the installed phone
 protocol and does not require a new phone build. Stop cancels pending startup;
 setup never continues to arming after that cancellation.
+
+## Reproducible driving benchmark
+
+`python -m tools.scout_benchmark --output-dir /tmp/scout-after` closes the loop
+through the real planner, follower and prototype motor-packet mapping.
+`--revision 94d64f9` reproduces the pre-overhaul stack against identical synthetic
+wheel response. JSON metrics include completion, collisions, time, distance and
+steering switches; `replay.html` shows route and motion with playback/scrubbing.
+See [tools/README.md](../tools/README.md#scout-driving-benchmark). These fixtures
+are invented, explicitly labeled simulation, and never loaded as rover calibration.
+
+The gradual-steering comparison completes corridor/corner/approach in
+17.0/21.9/2.2 simulated seconds. The earlier navigation overhaul (`766e1fc`)
+took 17.3/22.0/2.2, versus 46.9/55.9/5.6 before that overhaul. The single-obstacle
+detour takes 18.3 seconds (previously 18.2), with no pivot or pause and full
+nominal cruise until goal approach. Direction-category switches fall from 51 to
+13; the largest simulated yaw-rate step falls from 0.536 to 0.0655 rad/s.
+This change improves steering continuity, not detour completion time. The
+original pre-overhaul follower failed its next plan inside an inflated margin.
+All four scenarios complete without synthetic chassis
+collision for nine response combinations (wheel speeds 0.15/0.30/0.45 m/s at
+PWM 180 and track widths 0.18/0.28/0.38 m). This validates software behavior
+in those models, not physical sustained navigation or a recorded rover demo.
+
+The accompanying transport fixes retain every 20 Hz ESP permit for its full
+existing 500 ms validity (the former six-entry ring evicted it after about
+300 ms). A pending phone-side Stop survives permit gaps, and a Stop acknowledgement
+can reach the laptop during a capture gap. These changes keep the existing packet
+format. The subsequent gradual arcs add the optional inner-wheel field described
+above and require matching backend, phone and ESP updates. A changing-map test
+(`backend.tests.test_flowing_detour`) also runs the actual asynchronous Navigator:
+an obstacle appears after driving starts, steering begins at least 1.2 m before
+its near face, and the rover keeps translating at nominal cruise through the pass.
+
+Deployment on 2026-09-27: the signed iPhone app containing gradual steering and
+the current-mesh cache was installed and verified on the paired iPhone 17 Pro.
+The identified ESP32-S3 application was backed up, flashed, independently
+digest-verified and reset. The combined backend was restarted from main, retaining
+the existing database and capture paths, and the live dashboard serves the updated
+Explore recovery logic. In a subsequent supervised hallway run with the prototype
+self-mesh filter, Explore moved about 5.5 m by phone pose while the 3D map kept
+publishing, then paused near the pink stand with `start_blocked`. The operator
+stopped the run. This verifies forward movement and live mapping, not yet a
+complete physical pass around the stand.
+## Explore recovery when new geometry blocks a route
+
+Explore keeps following the clear prefix while replanning to its existing
+implicit frontier; a blocked command step is held at zero. If the newest map
+proves no path to that still-free target, it can select another reachable
+frontier on the same snapshot. It does not replace a target merely because a
+search limit was reached. While stationary with no usable route, authoritative
+map checks continue separately from the slower full-replan interval; a cached
+snapshot aging out cannot by itself establish that incoming sensing stopped.
+Actual sensing loss, invalid clearance, operator Stop and changed arm generations
+retain their existing authority. The explicit prototype may still preserve its
+requested Explore choice across recoverable input gaps under the rules above.
+No unknown-space, footprint, turn or motor limit is relaxed by this recovery.
+
+This policy is verified offline with real occupancy classification and a kinematic
+command sink (`backend/tests/test_obstacle_replanning.py`), not a physical obstacle
+avoidance demonstration. The active rover backend version and sensor/clearance
+conditions must still be checked before interpreting a physical stop.
 
 ## Exploration memory and ordinary-obstacle test integration
 
@@ -363,3 +454,7 @@ backend.tests.test_explore_yield backend.tests.test_prototype_power -v` (put the
 module arguments on one command line). The real runner uses a fake matched clock,
 pose, occupancy and nominal kinematic plant. It does not simulate physical PWM
 response, motor coast, camera/chassis calibration or pedestrian detection accuracy.
+
+### Comparison-branch merge compatibility
+
+The merged backend accepts live frame versions 1, 2 and 3, retaining local classified-floor validity guards. The default prototype command format remains compatible with the published checkpoint-5 floor-capable phone/ESP: no optional inner-wheel field is emitted. `--prototype-variable-arcs` explicitly enables upstream's graduated inner-wheel command and 0.2 nominal follower cruise; that option requires a matching updated phone **and** ESP bridge. Leave it off with the currently installed checkpoint-5 pair. The all-direction `--prototype-max-pwm` ceiling applies in both modes. Neither policy is physical motor calibration.

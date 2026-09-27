@@ -31,6 +31,7 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
+from backend.scan_pacing import CameraPose, ScanObservation, capture_observation
 from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
                              points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
@@ -48,7 +49,9 @@ from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPo
 from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
+from backend.prototype import PrototypeGeometry, filter_prototype_self_mesh
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
+from backend.prototype import PrototypeGeometry, filter_prototype_self_mesh
 
 logger = logging.getLogger(__name__)
 DENSE_MAP_INTERVAL_S = 1 / 30
@@ -59,6 +62,7 @@ MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference
 DETECT_MAX_AGE_S = 2.  # discard detections finished this long after their frame arrived
 DETECTOR_OK_S = 2.  # health reports the detector ok this long after a used result
+EXPLORE_RETRY_S = 1.  # quiet backoff after a failed arm or a stopped Explore run
 
 
 class Input(BaseModel):
@@ -151,12 +155,16 @@ class Confidence(Input):
 
 
 class Frame(Pose):
-    version: Literal[1, 2]
+    version: Literal[1, 2, 3]
     floor: dict | None = None
+    mesh_voxels: str | None = None
     type: Literal['frame']
     image: Image
     depth: Depth
     confidence: Confidence
+    floor: dict | None = None
+    mesh_voxels: str | None = None
+    mesh_voxels: str | None = None
 
 
 def decode_frame(data: bytes) -> Frame:
@@ -198,6 +206,8 @@ class MapUpdate:
     depth: DepthView | None = None
     retirement_keys: object = None
     retirement_cursor: int | None = None
+    mesh_keys: object = None
+    scan: ScanObservation | None = None
 
 
 class LatestFrame:
@@ -207,9 +217,9 @@ class LatestFrame:
         self.item = None
         self.ready = asyncio.Event()
 
-    def put(self, payload):
+    def put(self, payload, observed_at=None):
         replaced = self.item is not None
-        self.item = (payload, time.monotonic())
+        self.item = (payload, time.monotonic(), observed_at)
         self.ready.set()
         return replaced
 
@@ -308,6 +318,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.auto_requested = False  # explicit active Explore; faults never auto-rearm
         app.state.explore_yield = None
         app.state.input_gap_since = None
+        app.state.auto_arm_task = None
+        app.state.auto_retry_at = 0.
         app.state.arm_request_token = None
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
@@ -329,11 +341,13 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.autonomy_map = None
         app.state.occupancy_stats = Counter()
+        app.state.scan_observation = None
         app.state.nav = Navigator(nav_settings, pose=rover_pose,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None,
-                                  pause_reason=prototype_pause_reason)
+                                  pause_reason=prototype_pause_reason,
+                                  scan_observation=lambda: app.state.scan_observation)
         app.state.mover = MoveRunner(MoveSettings(), pose=rover_pose, submit=app.state.motion.submit, stop=nav_stop,
                                      armed_mode=lambda: app.state.mode if app.state.armed else None,
                                      speeds=move_speeds(), early_stop_m=getattr(
@@ -349,6 +363,11 @@ def create_app(db_path: str | None = None, build_points=None,
         try:
             yield
         finally:
+            stop('shutdown')
+            if app.state.auto_arm_task is not None:
+                app.state.auto_arm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await app.state.auto_arm_task
             label_task.cancel()
             with suppress(asyncio.CancelledError):
                 await label_task
@@ -462,8 +481,9 @@ def create_app(db_path: str | None = None, build_points=None,
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     prototype_max_pwm=getattr(relay.actuation, 'max_pwm', None) if relay else None,
+                    prototype_variable_arcs=getattr(relay.actuation, 'variable_arc_pwm', False) if relay else False,
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
-                    auto_requested=app.state.auto_requested,
+                    auto_requested=app.state.auto_requested, scan_pacing=app.state.nav.scan_status,
                     generation=app.state.motion.generation,
                     exploration=app.state.nav.exploration.stats(),
                     navigation_wait_reason=current['navigation_wait_reason'],
@@ -476,10 +496,16 @@ def create_app(db_path: str | None = None, build_points=None,
         # acknowledgement. A new arm generation is active even while awaiting
         # its handshake, so the same hazard still cancels a new arm.
         app.state.auto_requested = False
+        app.state.arm_request_token = None
+        pending = getattr(app.state, 'auto_arm_task', None)
+        if pending is not None and pending is not asyncio.current_task():
+            pending.cancel()
         app.state.explore_yield = None
         app.state.input_gap_since = None
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
+        if app.state.auto_requested:
+            app.state.auto_retry_at = time.monotonic() + EXPLORE_RETRY_S
         app.state.armed = False
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
@@ -505,7 +531,8 @@ def create_app(db_path: str | None = None, build_points=None,
             return None
         mount_yaw = calibration.camera_yaw_rad if calibration is not None else None
         x, z, yaw = pose_from_transform(pose.transform, mount_yaw if mount_yaw is not None else 0.)
-        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
+        camera = CameraPose.from_transform(app.state.session, app.state.phone, pose.t_capture, pose.transform)
+        return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking, camera)
 
     def health():
         age = None if app.state.pose_at is None else (time.monotonic() - app.state.pose_at) * 1000
@@ -629,7 +656,7 @@ def create_app(db_path: str | None = None, build_points=None,
             await mailbox.ready.wait()
             cadence = interval() if callable(interval) else interval
             await asyncio.sleep(max(0., last_start + cadence - time.monotonic()))
-            payload, received = mailbox.take()  # newest wins; older ones were replaced
+            payload, received, observed_at = mailbox.take()  # newest wins; older ones were replaced
             last_start = time.monotonic()
             try:
                 result = await asyncio.to_thread(compute, payload, *session)
@@ -649,6 +676,10 @@ def create_app(db_path: str | None = None, build_points=None,
                 stats['discarded_stale'] += 1
             else:
                 last_capture = result.t_capture
+                if isinstance(result, MapUpdate) and result.scan is not None:
+                    result = replace(result, scan=replace(result.scan,
+                        pose=replace(result.scan.pose, owner=owner),
+                        observed_at=received if observed_at is None else observed_at))
                 try:
                     outcome = accept(result) or 'published'
                 except Exception:
@@ -684,9 +715,19 @@ def create_app(db_path: str | None = None, build_points=None,
         """
         dense = any(listener.dense for listener in tuple(app.state.listeners))
         view = None
+        mesh_keys = None
         if custom_builder is None:
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
             view = depth_view(frame)
+            if frame.mesh_points is not None:
+                mesh_points = (filter_prototype_self_mesh(frame.mesh_points, frame.transform, calibration,
+                                                          intrinsics=frame.intrinsics,
+                                                          image_size=frame.image.size)
+                               if isinstance(calibration, PrototypeGeometry) else frame.mesh_points)
+                mesh_keys = frame_evidence(mesh_points).keys
+                grid = app.state.occupancy
+                if grid is not None:
+                    mesh_keys = grid.mesh_keys_consistent_with_depth(mesh_keys, view)
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
             prototype_depth = getattr(calibration, 'depth_confidence', 2) == 1
             try:
@@ -737,7 +778,8 @@ def create_app(db_path: str | None = None, build_points=None,
             except NoNewPoints:
                 pass
         return MapUpdate(frame.t_capture if custom_builder is None else candidates.t_capture,
-                         evidence, chunk, view, retired, cursor)
+                         evidence, chunk, view, retired, cursor, mesh_keys,
+                         capture_observation(frame, candidates) if custom_builder is None else None)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
@@ -751,7 +793,10 @@ def create_app(db_path: str | None = None, build_points=None,
                     grid.commit(update.evidence, time.monotonic(),
                                 retirement_keys=update.retirement_keys,
                                 retirement_cursor=update.retirement_cursor,
-                                depth_view=update.depth)
+                                depth_view=update.depth, mesh_keys=update.mesh_keys)
+                    # Only accepted, successfully integrated same-frame evidence
+                    # can inform pacing, even when display dedup emitted no chunk.
+                    app.state.scan_observation = update.scan
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')
@@ -890,6 +935,7 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.scan_observation = None
         app.state.detection_view = None
         retire_route(invalidate_pending=True)
         app.state.tracking_lost_capture = -1.0
@@ -992,32 +1038,48 @@ def create_app(db_path: str | None = None, build_points=None,
         prepare's Explore default; it needs only the manual prerequisites, never a route or map."""
         if standard and app.state.mode != 'manual':
             raise HTTPException(409, 'Select Standard before arming for a move')
+        if app.state.arm_request_token is not None:
+            raise HTTPException(409, 'Rover startup is already in progress')
+        if prepare and relay is not None and app.state.mode not in ('navigate', 'explore') and not standard:
+            app.state.mode = 'explore'
+        # Only an explicit arm request selects the mission. A readiness gap or
+        # failed handshake may stop motors without discarding that choice.
+        if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
+            app.state.auto_requested = True
+        return await arm_once(prepare, standard)
+
+    async def arm_once(prepare=False, standard=False):
+        if app.state.arm_request_token is not None:
+            raise HTTPException(409, 'Rover startup is already in progress')
+        token = object()
+        app.state.arm_request_token = token
+        try:
+            return await prepare_and_arm(prepare, standard, token)
+        except Exception:
+            if app.state.auto_requested:
+                app.state.auto_retry_at = time.monotonic() + EXPLORE_RETRY_S
+            raise
+        finally:
+            if app.state.arm_request_token is token:
+                app.state.arm_request_token = None
+
+    async def prepare_and_arm(prepare, standard, token):
         if prepare and relay is not None:
-            if app.state.arm_request_token is not None:
-                raise HTTPException(409, 'Rover startup is already in progress')
-            token = object()
-            app.state.arm_request_token = token
-            try:
-                if app.state.mode not in ('navigate', 'explore') and not standard:
-                    app.state.mode = 'explore'
-                if hazard() is not None:
-                    if not device.snapshot()['connected']:
-                        raise HTTPException(409, 'The iPhone app is offline; keep it open to connect')
-                    from backend.prepare_rover import prepare_rover
-                    deadline = time.monotonic() + 12.
-                    await prepare_rover(device, lambda: app.state.arm_request_token is not token)
-                    while hazard() is not None:
-                        if app.state.arm_request_token is not token:
-                            raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
-                        if time.monotonic() >= deadline:
-                            raise HTTPException(409, 'Rover startup: ' + ', '.join(
-                                manual_blockers() if standard else autonomy_blockers()))
-                        await asyncio.sleep(.05)
-                if app.state.arm_request_token is not token:
-                    raise HTTPException(409, 'Rover startup cancelled')
-            finally:
-                if app.state.arm_request_token is token:
-                    app.state.arm_request_token = None
+            if hazard() is not None:
+                if not device.snapshot()['connected']:
+                    raise HTTPException(409, 'The iPhone app is offline; keep it open to connect')
+                from backend.prepare_rover import prepare_rover
+                deadline = time.monotonic() + 12.
+                await prepare_rover(device, lambda: app.state.arm_request_token is not token)
+                while hazard() is not None:
+                    if app.state.arm_request_token is not token:
+                        raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
+                    if time.monotonic() >= deadline:
+                        raise HTTPException(409, 'Rover startup: ' + ', '.join(
+                            manual_blockers() if standard else autonomy_blockers()))
+                    await asyncio.sleep(.05)
+            if app.state.arm_request_token is not token:
+                raise HTTPException(409, 'Rover startup cancelled')
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
         entry_pose = app.state.pose  # the exact pose accepted by this readiness check
@@ -1029,7 +1091,8 @@ def create_app(db_path: str | None = None, build_points=None,
         if relay is not None:
             try:
                 await relay.prepare(app.state.motion.session_id)
-                if generation != app.state.motion.generation or hazard() is not None:
+                if (app.state.arm_request_token is not token
+                        or generation != app.state.motion.generation or hazard() is not None):
                     raise ValueError('Stopped or lost readiness while arming')
                 entry_pose = app.state.pose  # readiness was rechecked after the await
             except (ValueError, asyncio.TimeoutError) as error:
@@ -1054,8 +1117,6 @@ def create_app(db_path: str | None = None, build_points=None,
                 logger.warning('Explore entry metadata could not be persisted')
         app.state.armed = True
         app.state.stop_reason = None
-        if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
-            app.state.auto_requested = True
         return health()
 
     def check_explore_generation(generation):
@@ -1306,6 +1367,7 @@ def create_app(db_path: str | None = None, build_points=None,
             last_pose_publish = -1.0
             while True:
                 message = await ws.receive()
+                received_at, received_wall = time.monotonic(), time.time()
                 if message['type'] == 'websocket.disconnect':
                     break
                 if app.state.phone is not owner:
@@ -1347,6 +1409,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 if pose.tracking != 'normal':
                     app.state.tracking_lost_capture = max(app.state.tracking_lost_capture, pose.t_capture)
                     grid.clear_depth_history()
+                    app.state.scan_observation = None
                 newest_pose = pose.t_capture > last_capture
                 if newest_pose:
                     last_capture = pose.t_capture
@@ -1363,7 +1426,8 @@ def create_app(db_path: str | None = None, build_points=None,
                 if is_frame:
                     app.state.capture.update(message['bytes'], pose.model_dump())
                 if is_frame and pose.tracking == 'normal' and pose.t_capture > app.state.tracking_lost_capture:
-                    if mailbox.put(message['bytes']):
+                    observed_at = received_at - max(0., received_wall - pose.t_wall_ms / 1000)
+                    if mailbox.put(message['bytes'], observed_at):
                         app.state.map_stats['replaced'] += 1
                     if app.state.detector is not None and detections.put(message['bytes']):
                         app.state.detect_stats['replaced'] += 1
@@ -1382,6 +1446,7 @@ def create_app(db_path: str | None = None, build_points=None,
             for worker in workers:
                 worker.cancel()
             if app.state.phone is owner:
+                app.state.scan_observation = None
                 grid.clear_depth_history()
                 app.state.phone = None
                 retire_route(invalidate_pending=True)

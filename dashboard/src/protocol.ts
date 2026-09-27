@@ -31,6 +31,7 @@ export interface Health {
   mode: Mode;
   armed: boolean;
   stop_reason: string | null;
+  navigation_wait_reason?: string | null;
   mission_entry?: MissionEntry | null;
 }
 export interface Pose {
@@ -177,7 +178,10 @@ export function parseMessage(raw: unknown): Message | null {
             (isFiniteNumber(m.pose_age_ms) && m.pose_age_ms >= 0)) &&
           member(m.mode, ["manual", "navigate", "explore"]) &&
           typeof m.armed === "boolean" &&
-          (m.stop_reason === null || typeof m.stop_reason === "string");
+          (m.stop_reason === null || typeof m.stop_reason === "string") &&
+          (m.navigation_wait_reason === undefined ||
+            m.navigation_wait_reason === null ||
+            typeof m.navigation_wait_reason === "string");
         break;
       case "pose":
         valid =

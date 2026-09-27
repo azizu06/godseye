@@ -25,6 +25,7 @@ class TimedMotorCommand:
     direction: int
     pwm: int
     lease_ms: int = 1500
+    inner_power: int | None = None  # prototype forward arc; omission retains legacy half power
 
 
 class ActuationCalibration(BaseModel):

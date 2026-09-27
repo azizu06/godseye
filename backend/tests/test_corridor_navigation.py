@@ -1,5 +1,7 @@
 """Hallway exploration should take a central straight route before side branches."""
 import asyncio
+from dataclasses import replace
+import math
 import time
 import unittest
 
@@ -7,12 +9,32 @@ import numpy as np
 
 from backend.navigation import path_blocked
 from backend.navigator import Navigator, NavSettings, RoverPose, planning_grid, recoverable_start, recovery_step_allowed
-from backend.navigator import straight_runway_m
+from backend.navigator import obstacle_clearance_m, straight_runway_m
+from backend.navigator import pursuit_step_allowed
 from backend.occupancy import OccupancySnapshot
 from backend.prototype import PrototypeActuation
 
 
 class CorridorTests(unittest.TestCase):
+    def test_escape_cannot_cut_an_occupied_corner_between_free_endpoints(self):
+        cells = np.ones((60, 60), np.uint8)
+        cells[30, 30] = 2
+        snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
+                                     (-1.5, -1.5), .05, cells, 0., True)
+        self.assertFalse(pursuit_step_allowed(snapshot, -.004, .01, 3 * math.pi / 4,
+                                              .2, 0., .1, .3, .1524))
+        self.assertFalse(recovery_step_allowed(snapshot, -.004, .01, .5, -.5, .1524))
+        self.assertFalse(recovery_step_allowed(snapshot, -.415, .05, .05, -.415, .1524))
+
+    def test_zero_clearance_boundary_can_depart_but_cannot_cross_occupied_interior(self):
+        cells = np.ones((60, 60), np.uint8)
+        cells[30, 30] = 2
+        snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
+                                     (-1.5, -1.5), .05, cells, 0., True)
+        self.assertFalse(pursuit_step_allowed(snapshot, .05, .001, -3 * math.pi / 4,
+                                              .2, 0., .1, .3, .1524))
+        self.assertTrue(recovery_step_allowed(snapshot, .05, .001, .06, .001, .1524))
+
     def test_prototype_can_plan_out_of_extra_clearance_near_a_wall(self):
         cells = np.ones((120, 60), np.uint8)
         cells[:, 38:] = 2  # wall begins at x=.4; rover center x=0
@@ -36,13 +58,33 @@ class CorridorTests(unittest.TestCase):
         self.assertFalse(recovery_step_allowed(snapshot, -.05, 1., 0., 1.,
                                                settings.start_recovery_margin_m))
 
-    def test_prototype_does_not_recover_into_a_close_obstacle(self):
+    def test_prototype_can_leave_close_start_overlap_but_cannot_move_into_it(self):
         cells = np.ones((120, 60), np.uint8)
         cells[:, 32:] = 2  # obstacle only .1 m from the rover center
         snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
                                      (-1.5, 0.), .05, cells, 0., True)
-        self.assertFalse(recoverable_start(snapshot, 0., 1., .1524))
-        self.assertFalse(recovery_step_allowed(snapshot, 0., 1., -.01, 1.01, .1524))
+        self.assertTrue(recoverable_start(snapshot, 0., 1., .1524))
+        self.assertTrue(recovery_step_allowed(snapshot, 0., 1., -.01, 1., .1524))
+        self.assertFalse(recovery_step_allowed(snapshot, 0., 1., .01, 1., .1524))
+        self.assertFalse(recoverable_start(snapshot, .125, 1., .1524))
+        self.assertFalse(recoverable_start(snapshot, 0., 1., 0.))
+
+    def test_start_escape_cannot_approach_a_second_overlapping_obstacle(self):
+        cells = np.ones((60, 60), np.uint8)
+        cells[30, 27] = 2  # nearby behind the rover
+        cells[30, 36] = 2  # farther ahead, still inside the clearance disc
+        snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
+                                     (-1.5, -1.5), .05, cells, 0., True)
+        # Distance to the nearest obstacle improves; distance to the other
+        # decreases. Checking only the nearest obstacle would accept this.
+        self.assertFalse(recovery_step_allowed(snapshot, 0., .025, .01, .025, .1524))
+
+    def test_start_escape_cannot_enter_a_new_obstacle_clearance_region(self):
+        cells = np.ones((60, 60), np.uint8)
+        cells[30, 27] = cells[30, 39] = 2
+        snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
+                                     (-1.5, -1.5), .05, cells, 0., True)
+        self.assertFalse(recovery_step_allowed(snapshot, 0., .025, .05, .025, .1524))
 
     def test_straight_leg_after_obstacle_can_regain_cruise_speed(self):
         path = [[1., 1.], [1., 1.4], [.65, 1.7], [.65, 2.], [.65, 2.5],
@@ -153,6 +195,41 @@ class CorridorTests(unittest.TestCase):
 
 
 class CorridorRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explore_leaves_start_overlap_without_discarding_obstacle(self):
+        cells = np.ones((100, 100), np.uint8)
+        cells[38:42, 37:39] = 2  # body/mount-shaped mesh 5 cm behind a front camera
+        snapshot = OccupancySnapshot(('hall', 1), 1, time.monotonic(), (), .414,
+                                     (-2., -2.), .05, cells, 0., True)
+        pose = [0., 0., math.pi / 2]
+        stops, clearances = [], []
+        def submit(_generation, _mode, v, w):
+            heading = pose[2] + w * .01
+            pose[0] += v * math.sin(heading) * .02
+            pose[1] += v * math.cos(heading) * .02
+            pose[2] += w * .02
+            clearances.append(obstacle_clearance_m(snapshot, *pose[:2]))
+            return True
+        navigator = Navigator(NavSettings(rate_hz=50., start_recovery_margin_m=.1524,
+                                           follower=PrototypeActuation().follower()),
+                              pose=lambda: RoverPose(*pose, 0., 'normal'),
+                              occupancy=lambda: replace(snapshot, accepted_at=time.monotonic()),
+                              submit=submit, stop=stops.append, publish=lambda _: None,
+                              armed_mode=lambda: 'explore')
+        navigator.start_explore(1)
+        try:
+            deadline = time.monotonic() + 5.
+            while pose[0] < .45 and time.monotonic() < deadline and not stops:
+                await asyncio.sleep(.02)
+            self.assertGreater(pose[0], .45, navigator.waiting_reason)
+            self.assertEqual(stops, [])
+            self.assertTrue(navigator.active)
+            self.assertTrue(snapshot.traversable(*pose[:2]))
+            self.assertTrue(all(after >= before - 1e-9
+                                for before, after in zip(clearances, clearances[1:])))
+            self.assertTrue(np.all(snapshot.cells[38:42, 37:39] == 2))
+        finally:
+            await navigator.aclose()
+
     async def test_centered_hallway_submits_fast_straight_command(self):
         cells = np.ones((110, 41), np.uint8)
         cells[:, :3] = cells[:, 38:] = 2

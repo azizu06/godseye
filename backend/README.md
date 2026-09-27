@@ -58,8 +58,9 @@ accepted so far renews freshness, so repeats with fresh wall times go stale. Pos
 bundle streams are ordered independently, so a bundle delayed behind newer poses still
 maps with its own transform (`/capture/status` `mapping` counts `discarded_order`,
 `discarded_wall_time`, `discarded_tracking`) but never renews or rewinds the pose. Frames
-captured at or before a limited/unavailable capture are not mapped after recovery, and
-recovery never re-arms. Progress state is per phone connection.
+captured at or before a limited/unavailable capture are not mapped after recovery.
+Recovery re-arms only an explicitly requested prototype Explore mission (below).
+Progress state is per phone connection.
 Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
@@ -251,15 +252,18 @@ floor, the backend rasterizes the anchor polygon near the camera into free
 5 cm cells. This keeps floor mapping possible when a glossy surface gives
 low-confidence depth. LiDAR obstacle evidence still overrides those cells;
 the plane does not establish whether a sign or person has moved out of view.
-The anchor's X–Z bounds must overlap the camera's 6 m local window, with floor
-height 5 cm–1.5 m below the camera. Navigation still needs at least 16 accepted
-depth samples at its profile's existing confidence threshold; floor metadata
-alone cannot refresh collision sensing. This requires the paired floor-capable
-iPhone build as well as this backend. v1 depth-only phones remain supported but
-may correctly report `no_floor` on reflective floors. This comparison backend
-accepts v1/v2 frames; it does not accept the newer upstream mesh-v3 phone stream.
-Start a new map/session when installing the paired update so a previously
-published invalid floor cannot remain in a viewer's retained map.
+The phone resamples ARKit mesh voxels about once per second and repeats the
+current snapshot in v3 live frames so map-frame coalescing retains it. Each
+accepted v3 frame replaces the overlay in the same occupancy grid. A later
+empty snapshot removes its old voxels, and absent mesh updates expire after
+2.5 seconds of newer frames.
+For the explicitly selected uncalibrated prototype, rear self-mesh and nearby
+mesh outside the current camera image are excluded from navigation. Two distinct
+confident depth views that see through a visible mesh voxel also omit it from
+the current overlay, even if ARKit still repeats that anchor.
+Independent depth obstacles retain their normal two-frame retirement rule.
+Mesh reconstruction is an estimate and may omit thin objects, so a visible sign
+is not proof that navigation has sensed it.
 
 ## Rover calibration and the navigation map
 
@@ -567,6 +571,16 @@ drift are unmeasured.
 
 ## Navigation
 
+Explore also inserts bounded stationary RGB-D checkpoints before initial forward
+travel and after meaningful measured view changes. It holds zero while checking
+full-camera stability and distinct post-settle depth, then resumes through normal
+navigation checks. Each attempt is capped at 2 s; low-quality or missing capture
+reports limited evidence, never room completion. Selected destinations are
+unchanged. See [capture pacing](SCAN_PACING.md) for thresholds, evidence provenance,
+prototype/color limitations and the offline A/B test. `/autonomy.scan_pacing`
+exposes compact diagnostics; `health.navigation_wait_reason` names active settling
+or capture while a checkpoint holds.
+
 `POST /goal` and explore mode plan on the active session's occupancy grid
 (`backend/navigation.py`, pure) and follow the path in one asyncio run at a time
 (`backend/navigator.py`). Each follower command goes through
@@ -583,7 +597,7 @@ while the default car reports down, so runs are exercised by tests with
   while planning` and the old goal never moves. Explore starts by itself
   whenever the backend is armed in `explore` mode and drives to the nearest
   reachable frontier (a known-free cell next to unknown or the edge of the cropped
-  grid), then the next, until none is left. Before a calibrated floor is mapped, both goals and explore stop with the
+  grid), then the next, waiting and checking again when none is left. Before a calibrated floor is mapped, both goals and explore stop with the
   map readiness reason; neither can move into unknown space.
 - **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, line-of-sight
   shortcuts, waypoints at most 0.25 m apart, at most 200,000 expansions. Every path
@@ -591,35 +605,42 @@ while the default car reports down, so runs are exercised by tests with
   Clearance counts entire occupied/unknown cell squares and off-grid space, not
   just cell centers; this deliberately rejects some tight passages that fit at a
   single point. No start/goal snapping or unknown padding can escape a blocker.
-  The pure planner's legacy simulation defaults are overridden at the snapshot seam.
+  Live routes also price three soft clearance bands over the next 0.30 m beyond
+  the hard footprint; A* and shortcutting use the same costs. Narrow passages
+  remain available. The pure planner's defaults are overridden at the snapshot seam.
   Explore selects the nearest reachable boundary of footprint-clear known floor,
-  inset from unknown space so its footprint stays observed; it completes when none remains.
+  inset from unknown space so its footprint stays observed; it waits for new floor when none remains.
 - **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
-  place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
-  Before submitting, the runner checks the immediate footprint step and samples
-  the requested pursuit arc at half-cell spacing up to its target. If the arc cuts
-  a corner, it halves lookahead down to the larger of cell size and arrival
-  tolerance, retaining the same path and original configured lookahead on clear
-  stretches. These are nominal requested kinematics, not measured prototype PWM
-  arcs or a stopping-distance certificate; no footprint or margin is reduced.
-- **Replanning:** a full replan from the current pose every 4 s, sooner near an
-  Explore frontier or after a blocked path; snapshot
-  checks run at most 4 Hz regardless of `/live` publication. Each reads accepted
-  sensing time, and a new revision checks the remaining path. An obstructed path
-  ends an explicit goal run with `path_blocked`, zeroes and disarms. Explore instead
-  pauses at zero and replans; a proven disconnected frontier yields to another
-  reachable frontier. If no pursuit candidate is clear, Explore waits at zero with
-  `health.navigation_wait_reason: "no_feasible_step"`. Identical map/path/pose
+  place (`v_mps` 0), finishing alignment to within 0.20 rad before moving again;
+  replans preserve an unfinished pivot. Before each command, the runner checks
+  the immediate footprint step and samples the requested arc at half-cell
+  spacing toward its pursuit target. If that arc cuts an inside corner, it
+  shortens lookahead along the same route down to map/arrival resolution. These
+  are nominal requested kinematics, not measured prototype PWM arcs or a
+  stopping-distance certificate. It never reverses; arrival is within 0.15 m.
+- **Replanning:** a full replan from the current pose every four seconds, or sooner
+  for a new obstacle or approaching Explore goal. An independent worker refreshes
+  sensing and checks the remaining route every 0.20 seconds; a slow route search
+  cannot make live sensing appear stale. A new obstacle requests a detour in both
+  Navigate and Explore. The follower keeps moving along its clear prefix while
+  that route is computed; current and next-tick footprint checks still apply.
+  Older planning snapshots cannot replace newer accepted sensing, and each new
+  route is checked on the latest map revision. Reaching an Explore frontier
+  cancels its outstanding route search and remembers a half-meter region around
+  the reached frontier (last 64 per run), avoiding repeated trips to the same seam.
+  Check results for a replaced route cannot invalidate its successor.
+  If no pursuit step is feasible, Explore keeps the route and remains armed at
+  zero instead of treating the wait as a motion stall. Identical map/path/pose
   replans retain that rejection; changed map, route or meaningful pose evidence
-  permits another attempt. The route remains visible while this wait is active.
-  Other zero waits report their plan/pause reason, including `explore_complete`
-  when no reachable frontier exists; waits still validate current accepted sensing.
-  Current and next-tick pursuit footprint positions must remain clear.
-  Reaching an explore frontier discards pending planning/check work before selecting
-  the next frontier (the landed exploration race fix). `path` is published only when
-  its points change, and new `/live` viewers get the current path.
+  permits another attempt. Health reports `navigation_wait_reason` while Explore
+  waits, including `no_feasible_step` and `explore_complete`.
+  If a new wall makes the current implicit frontier unreachable (`no_path`),
+  Explore tries a different reachable frontier once on the same snapshot;
+  `search_limit` does not establish unreachability. Stationary Explore keeps
+  refreshing authoritative sensing while waiting for another route.
+  `path` is published only when its points change, and new `/live` viewers get it.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the
   reason. Map blockers (`calibration_missing`, `calibration_unverified`, unmeasured
@@ -854,28 +875,57 @@ spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
 ### Explicit uncalibrated prototype
 
 The operator may opt into `tools.run_rover_backend --prototype` with explicit
-estimated chassis dimensions. It maps nominal motion to bounded power preferences, PWM 60–180, with an optional
-`--prototype-max-pwm` ceiling applied to every direction. Nominal requests respond
-to clearance, unknown floor, accepted depth confidence and sensing age; these are
-not measured speeds and do not fill or certify calibration files.
+estimated chassis dimensions. Forward and arc power interpolate from PWM 60
+at a nominal 0.05 m/s to PWM 180 at 0.20 m/s (140 at 0.15); steering no longer
+causes an abrupt power jump. Pivots remain PWM 60. The follower requests 0.20
+nominal cruise and slows near arrival, without filling or certifying measured
+calibration files. These are power choices, not measured motor speeds.
 Live map/floor, tracking, feedback and authentication gates remain in effect.
 Explore restores the faster straight-line command on clear straight route legs
 after going around an obstacle, without waiting for the entire route to be straight.
-The prototype's updated bridge can also steer forward on a differential-motor
-arc; the measured adapter still uses its separately calibrated turn behavior.
+The prototype's updated bridge steers forward with optional `inner_power` on
+arc commands: outer-wheel PWM stays at the requested 60–180 power, while the yaw
+request varies inner-wheel PWM gradually between half and full outer power.
+Packets without that optional field keep the legacy half/full arc. This remains
+an uncalibrated power policy; the measured adapter uses its calibrated turn behavior.
 It keeps the original hallway bearing through short detours so a pivot beside an
 obstacle does not turn the next frontier search back toward explored floor; after
 a completed long side leg, that leg sets the bearing for the next branch.
 In an open room, Explore favors reachable frontiers bordering larger unmapped
 areas; it keeps forward hallway priority only when both corridor walls are seen.
-If the rover drifts just inside the prototype's extra clearance beside a wall,
-it can follow a snapped route away while each step preserves obstacle clearance.
-Session-scoped visited/frontier-failure memory favors new reachable targets without
-blocking necessary return paths. Ordinary-obstruction yield/resume stays in the
-current generation; genuine faults and Stop cannot automatically rearm.
+If the prototype starts inside obstacle clearance, it can follow a snapped
+route outward from an unoccupied camera cell. Each sampled step must preserve
+or increase distance to every overlapping obstacle and enter no new obstacle
+clearance region. This also permits escape from retained body/mount mesh behind
+a front-mounted phone; no occupied geometry is deleted to enable the route.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
+
+An explicit Explore arm latches mission intent before checking readiness; even a
+temporarily refused first arm keeps `/autonomy.auto_requested` true. Motors still
+require fresh sensing, transport feedback, and the Stop/Arm acknowledgement barrier.
+No frontier or no path pauses the current run and checks again; a no-progress stop,
+disconnect, or failed arm waits at least one second after stopping/failing before
+another ready attempt. There is only one arm attempt at a time. The dashboard keeps
+confirmed Explore intent after a failed arm and displays that Explore is resuming.
+Selecting Explore mode alone never arms or starts automatic recovery.
+
+Dashboard Stop, control disable, capture stop, rover disconnect, or an explicit
+mode choice cancels that intent and any pending recovery; late acknowledgements
+cannot arm it again. Backend shutdown drains recovery and stops motion. Intent is
+held only for the current backend process, so restart requires another explicit arm.
+Hardware-free lifecycle coverage: `python -m unittest backend.tests.test_persistent_explore -v`.
 
 Within an AR map, occupancy retains the last observed floor height when the
 height histogram temporarily loses its floor peak. Current obstacle/free evidence
 is reclassified at that height; sensing timestamps are not refreshed by this cache.
 A new valid estimate can update it, and a new map epoch starts without a cached floor.
+
+### Offline obstacle-replanning regression
+
+`python -m unittest backend.tests.test_obstacle_replanning backend.tests.test_corridor_navigation backend.tests.test_navigator -v`
+uses an actual `OccupancyGrid` and `Navigator` with a kinematic command sink. Its
+synthetic observed room is an ideal-visibility policy fixture, not a claim that a
+mounted phone observes the whole rover footprint. It covers a clear detour to the
+same frontier, a new wall disconnecting a still-free frontier, stationary fresh
+sensing versus real loss, current-mesh clearance recovery, and late plan rejection
+after Stop/reset/disconnect or an arm-generation change. It sends no hardware commands.

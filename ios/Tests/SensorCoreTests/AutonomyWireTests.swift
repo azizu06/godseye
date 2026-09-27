@@ -47,6 +47,43 @@ final class AutonomyWireTests: XCTestCase {
         XCTAssertThrowsError(try AutonomyCommand.decode(Data(repeating: 32, count: 2049)))
     }
 
+    func testGradualArcPowerReachesFirmwareWithInclusiveBounds() throws {
+        for (direction, power, inner) in [(5, 180, 160), (6, 180, 160),
+                                          (5, 180, 90), (6, 180, 180),
+                                          (5, 179, 89), (6, 1, 0)] {
+            let packet = try drive(["direction": direction, "power": power, "inner_power": inner]).packet
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: packet) as? [String: Any])
+            XCTAssertEqual(fields["D1"] as? Int, direction)
+            XCTAssertEqual(fields["D2"] as? Int, power)
+            XCTAssertEqual(fields["D3"] as? Int, inner)
+            XCTAssertEqual(fields["C"] as? String, permit)
+            XCTAssertEqual(fields["H"] as? String, session)
+            XCTAssertEqual(fields["T"] as? Int, 1500)
+            XCTAssertLessThan(packet.count, 192)
+        }
+        for direction in [3, 5, 6] {
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(
+                with: drive(["direction": direction, "power": 180]).packet) as? [String: Any])
+            XCTAssertNil(fields["D3"], "Omission preserves the legacy firmware packet")
+        }
+    }
+
+    func testOptionalArcPowerRejectsInvalidJSONTypesAndBounds() throws {
+        for literal in ["null", "true", "false", "90.0", "9e1", "90.5", "\"90\"", "[]", "{}", "89", "181", "-1"] {
+            let json = """
+            {"version":1,"type":"command","session":"\(session)","permit":"\(permit)","seq":1,"direction":5,"power":180,"lease_ms":1500,"inner_power":\(literal)}
+            """
+            XCTAssertThrowsError(try AutonomyCommand.decode(Data(json.utf8)), literal)
+        }
+        for direction in 0...4 {
+            XCTAssertThrowsError(try drive(["direction": direction, "power": direction == 0 ? 0 : 180,
+                                            "inner_power": direction == 0 ? 0 : 160]))
+        }
+        XCTAssertThrowsError(try decode(["version": 1, "type": "arm", "session": session,
+                                         "permit": permit, "inner_power": 160]))
+        XCTAssertThrowsError(try decode(["version": 1, "type": "stop", "id": "0123ABCD", "inner_power": 160]))
+    }
+
     func testArmAcknowledgementAndSubsequentPermitRequired() throws {
         var gate = AutonomyGate()
         gate.sawPermit(permit, now: 10)

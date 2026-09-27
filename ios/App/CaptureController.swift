@@ -52,6 +52,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private var liveEncoding = false
     private var encodedLiveFrames = 0
     private var liveEncodingMS = 0.0
+    private var liveMeshCache = LiveMeshCache() // liveEncodingQueue only
     private var lastRateTime = 0.0
     private var lastEncodedCount = 0
     private var lastSentCount = 0
@@ -361,17 +362,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             (0.05...1.5).contains(cameraY - $0.transform.columns.3.y) &&
             (3...64).contains($0.geometry.boundaryVertices.count)
         }
-        let camera = frame.camera.transform.columns.3
-        let localPlanes = planes.filter { plane in
-            let vertices = plane.geometry.boundaryVertices.map {
-                plane.transform * SIMD4<Float>($0.x, $0.y, $0.z, 1)
-            }
-            return vertices.map(\.x).max()! >= camera.x - 6 &&
-                vertices.map(\.x).min()! <= camera.x + 6 &&
-                vertices.map(\.z).max()! >= camera.z - 6 &&
-                vertices.map(\.z).min()! <= camera.z + 6
-        }
-        guard let plane = localPlanes.max(by: {
+        guard let plane = planes.max(by: {
             $0.planeExtent.width * $0.planeExtent.height < $1.planeExtent.width * $1.planeExtent.height
         }) else { return nil }
         let polygon: [[Float]] = plane.geometry.boundaryVertices.map { vertex in
@@ -379,6 +370,54 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             return [world.x, world.z]
         }
         return ["y": plane.transform.columns.3.y, "polygon": polygon]
+    }
+
+    /// A compact, replaceable scene-reconstruction snapshot for navigation.
+    /// Mesh anchors already describe world geometry; 5 cm quantization bounds
+    /// this addition to 24 KB and lets the backend retire absent mesh voxels.
+    private func liveMesh(_ frame: ARFrame) -> Data {
+        let camera = frame.camera.transform.columns.3
+        var seen = Set<UInt64>()
+        var entries: [(Float, Int16, Int16, Int16)] = []
+        for anchor in frame.anchors {
+            guard let mesh = anchor as? ARMeshAnchor else { continue }
+            let source = mesh.geometry.vertices
+            guard source.count > 0,
+                  source.offset + (source.count - 1) * source.stride + 12 <= source.buffer.length else { continue }
+            let base = UnsafeRawPointer(source.buffer.contents())
+            // Reserve representation from each anchor, including a small sign
+            // beyond nearer hallway walls.
+            let step = max(1, source.count / 250)
+            for index in stride(from: 0, to: source.count, by: step) {
+                let offset = source.offset + index * source.stride
+                let local = SIMD4<Float>(base.load(fromByteOffset: offset, as: Float.self),
+                                         base.load(fromByteOffset: offset + 4, as: Float.self),
+                                         base.load(fromByteOffset: offset + 8, as: Float.self), 1)
+                let world = mesh.transform * local
+                let dx = world.x - camera.x, dz = world.z - camera.z
+                guard world.x.isFinite, world.y.isFinite, world.z.isFinite,
+                      dx * dx + dz * dz <= 25,
+                      (-0.8...1.6).contains(world.y - camera.y),
+                      abs(world.x) < 1600, abs(world.y) < 1600, abs(world.z) < 1600 else { continue }
+                let x = Int16((world.x * 20).rounded())
+                let y = Int16((world.y * 20).rounded())
+                let z = Int16((world.z * 20).rounded())
+                let key = UInt64(UInt16(bitPattern: x)) << 32 |
+                          UInt64(UInt16(bitPattern: y)) << 16 |
+                          UInt64(UInt16(bitPattern: z))
+                guard seen.insert(key).inserted else { continue }
+                entries.append((dx * dx + dz * dz, x, y, z))
+            }
+        }
+        entries.sort { $0.0 < $1.0 }
+        var data = Data(capacity: min(entries.count, 4000) * 6)
+        for entry in entries.prefix(4000) {
+            for value in [entry.1, entry.2, entry.3] {
+                var little = value.littleEndian
+                withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+            }
+        }
+        return data
     }
 
     /// Live projection data never waits for full-color copies, mesh exports or disk writes.
@@ -397,9 +436,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             let jpeg = try liveEncoder.jpeg(image, width: 960, height: 720, quality: 0.6)
             let intrinsics = try WireProtocol.scaledIntrinsics(floats(frame.camera.intrinsics),
                 sourceWidth: width, sourceHeight: height, width: 960, height: 720)
+            // Keep the current snapshot in every replaceable live bundle. The
+            // laptop coalesces frames to its map cadence, so a once-only v3
+            // packet could disappear before the map worker accepts it.
+            let mesh = liveMeshCache.current(identity: identity, capture: frame.timestamp) {
+                liveMesh(frame)
+            }
             let bundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg, intrinsics: intrinsics,
                 depth: raw.depth, confidence: confidence, depthWidth: raw.width, depthHeight: raw.height,
-                floor: liveFloor(frame))
+                floor: liveFloor(frame), mesh: mesh)
             let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
             captureQueue.async {
                 guard self.identity == identity else { return }

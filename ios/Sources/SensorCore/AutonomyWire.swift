@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Separate from the frozen sensor wire and from the stock manual remote.
 /// Never accepts raw UART or substitutes a new permit for the laptop's permit.
@@ -12,6 +13,7 @@ public struct AutonomyCommand: Decodable {
     public let seq: UInt32?
     public let direction: Int?
     public let power: Int?
+    public let inner_power: Int?
     public let lease_ms: Int?
 
     public enum Error: Swift.Error { case invalidCommand }
@@ -23,7 +25,7 @@ public struct AutonomyCommand: Decodable {
         }
         let value = try JSONDecoder().decode(Self.self, from: data)
         guard value.version == 1 else { throw Error.invalidCommand }
-        let keys: Set<String>
+        var keys: Set<String>
         switch value.type {
         case .stop:
             keys = ["version", "type", "id"]
@@ -42,6 +44,18 @@ public struct AutonomyCommand: Decodable {
                   (direction == 0 && power == 0) || ((1...6).contains(direction) && (1...180).contains(power)) else {
                 throw Error.invalidCommand
             }
+            if let rawInner = object["inner_power"] {
+                keys.insert("inner_power")
+                // JSONDecoder accepts integral floats as Int; this field must
+                // preserve the protocol's integer token requirement as well.
+                guard let number = rawInner as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      !["f", "d"].contains(String(cString: number.objCType)),
+                      direction == 5 || direction == 6,
+                      let inner = value.inner_power, (power / 2...power).contains(inner) else {
+                    throw Error.invalidCommand
+                }
+            }
         }
         guard Set(object.keys) == keys else { throw Error.invalidCommand }
         return value
@@ -56,6 +70,7 @@ public struct AutonomyCommand: Decodable {
             case .command:
                 fields = ["N": 202, "H": session!, "C": permit!, "S": seq!,
                           "D1": direction!, "D2": power!, "T": 1500]
+                if let inner_power { fields["D3"] = inner_power }
             }
             return try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
         }

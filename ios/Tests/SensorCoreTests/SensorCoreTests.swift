@@ -3,6 +3,24 @@ import XCTest
 @testable import SensorCore
 
 final class SensorCoreTests: XCTestCase {
+    func testLiveMeshSnapshotIsRepeatedBetweenOneSecondResamples() {
+        var cache = LiveMeshCache()
+        let first = CaptureIdentity(sessionID: "first", epoch: 1)
+        let second = CaptureIdentity(sessionID: "second", epoch: 1)
+        var samples = 0
+        func sample() -> Data {
+            samples += 1
+            return samples == 2 ? Data() : Data([UInt8(samples)])
+        }
+        XCTAssertEqual(cache.current(identity: first, capture: 0, sample: sample), Data([1]))
+        XCTAssertEqual(cache.current(identity: first, capture: 0.5, sample: sample), Data([1]))
+        XCTAssertEqual(samples, 1)
+        XCTAssertEqual(cache.current(identity: first, capture: 1.1, sample: sample), Data())
+        XCTAssertEqual(cache.current(identity: first, capture: 1.5, sample: sample), Data())
+        XCTAssertEqual(samples, 2)
+        XCTAssertEqual(cache.current(identity: second, capture: 1.6, sample: sample), Data([3]))
+        XCTAssertEqual(samples, 3)
+    }
     func testControlPriorityReservesNetworkWithoutStoppingLocalCapture() {
         let budget = CaptureCadence(liveHz: 30, archiveHz: 2, seriousThermal: false, controlPriority: true)
         XCTAssertEqual(budget.liveHz, 10)
@@ -205,12 +223,29 @@ final class SensorCoreTests: XCTestCase {
             with: floorBundle[4..<(4 + floorHeaderSize)]) as? [String: Any])
         XCTAssertEqual(floorHeader["version"] as? Int, 2)
         XCTAssertNotNil(floorHeader["floor"])
+        var mesh = Data()
+        for value in [Int16(40), 22, -60] {
+            var little = value.littleEndian
+            mesh.append(withUnsafeBytes(of: &little) { Data($0) })
+        }
+        let meshBundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg,
+            intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
+            depth: depth, confidence: confidence, depthWidth: 4, depthHeight: 3,
+            floor: floor, mesh: mesh)
+        let meshHeaderSize = meshBundle.prefix(4).enumerated().reduce(0) {
+            $0 | Int($1.element) << ($1.offset * 8)
+        }
+        let meshHeader = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: meshBundle[4..<(4 + meshHeaderSize)]) as? [String: Any])
+        XCTAssertEqual(meshHeader["version"] as? Int, 3)
+        XCTAssertNotNil(meshHeader["mesh_voxels"])
         XCTAssertThrowsError(try WireProtocol.bundle(pose: pose, jpeg: jpeg,
             intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
             depth: depth, confidence: Data(repeating: 3, count: 12), depthWidth: 4, depthHeight: 3))
         if let path = ProcessInfo.processInfo.environment["GODSEYE_WIRE_FIXTURE"] {
             try bundle.write(to: URL(fileURLWithPath: path))
             try floorBundle.write(to: URL(fileURLWithPath: path + ".floor.bin"))
+            try meshBundle.write(to: URL(fileURLWithPath: path + ".mesh.bin"))
             try WireProtocol.json(pose).write(to: URL(fileURLWithPath: path + ".pose.json"))
         }
     }

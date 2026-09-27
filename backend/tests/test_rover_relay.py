@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from backend.app import create_app
 from backend.motion import DriveCommand, DriveStop
 from backend.rover_relay import RelayCar
+from backend.prototype import PrototypeActuation
 from backend.tests.test_actuation import fixture
 from backend.calibration import RoverCalibration
 from tools.car_rehearsal import EmptyDetector, PhoneScene, TEST_CALIBRATION, wait_for
@@ -91,6 +92,16 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.car.next_message())
         with self.assertRaises(ValueError):
             self.car.send(self.drive(4))
+
+    async def test_prototype_gentle_arc_reaches_phone_with_inner_wheel_power(self):
+        self.car.actuation = PrototypeActuation()
+        await self.arm()
+        self.car.send(self.drive(v_mps=.2, yaw_rate_rps=.1))
+        packet = self.car.next_message()
+        self.assertEqual((packet['direction'], packet['power']), (5, 180))
+        self.assertEqual(packet['inner_power'], 162)
+        self.car.send(self.drive(2, v_mps=.2))
+        self.assertNotIn('inner_power', self.car.next_message())
 
     async def test_dispatch_age_rechecked_after_backpressure_and_never_renewed(self):
         await self.arm()
@@ -380,8 +391,8 @@ class RelayHTTPTests(unittest.TestCase):
                             self.assertEqual((move['status'], move['reason']), ('completed', 'move_complete'), move)
                             self.assertGreaterEqual(move['achieved'], .1 - .02)  # measured stopping distance allowance
                             commands = [p for p in packets if p['type'] == 'command' and p['power']]
-                            # The slowest measured forward power (the prototype's fixed PWM 60, whose speed is
-                            # unknown), straight only, each on the longer lease. Distance comes from the pose.
+                            # The slowest measured forward power or the prototype's PWM 60 at its nominal
+                            # .05 request, straight only. Prototype speed is unknown; distance comes from pose.
                             power = 60 if getattr(actuation, 'prototype', False) else 20
                             self.assertTrue(commands and all((p['direction'], p['power'], p['lease_ms']) == (3, power, 1500)
                                                              for p in commands))
@@ -434,7 +445,8 @@ class RelayHTTPTests(unittest.TestCase):
                         self.assertEqual(goal.status_code, 200, goal.text)
                         wait_for(lambda: any(p['type'] == 'command' and p['power'] > 0 for p in packets))
                         commands = [p for p in packets if p['type'] == 'command']
-                        self.assertTrue(all(p['lease_ms'] == 1500 and 0 <= p['power'] <= 80 for p in commands))
+                        max_power = 180 if getattr(actuation, 'prototype', False) else 80
+                        self.assertTrue(all(p['lease_ms'] == 1500 and 0 <= p['power'] <= max_power for p in commands))
                         source.frames = False  # poses and firmware feedback stay healthy
                         wait_for(lambda: not app.state.armed)
                         self.assertEqual(app.state.stop_reason, 'sensing_stale')

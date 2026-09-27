@@ -46,7 +46,7 @@ Custom service `9E9E0001-3A17-4D2E-9A61-5C7D581F1800` has RX `...0002...` (write
 Only these commands pass the bridge, reconstructed from validated fields:
 
 - `N=2`: direction 1–4, PWM 1–80, lease exactly 200 ms.
-- `N=202`: autonomous direction 1–6, PWM 1–180, with an active session and fresh permit. Directions 1–4 use timed Uno `N=2`; direction 5 or 6 requests a forward left or right arc via the stock Uno `N=4` differential-speed command. The higher bound and arcs need the matching iPhone app; manual `N=2` keeps its 80 limit.
+- `N=202`: autonomous direction 1–6, PWM 1–180, with an active session and fresh permit. Directions 1–4 use timed Uno `N=2`; direction 5 or 6 requests a forward left or right arc via the stock Uno `N=4` differential-speed command. Optional integer `D3` sets the inner-wheel PWM in `D2 // 2...D2`; `D2` remains the outer-wheel PWM. Omitted `D3` retains the half/full split. Direction 5 forwards stock `(D1,D2)=(outer,inner)` and direction 6 forwards `(inner,outer)`. Null, booleans, floats, out-of-range values and `D3` on any non-arc command are rejected. The matching iPhone app forwards autonomous WebSocket `inner_power` as `D3`; the frozen sensor wire is unchanged. The higher bound and arcs need the matching iPhone app; manual `N=2` keeps its 80 limit.
 - `N=22,D1=1`: cached line-sensor query, preserving its request ID.
 - `N=100`: Stop.
 - `N=201`: open a drive session after a fresh ESP permit and a UART Stop handoff.

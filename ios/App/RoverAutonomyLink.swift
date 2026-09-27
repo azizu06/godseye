@@ -157,7 +157,12 @@ final class RoverAutonomyLink: ObservableObject {
     }
 
     private func feedback(_ reply: ElegooReply) {
-        guard enabled, validCapture(), let rover, let identity else { return }
+        guard enabled, let rover, let identity else { return }
+        if !validCapture() {
+            // Stop is valid without capture; report its matching acknowledgement
+            // even while movement, permits and Arm feedback stay paused.
+            guard case .stopAcknowledged = reply else { return }
+        }
         switch reply {
         case .permit(let permit):
             guard rover.unoAgeMS < 1500 else { return }

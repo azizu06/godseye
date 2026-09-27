@@ -207,11 +207,13 @@ class DetourFollowingTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejected_action_waits_across_identical_replans_then_retries_new_evidence(self):
         async with exploring() as (h, clock):
             await advance(h, clock, 2., until=lambda: bool(h.nav.path))
-            # Clear pose at the corner's margin with no supported pursuit arc,
-            # retaining Explore's entry bearing and selected forward frontier.
+            # Upstream clearance routing can now pass this corner. Explicitly
+            # reject every action to model an unsupported actuation step; this
+            # test verifies zero-wait retention, not the corner's geometry.
             h.rover.x, h.rover.z, h.rover.yaw = 3.07, 1.58, .4
             count = len(h.rover.commands)
-            await advance(h, clock, 12.)
+            with patch.object(navigator, 'pursuit_step_allowed', return_value=False):
+                await advance(h, clock, 12.)
             self.assertLessEqual(len(h.paths), 2, 'identical replans must not clear/reinstall the path')
             self.assertEqual(getattr(h.nav, 'waiting_reason', None), 'no_feasible_step')
             self.assertEqual(set(h.rover.commands[count:]), {(0., 0.)})
@@ -231,6 +233,9 @@ class DetourFollowingTests(unittest.IsolatedAsyncioTestCase):
                 async with exploring() as (h, clock):
                     await advance(h, clock, 2., until=lambda: bool(h.nav.path))
                     h.rover.x, h.rover.z, h.rover.yaw = 3.07, 1.58, .4
+                    rejection = patch.object(navigator, 'pursuit_step_allowed', return_value=False)
+                    rejection.start()
+                    self.addCleanup(rejection.stop)
                     await advance(h, clock, 2., until=lambda: h.nav.waiting_reason == 'no_feasible_step')
                     self.assertEqual(h.nav.waiting_reason, 'no_feasible_step')
                     if reason == 'operator_stop':

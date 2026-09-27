@@ -1,4 +1,4 @@
-# God's Eye Interfaces (v1, optional floor-frame v2)
+# God's Eye Interfaces (v1, optional floor/mesh frame extensions)
 
 Frozen contract between the iPhone app, the Mac backend, the dashboard, and the car.
 Change it only by agreement, and bump `version` when you do. Based on the v0.1 spec, section 13.
@@ -8,7 +8,8 @@ Change it only by agreement, and bump `version` when you do. Based on the v0.1 s
 - All devices join one phone hotspot, 2.4 GHz ("Maximize Compatibility" on).
 - The Mac backend listens on port **8765**. Put the Mac's hotspot IP in each client's config; don't hardcode it.
 - Existing messages carry `"version": 1`. A frame carrying a classified ARKit
-  floor plane uses `"version": 2`; its binary layout and all v1 fields stay the same.
+  floor plane uses `"version": 2`; a frame carrying a current compact ARKit mesh
+  uses `"version": 3`. Their binary layout and all v1 fields stay the same.
 
 ## Coordinates and units (v1)
 
@@ -86,16 +87,26 @@ object and set only that frame's `version` to 2:
 `y` is the plane's ARKit world height; `polygon` is 3–64 boundary vertices in
 world X–Z meters from the same ARFrame's anchor snapshot. The plane must be
 5 cm–1.5 m below the current camera, cover at least 0.04 m², and fit within
-20 m per side, with its X–Z bounds overlapping the camera's local 6 m window.
-A v2 frame without valid floor evidence is rejected. A v1 frame
+20 m per side. A v2 frame without valid floor evidence is rejected. A v1 frame
 cannot include `floor`. This seeds **free floor cells only** where an ARKit floor
 anchor exists; it does not manufacture obstacle depth for reflective objects.
-Navigation still requires the profile's minimum accepted depth samples; a floor
-polygon alone cannot refresh collision sensing.
 
-### 1d. `mesh` (optional, P2)
+A v3 frame includes `"mesh_voxels": "..."`: base64 of at most 4,000 world-space
+`int16` XYZ triples, little-endian, each coordinate in 5 cm units. It may also
+include the v2 `floor` object. The phone resamples the current mesh about once
+per second and repeats it in every live frame so frame coalescing cannot discard
+an update; an empty encoded snapshot removes its previous mesh obstacles.
+The backend keeps voxels within 5.5 m horizontally and 0.8 m below to 1.6 m
+above the current camera, dropping any cached voxels outside that window without
+discarding the frame's RGB-D or floor data. Mesh evidence is a short-lived navigation overlay,
+not permanent depth evidence; absent snapshots expire after 2.5 seconds of
+newer accepted frames. Observed RGB-D obstacles remain in the persistent map.
 
-Leave it out of v1. Add it with its own message type when the point cloud works.
+### 1d. Full mesh archive
+
+The v1 live stream has no mesh message. Full classified ARKit meshes remain in
+the separate v2 capture archive; the v3 live frame carries only bounded voxel
+positions for current navigation occupancy.
 
 ---
 
@@ -138,6 +149,10 @@ reconnect/restart; a new session/epoch has none until its first successful Explo
 Legacy/restarted sessions without a recorded entry are not backfilled: start a new
 session at the intended entry point. This metadata changes no motion authority or
 walking-clearance assumptions; `/route` remains the existing visualization-only API.
+
+`health` may also include `navigation_wait_reason`: `null` while following or idle,
+or a reason such as `no_feasible_step` or `explore_complete` while Explore stays armed
+at zero awaiting new map evidence. It does not replace `stop_reason`.
 
 
 ## 3. Dashboard → Mac: REST on `http://<mac>:8765`
@@ -187,3 +202,17 @@ Write it behind one Python function, `drive(v_mps, yaw_rate_rps)`, so nothing el
 - **Backend:** `tools/fake_phone.py` replays a recorded session (or random poses) into `/phone`.
 - **Dashboard:** `tools/fake_live.py` emits every `/live` message type with made-up objects and a moving pose.
 - **iOS:** until the backend is up, test against `websocat -s 8765`.
+
+### Optional Explore pacing diagnostics
+
+`GET /autonomy` may include `scan_pacing: null` or
+`{ phase: "moving" | "settling" | "capturing", result: null | "stable_support" |
+"capture_limited" | "support_limit" | "interrupted", stable_frames, checkpoints }`.
+It describes bounded stationary capture opportunities in the active Explore run,
+not whole-map quality, physical speed, image sharpness or mission completion.
+`stable_frames` counts distinct usable same-frame captures after measured settling
+at the current/latest checkpoint; `checkpoints` counts attempts in that run.
+Stop or another run clears these diagnostics. Existing optional
+`health.navigation_wait_reason` uses `scan_settling` / `scan_capturing` during the
+idle hold; safety/navigation reasons take priority. This adds no command or phone
+wire fields and changes no selected-destination behavior.

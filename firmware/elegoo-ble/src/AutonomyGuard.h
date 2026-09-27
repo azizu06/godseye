@@ -92,7 +92,9 @@ class AutonomyGuard {
   uint32_t sequence() const { return lastSequence; }
 
  private:
-  static constexpr size_t PERMIT_COUNT = 6;
+  // Permits arrive every 50 ms, and the oldest is still valid at exactly
+  // PERMIT_MS. Retain that boundary token alongside the newly issued token.
+  static constexpr size_t PERMIT_COUNT = PERMIT_MS / 50 + 1;
   struct Permit { uint64_t token = 0; uint32_t issued = 0; };
   Permit permits[PERMIT_COUNT];
   size_t cursor = 0;

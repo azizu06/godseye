@@ -302,7 +302,8 @@ final class RoverController: ObservableObject {
         } else if autonomyEnabled && now - lastPermit >= 0.5 {
             // Never flush motion sampled before a permit gap. The ESP's motor
             // command-loss brake acts independently while this arm session waits to resume.
-            autonomyPending = nil
+            // An explicit Stop does not require a permit and must keep its acknowledgement ID.
+            if autonomyPending?.type != .stop { autonomyPending = nil }
         }
         if busy {
             if now - busySince > 0.5 { disconnect(reason: "Rover send stalled · controls disabled") }

@@ -2684,6 +2684,10 @@ input[type="checkbox"] {
   box-shadow: 0 8px 30px #0003;
   border-radius: 10px;
 }
+.operator-panel.compact .navigation-wait {
+  max-width: min(360px, calc(100vw - 24px));
+  overflow-wrap: anywhere;
+}
 .operator-panel.compact .section-heading,
 .operator-panel.compact .drive-pad,
 .operator-panel.compact .eyebrow,

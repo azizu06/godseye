@@ -28,7 +28,8 @@ from backend.exploration import ExplorationMemory
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
-from backend.occupancy import OCCUPIED, OccupancySnapshot
+from backend.occupancy import FREE, OCCUPIED, OccupancySnapshot
+from backend.scan_pacing import CameraPose, ScanPacer
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,13 @@ class NavSettings:
     rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
     start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
-    blocked_check_s: float = .25  # at most this often, a grid change triggers a path_blocked check
+    blocked_check_s: float = .20  # at most this often, a grid change triggers a path_blocked check
     map_max_age_s: float = 1.  # accepted sensing, independent of poses and /live publication
     pose_max_age_s: float = .25  # matches the health/watchdog freshness rule
     no_progress_s: float = 5.  # commanded motion without pose change for this long stops the run
     progress_m: float = .05
     progress_rad: float = .15
-    planner: PlannerConfig = field(default_factory=PlannerConfig)
+    planner: PlannerConfig = field(default_factory=lambda: PlannerConfig(clearance_weight=4.))
     follower: FollowerConfig = field(default_factory=FollowerConfig)
 
 
@@ -67,6 +68,7 @@ class RoverPose:
     yaw_rad: float
     age_s: float
     tracking: str
+    camera: CameraPose | None = None
 
 
 def pose_from_transform(transform, camera_yaw_rad: float = 0.) -> tuple[float, float, float]:
@@ -148,14 +150,77 @@ def recoverable_start(snapshot, x, z, extra_margin_m):
 
 
 def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
-    if snapshot.traversable(next_x, next_z):
-        return True
-    if snapshot.traversable(x, z) or not recoverable_start(snapshot, x, z, extra_margin_m):
+    if not all(math.isfinite(v) for v in (x, z, next_x, next_z)):
         return False
-    before = obstacle_clearance_m(snapshot, x, z)
-    after = obstacle_clearance_m(snapshot, next_x, next_z)
-    return (snapshot.cell(next_x, next_z) != OCCUPIED and
-            after >= snapshot.inflation_m - extra_margin_m and after >= before)
+    if snapshot.traversable(x, z):
+        if not snapshot.traversable(next_x, next_z):
+            return False
+    elif not recoverable_start(snapshot, x, z, extra_margin_m):
+        return False
+    if snapshot.cell(next_x, next_z) == OCCUPIED:
+        return False
+    radius, cell = snapshot.inflation_m, snapshot.cell_m
+    r0, c0 = snapshot._index(min(x, next_x) - radius, min(z, next_z) - radius)
+    r1, c1 = snapshot._index(max(x, next_x) + radius, max(z, next_z) + radius)
+    height, width = snapshot.cells.shape
+    r0, c0 = min(height, max(0, r0)), min(width, max(0, c0))
+    r1, c1 = min(height, max(0, r1 + 1)), min(width, max(0, c1 + 1))
+    window = snapshot.cells[r0:r1, c0:c1]
+    rows, cols = np.where(window == OCCUPIED if snapshot.unknown_traversable else window != FREE)
+    left = snapshot.origin[0] + (cols + c0) * cell
+    top = snapshot.origin[1] + (rows + r0) * cell
+    def distances(px, pz):
+        dx = np.maximum(np.maximum(left - px, px - left - cell), 0.)
+        dz = np.maximum(np.maximum(top - pz, pz - top - cell), 0.)
+        return np.hypot(dx, dz)
+    before, after = distances(x, z), distances(next_x, next_z)
+    dx, dz = next_x - x, next_z - z
+    length2 = dx * dx + dz * dz
+    closest = np.minimum(before, after)
+    if length2:
+        # Segment-to-box distance: endpoints, box corners projected onto the
+        # segment, and intersections. Endpoints alone can cut across a corner.
+        cx = np.stack((left, left + cell, left, left + cell), axis=1)
+        cz = np.stack((top, top, top + cell, top + cell), axis=1)
+        t = np.clip(((cx - x) * dx + (cz - z) * dz) / length2, 0., 1.)
+        corners = np.hypot(cx - x - t * dx, cz - z - t * dz).min(axis=1)
+        closest = np.minimum(closest, corners)
+        enter, leave = np.zeros(len(left)), np.ones(len(left))
+        interior_line = np.ones(len(left), dtype=bool)
+        for origin, delta, low in ((x, dx, left), (z, dz, top)):
+            if delta:
+                a, b = (low - origin) / delta, (low + cell - origin) / delta
+                enter, leave = np.maximum(enter, np.minimum(a, b)), np.minimum(leave, np.maximum(a, b))
+            else:
+                enter = np.where((origin >= low) & (origin <= low + cell), enter, np.inf)
+                interior_line &= (origin > low) & (origin < low + cell)
+        # Zero-clearance starts still cannot pass through occupied interiors.
+        # An outward departure may touch a boundary only at the initial point.
+        if np.any(interior_line & (enter < leave)):
+            return False
+        closest = np.where(enter <= leave, 0., closest)
+    # Never deepen an existing overlap or enter another obstacle's clearance
+    # area. Checking only the nearest obstacle misses a second one ahead.
+    return bool(np.all(closest + 1e-9 >= np.minimum(before, radius)))
+
+
+def pursuit_step_allowed(snapshot, x, z, yaw, v, w, period, distance, extra_margin_m):
+    """Check the next tick and the nominal pursuit arc at half-cell spacing."""
+    heading = yaw + w * period / 2
+    if not recovery_step_allowed(snapshot, x, z, x + v * math.sin(heading) * period,
+                                 z + v * math.cos(heading) * period, extra_margin_m):
+        return False
+    if v == 0:
+        return True
+    steps = max(1, math.ceil(distance / (snapshot.cell_m / 2)))
+    dt = distance / (v * steps)
+    for _ in range(steps):
+        heading = yaw + w * dt / 2
+        nx, nz = x + v * math.sin(heading) * dt, z + v * math.cos(heading) * dt
+        if not recovery_step_allowed(snapshot, x, z, nx, nz, extra_margin_m):
+            return False
+        x, z, yaw = nx, nz, yaw + w * dt
+    return True
 
 
 def pursuit_step_allowed(snapshot, x, z, yaw, v, w, period, distance, extra_margin_m):
@@ -199,19 +264,22 @@ class Navigator:
     def __init__(self, settings: NavSettings, *, pose: Callable[[], RoverPose | None],
                  occupancy: Callable[[], OccupancySnapshot | None], submit: Callable[[int, str, float, float], bool],
                  stop: Callable[[str], None], publish: Callable[[dict], None],
-                 armed_mode: Callable[[], str | None], pause_reason: Callable[[], str | None] | None = None):
+                 armed_mode: Callable[[], str | None], pause_reason: Callable[[], str | None] | None = None,
+                 scan_observation: Callable | None = None):
         """``armed_mode()`` is the current mode while armed, else None; a run whose mode
         it no longer matches stops at its next tick, even if ``halt()`` was missed."""
         self.settings = settings
         self._pose, self._occupancy, self._submit = pose, occupancy, submit
         self._stop, self._publish, self._armed_mode = stop, publish, armed_mode
         self._pause_reason = pause_reason or (lambda: None)
+        self._scan_observation = scan_observation
+        self.scan_status = None
         self._task: asyncio.Task | None = None
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
         self.goal: tuple[float, float] | None = None
         self.exploration = ExplorationMemory()
-        self.waiting_reason: str | None = None  # active Explore at zero, not a terminal stop
+        self.waiting_reason: str | None = None
 
     @property
     def active(self) -> bool:
@@ -231,7 +299,7 @@ class Navigator:
 
     # Planning runs in worker threads -------------------------------------------------
 
-    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None):
+    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None, excluded=()):
         """Read the authoritative snapshot in this worker, then plan only known-clear floor."""
         def straight_ahead(points):
             fx, fz = math.sin(yaw), math.cos(yaw)
@@ -255,19 +323,23 @@ class Navigator:
         if not (snapshot.traversable(*start) or
                 recoverable_start(snapshot, *start, self.settings.start_recovery_margin_m)):
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
+        heading = yaw if explore_yaw is None else explore_yaw
+
+        target_mask = self.exploration.targets(snapshot, grid) if explore else None
+
+        def next_frontier():
+            preferred = preferred_explore_frontier(grid, start, heading, config,
+                                                    allow_unknown=snapshot.unknown_traversable,
+                                                    excluded=excluded, target_mask=target_mask)
+            return (preferred if preferred is not None else
+                    nearest_frontier(grid, start, config,
+                                     allow_unknown=snapshot.unknown_traversable,
+                                     excluded=excluded, target_mask=target_mask))
+
         if explore:
-            heading = yaw if explore_yaw is None else explore_yaw
-            target_mask = self.exploration.targets(snapshot, grid)
-
-            def frontier():
-                preferred = preferred_explore_frontier(grid, start, heading, config,
-                                                       allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
-                return preferred if preferred is not None else nearest_frontier(
-                    grid, start, config, allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
-
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
-                goal = frontier()
+                goal = next_frontier()
                 if goal is None:
                     return 'explore_complete', snapshot
             else:
@@ -275,7 +347,7 @@ class Navigator:
                 # floor. A goal that was yesterday's frontier should advance
                 # before the rover reaches it and brakes for another search.
                 farther = preferred_explore_frontier(grid, start, heading, config,
-                                                    allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
+                                                    allow_unknown=snapshot.unknown_traversable, excluded=excluded, target_mask=target_mask)
                 if farther is not None:
                     fx, fz = math.sin(heading), math.cos(heading)
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
@@ -283,14 +355,16 @@ class Navigator:
                         goal = farther
         result = plan_path(grid, start, goal, config)
         if explore and result.reason == 'no_path':
-            # A clear destination can be cut off by a new wall. Retain goals
-            # while a detour exists, but replace a proven unreachable one with
-            # a frontier reachable in this same accepted map snapshot.
             self.exploration.reject(snapshot.session, goal)
-            goal = frontier()
-            if goal is None:
+            # A new wall can disconnect an otherwise free implicit frontier.
+            # First try its detour above; only proven unreachability permits a
+            # different reachable frontier, with one bounded retry on this map.
+            replacement = next_frontier()
+            if replacement is None:
                 return 'explore_complete', snapshot
-            result = plan_path(grid, start, goal, config)
+            if replacement != goal:
+                goal = replacement
+                result = plan_path(grid, start, goal, config)
         if explore and result.ok:
             corridor = corridor_alignment(grid, start, goal, yaw, config)
             centered = corridor is None
@@ -342,6 +416,7 @@ class Navigator:
         task, self._task = self._task, None
         self.kind = self.goal = None
         self.waiting_reason = None
+        self.scan_status = None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
         return task
@@ -372,6 +447,8 @@ class Navigator:
     async def _run(self, kind, goal, initial, generation):
         s = self.settings
         explore = kind == 'explore'
+        pacer = ScanPacer() if explore and self._scan_observation is not None else None
+        self.scan_status = pacer.status if pacer is not None else None
         period = 1. / s.rate_hz
         follower = None
         snapshot = None
@@ -380,12 +457,15 @@ class Navigator:
             follower = PurePursuit(initial.points, s.follower)
             last_plan = time.monotonic()
             self._show(initial.points)
-        job = None
+        job = check_job = None
+        checking_follower = None
+        checked_revision = None
+        visited = []
         progress = None  # (x, z, yaw, since) while motion is commanded
         fast_corridor = False
         explore_heading = None
         leg_origin = None
-        rejected = None  # map/path/pose of an infeasible action; survives identical replans
+        rejected = None  # session/revision/path/pose for a pursuit step that cannot move
         try:
             while True:
                 now = time.monotonic()
@@ -393,11 +473,17 @@ class Navigator:
                     return self._finish('disarmed')
                 if explore and (reason := self._pause_reason()) is not None:
                     self.waiting_reason = reason
+                    if pacer is not None and pacer.active:
+                        pacer.finish('interrupted')
                     if follower is not None or snapshot is not None or job is not None or progress is not None:
                         if job is not None:
                             job.cancel()
                             job = None
+                        if check_job is not None:
+                            check_job.cancel()
+                            check_job = None
                         snapshot = follower = progress = None
+                        checked_revision = None
                         fast_corridor = False
                         goal, last_plan = None, -math.inf
                         self._show([])
@@ -414,55 +500,90 @@ class Navigator:
                 if explore and explore_heading is None:
                     explore_heading = yaw
 
+                # Reading current sensing never waits behind a route search. A
+                # route job owns geometry; the independent check owns freshness.
+                outcomes = []
+                if check_job is not None and check_job.done():
+                    try:
+                        checked = check_job.result()
+                    except Exception:
+                        logger.exception('navigation map check failed')
+                        return self._finish('nav_error')
+                    check_job = None
+                    if checking_follower is not follower and checked[2] == 'path_blocked':
+                        checked = ('check', checked[1], None)
+                    elif checking_follower is follower and checked[1] is not None:
+                        checked_revision = checked[1].revision
+                    outcomes.append(checked)
                 if job is not None and job.done():
                     try:
-                        outcome = job.result()
+                        outcomes.append(job.result())
                     except Exception:
                         logger.exception('navigation planning failed')
                         return self._finish('nav_error')
                     job = None
-                    outcome_kind, snapshot = outcome[0], outcome[1]
+                for outcome in outcomes:
+                    outcome_kind, observed = outcome[0], outcome[1]
+                    # A failed search (or exhausted frontier set) describes the
+                    # map it searched. Do not disarm or blacklist a goal after
+                    # newer geometry has already cleared that obstruction.
+                    failed_plan = (outcome_kind == 'explore_complete' or
+                                   (outcome_kind == 'plan' and not outcome[3].ok))
+                    if (outcome_kind == 'plan' and not outcome[3].ok
+                            and outcome[3].reason in {'sensing_stale', 'map_unknown'}
+                            and map_problem(snapshot, s.map_max_age_s) is None):
+                        last_plan = -math.inf
+                        continue
+                    if (failed_plan and snapshot is not None and observed is not None
+                            and (snapshot.accepted_at or 0.) > (observed.accepted_at or 0.)
+                            and (snapshot.session != observed.session
+                                 or snapshot.origin != observed.origin
+                                 or snapshot.inflation_m != observed.inflation_m
+                                 or snapshot.unknown_traversable != observed.unknown_traversable
+                                 or snapshot.blockers != observed.blockers
+                                 or not np.array_equal(snapshot.cells, observed.cells))):
+                        last_plan = -math.inf
+                        continue
+                    if (snapshot is None or observed is None or observed.session != snapshot.session
+                            or (observed.accepted_at or 0.) >= (snapshot.accepted_at or 0.)):
+                        snapshot = observed
                     if outcome_kind == 'explore_complete':
-                        # A mapped area can have no frontier until more camera
-                        # evidence arrives. Stay in Explore at zero and check again.
                         goal, follower, progress, last_plan = None, None, None, now
                         fast_corridor = False
                         self.waiting_reason = 'explore_complete'
                         self._show([])
-                        if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                            return self._finish('command_stale')
-                        await asyncio.sleep(period)
                         continue
                     if outcome_kind == 'check' and outcome[2]:
-                        if explore and outcome[2] == 'path_blocked':
-                            follower, progress, last_plan = None, None, -math.inf
-                            fast_corridor = False
-                            self.waiting_reason = 'path_blocked'
-                            self._show([])
-                            if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                return self._finish('command_stale')
-                            await asyncio.sleep(period)
-                            continue
-                        return self._finish(outcome[2])
+                        if outcome[2] == 'path_blocked':
+                            # Keep travelling on the still-clear prefix while a
+                            # replacement route is computed. The command rollout
+                            # below prevents continuing into the obstruction.
+                            last_plan = -math.inf
+                        else:
+                            return self._finish(outcome[2])
                     if outcome_kind == 'plan':
-                        _, _, goal, result = outcome
+                        _, _, next_goal, result = outcome
                         if not result.ok:
                             if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
-                                follower, progress, last_plan = None, None, now
+                                if next_goal is not None and result.reason == 'no_path':
+                                    visited.append(next_goal)
+                                    visited = visited[-64:]
+                                goal = follower = progress = None
+                                last_plan = now - s.replan_s + .5
                                 fast_corridor = False
                                 self.waiting_reason = result.reason
                                 self._show([])
-                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                    return self._finish('command_stale')
-                                await asyncio.sleep(period)
                                 continue
                             return self._finish(PLAN_STOP_REASONS.get(result.reason, result.reason))
-                        self.goal = goal
+                        goal = self.goal = next_goal
                         if explore and leg_origin is None:
                             leg_origin = (x, z)
                         fast_corridor = result.fast_corridor
                         follower = (follower.replaced(result.points) if follower is not None
                                     else PurePursuit(result.points, s.follower))
+                        last_plan = now
+                        last_check = -math.inf
+                        checked_revision = None  # this new route has not been checked on the newest map
                         self._show(result.points)
 
                 if snapshot is not None:
@@ -476,14 +597,15 @@ class Navigator:
                     if snapshot is None or now - last_plan >= s.replan_s or goal_near:
                         last_plan = now
                         job = asyncio.ensure_future(asyncio.to_thread(
-                            self._plan, occupancy, (x, z), goal, explore, yaw, explore_heading))
-                    elif now - last_check >= s.blocked_check_s:
-                        last_check = now
-                        # Zero-motion waits still refresh accepted sensing, in a
-                        # worker like moving runs; an old plan is not a sensor gap.
-                        points, segment = (list(follower.path), follower.segment) if follower else ([], 0)
-                        job = asyncio.ensure_future(asyncio.to_thread(
-                            self._check, occupancy, points, segment, snapshot.revision))
+                            self._plan, occupancy, (x, z), goal, explore, yaw, explore_heading, tuple(visited)))
+                if check_job is None and now - last_check >= s.blocked_check_s:
+                    last_check = now
+                    checking_follower = follower
+                    remaining = ([[x, z]] + list(follower.path[follower.segment + 1:])
+                                 if follower is not None else [])
+                    check_job = asyncio.ensure_future(asyncio.to_thread(
+                        self._check, self._occupancy, remaining, 0,
+                        checked_revision))
 
                 if explore and snapshot is not None:
                     loop = self.exploration.observe(snapshot.session, x, z, yaw)
@@ -497,6 +619,7 @@ class Navigator:
                         self._show([])
 
                 v = w = 0.
+                command_blocked = False
                 if follower is not None and snapshot is not None:
                     if not (snapshot.traversable(x, z) or
                             recoverable_start(snapshot, x, z, s.start_recovery_margin_m)):
@@ -504,6 +627,8 @@ class Navigator:
                             follower, progress, last_plan = None, None, now
                             fast_corridor = False
                             self.waiting_reason = 'start_blocked'
+                            if pacer is not None and pacer.active:
+                                pacer.finish('interrupted')
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
@@ -516,9 +641,9 @@ class Navigator:
                                 and points == follower.path
                                 and math.hypot(x - rx, z - rz) < s.progress_m
                                 and abs(math.remainder(yaw - ryaw, math.tau)) < s.progress_rad):
-                            # New plans are not new physical evidence. Keep the zero
-                            # wait until the map, route or pose meaningfully changes.
                             self.waiting_reason = 'no_feasible_step'
+                            if pacer is not None and pacer.active:
+                                pacer.finish('interrupted')
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
                             await asyncio.sleep(period)
@@ -535,6 +660,9 @@ class Navigator:
                         if leg_origin is not None and math.hypot(x - leg_origin[0], z - leg_origin[1]) >= 1.2:
                             explore_heading = math.atan2(x - leg_origin[0], z - leg_origin[1])
                         leg_origin = (x, z)
+                        if goal is not None:
+                            visited.append(goal)
+                            visited = visited[-64:]
                         # A replan/check belongs to the frontier just reached. Its
                         # late result must not restore that goal on the next tick.
                         if job is not None:
@@ -548,42 +676,44 @@ class Navigator:
                                 (fast_corridor or straight_runway_m(
                                     follower.path, follower.segment, x, z, yaw) >= .8)):
                             v = .2  # regain cruise on clear straight legs after an obstacle
-                        # Reject a pursuit arc cutting a corner of the footprint-clear path.
-                        def allowed(v, w):
-                            distance = (min(lookahead, math.dist((x, z), target))
-                                        if target is not None else lookahead)
-                            return pursuit_step_allowed(
-                                snapshot, x, z, yaw, v, w, period, distance,
-                                s.start_recovery_margin_m)
-
-                        # Try closer points on this same safe path before replanning.
-                        # The lower bound follows map/arrival resolution, not one scene.
                         lookahead = follower.config.lookahead_m
                         target = command.target
                         minimum = max(snapshot.cell_m, follower.config.arrive_tolerance_m)
-                        feasible = allowed(v, w)
+
+                        def allowed(v, w, target, lookahead):
+                            distance = (min(lookahead, math.dist((x, z), target))
+                                        if target is not None else lookahead)
+                            return pursuit_step_allowed(snapshot, x, z, yaw, v, w, period,
+                                                        distance, s.start_recovery_margin_m)
+
+                        feasible = allowed(v, w, target, lookahead)
                         while not feasible and lookahead > minimum:
                             lookahead = max(minimum, lookahead / 2)
                             candidate = follower.step(x, z, yaw, lookahead_m=lookahead)
                             v, w, target = candidate.v_mps, candidate.yaw_rate_rps, candidate.target
-                            feasible = allowed(v, w)
+                            feasible = allowed(v, w, target, lookahead)
                         if not feasible:
                             if explore:
                                 rejected = (snapshot.session, snapshot.revision, list(follower.path), x, z, yaw)
-                                last_plan = now
-                                progress = None  # deliberate zero wait is not commanded-motion stall
+                                progress = None  # zero wait is not commanded-motion stall
                                 self.waiting_reason = 'no_feasible_step'
-                                logger.info('Explore waiting: no feasible pursuit step')
-                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                    return self._finish('command_stale')
-                                await asyncio.sleep(period)
-                                continue
-                            return self._finish('path_blocked')
+                                last_plan = now
+                                v = w = 0.
+                            else:
+                                v = w = 0.
+                                command_blocked = True
+                                last_plan = -math.inf
 
                 if explore and s.adaptive_explore and snapshot is not None:
                     v, w = exploration_command(snapshot, x, z, yaw, v, w, now, s.map_max_age_s)
 
-                if v or w:
+                if pacer is not None:
+                    feasible_forward = v > 0. and abs(w) < .1 and self.waiting_reason is None
+                    if pacer.step(now, pose.camera, self._scan_observation(), feasible_forward):
+                        v = w = 0.
+                        self.waiting_reason = 'scan_' + pacer.status['phase']
+
+                if v or w or command_blocked:
                     if progress is None or (math.hypot(x - progress[0], z - progress[1]) >= s.progress_m
                                             or abs(math.remainder(yaw - progress[2], math.tau)) >= s.progress_rad):
                         progress = (x, z, yaw, now)
@@ -600,3 +730,5 @@ class Navigator:
         finally:
             if job is not None:
                 job.cancel()
+            if check_job is not None:
+                check_job.cancel()

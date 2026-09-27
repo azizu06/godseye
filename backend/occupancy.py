@@ -294,6 +294,8 @@ class OccupancyGrid:
         self._camera_xz = (0., 0.)
         self._last_depth_view = None
         self._retirement_cursor = 0
+        self._mesh_keys = np.empty(0, np.int64)  # latest ARKit reconstruction only
+        self._mesh_at = None
         self._lock = threading.Lock()
 
     @property
@@ -325,14 +327,47 @@ class OccupancyGrid:
                                              first, current, cursor=cursor)
         return retired, cursor + 512
 
+    def mesh_keys_consistent_with_depth(self, mesh_keys, current: DepthView):
+        """Drop current ARKit mesh voxels seen through in two fresh depth views.
+
+        ARKit can retain a person's mesh anchor after they walk away. Uncertain
+        depth or one clear frame cannot erase a real thin obstacle.
+        """
+        keys = np.asarray(mesh_keys, dtype=np.int64)
+        if not len(keys):
+            return keys
+        with self._lock:
+            first = self._last_depth_view
+            floor_y = self._floor_y
+            cursor = self._retirement_cursor
+            stored = self._keys.copy() if floor_y is None else None
+        if first is None or (current.session_id, current.map_epoch) != self.session:
+            return keys
+        if floor_y is None and len(stored):
+            floor_y = estimate_floor(stored % _LEVELS)
+        contradicted = contradicted_obstacle_keys(
+            keys, np.full(len(keys), OCCUPIED_MIN_HITS, np.int32), floor_y,
+            self.obstacle_from_m, first, current, max_candidates=1024,
+            cursor=cursor)
+        return keys[~np.isin(keys, contradicted, assume_unique=True)]
+
     def commit(self, evidence: Evidence, now: float, *, retirement_keys=None,
-               retirement_cursor=None, depth_view: DepthView | None = None) -> None:
+               retirement_cursor=None, depth_view: DepthView | None = None,
+               mesh_keys=None) -> None:
         """Fold one accepted frame in; `now` is a monotonic time in seconds.
 
         Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
         """
         keys = evidence.keys
         with self._lock:
+            mesh_changed = False
+            if mesh_keys is not None:
+                current_mesh = np.unique(np.asarray(mesh_keys, dtype=np.int64))
+                if len(current_mesh) > 4000:
+                    raise ValueError('mesh snapshot exceeds 4000 voxels')
+                mesh_changed = not np.array_equal(self._mesh_keys, current_mesh)
+                self._mesh_keys = current_mesh
+                self._mesh_at = now
             if depth_view is not None:
                 if (depth_view.session_id, depth_view.map_epoch) != self.session:
                     raise ValueError('depth view belongs to another map')
@@ -367,7 +402,7 @@ class OccupancyGrid:
             self.accepted_at = now
             self.sensing_confidence = evidence.sensing_confidence
             if not len(keys):
-                if removed:
+                if removed or mesh_changed:
                     self._dirty = True
                     self.revision += 1
                 return
@@ -412,6 +447,11 @@ class OccupancyGrid:
         with self._lock:
             floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
             anchored, revision = self._floor_from_anchor, self.revision
+            mesh_keys = self._mesh_keys.copy() if (self._mesh_at is not None
+                and self.accepted_at is not None and self.accepted_at - self._mesh_at <= 2.5) else None
+        if mesh_keys is not None and len(mesh_keys):
+            keys = np.concatenate((keys, mesh_keys))
+            hits = np.concatenate((hits, np.full(len(mesh_keys), OCCUPIED_MIN_HITS, np.int32)))
         if floor_y is not None and camera_y is not None and camera_y - floor_y < MIN_CAMERA_FLOOR_M:
             floor_y = None
         if not anchored:
@@ -425,6 +465,15 @@ class OccupancyGrid:
         if floor_y is None:
             return None
         picture = classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
+        if picture is not None and mesh_keys is not None and len(mesh_keys):
+            col0, row0, cells, floor = picture
+            ix, iz = np.divmod(mesh_keys // _LEVELS, _SIDE)
+            height = Y_MIN_M + (mesh_keys % _LEVELS + .5) / _SLICES_PER_M - floor
+            obstacle = ((height >= self.obstacle_from_m - _EPS)
+                        & (height <= OBSTACLE_MAX_M + _EPS)
+                        & (ix >= col0) & (ix < col0 + cells.shape[1])
+                        & (iz >= row0) & (iz < row0 + cells.shape[0]))
+            cells[iz[obstacle] - row0, ix[obstacle] - col0] = OCCUPIED
         if picture is not None:
             with self._lock:
                 # A snapshot worker must not overwrite an anchor committed
