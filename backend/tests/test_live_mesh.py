@@ -9,7 +9,7 @@ from backend.app import create_app
 from backend.frame_bundle import FrameValidationError, parse_frame_bundle
 from backend.mapping import floor_plane_points
 from backend.occupancy import FREE, OCCUPIED, OccupancyGrid, frame_evidence
-from backend.navigator import recoverable_start
+from backend.navigator import obstacle_clearance_m
 from backend.prototype import prototype_geometry, filter_prototype_self_mesh
 from backend.tests.test_localization import bundle, fixture
 from backend.tests.test_map_transport import fresh, hello, wait_for
@@ -84,7 +84,8 @@ class LiveMeshTests(unittest.TestCase):
                     grid.commit(floor, now, mesh_keys=frame_evidence(mesh).keys)
                 snapshot = grid.map_snapshot()
                 self.assertEqual(snapshot.traversable(1., 3.), expected)
-                self.assertEqual(recoverable_start(snapshot, 1., 3., .1524), expected)
+                clearance = obstacle_clearance_m(snapshot, 1., 3.)
+                self.assertEqual(clearance > geometry.inflation_m, expected)
 
     def test_v3_decodes_bounded_world_voxels(self):
         frame = parse_frame_bundle(mesh_bundle([[20, 42, 60]]),
