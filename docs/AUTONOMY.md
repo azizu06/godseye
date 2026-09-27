@@ -370,3 +370,11 @@ above and require matching backend, phone and ESP updates. A changing-map test
 (`backend.tests.test_flowing_detour`) also runs the actual asynchronous Navigator:
 an obstacle appears after driving starts, steering begins at least 1.2 m before
 its near face, and the rover keeps translating at nominal cruise through the pass.
+
+Deployment on 2026-09-27: the signed iPhone app containing gradual steering and
+the current-mesh cache was installed and verified on the paired iPhone 17 Pro.
+The identified ESP32-S3 application was backed up, flashed, independently
+digest-verified and reset. The combined backend was restarted from main, retaining
+the existing database and capture paths, and the live dashboard serves the updated
+Explore recovery logic. No nonzero hardware command was sent during deployment;
+the new detour behavior is verified in synthetic tests, not a physical hallway run.

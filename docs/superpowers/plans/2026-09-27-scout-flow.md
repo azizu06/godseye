@@ -82,3 +82,8 @@ legacy arc fallback. Explore intent remains separate from temporary motor readin
   tests passed with `--maxWorkers=1`; the unchanged throughput assertions had
   exceeded their existing five-second limits under simultaneous test load.
   Production build and formatting passed (existing bundle-size warning).
+- Integrated main at `0631368`, verified the final phone installation, and
+  restarted the live prototype backend from main. Existing database and capture
+  paths remain in the scan checkout and are still in use; do not archive it
+  while those data paths are needed. Live API startup and updated dashboard
+  module were checked. All implementation and deployment tasks are complete.
