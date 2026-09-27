@@ -208,12 +208,16 @@ class Navigator:
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         if explore:
             heading = yaw if explore_yaw is None else explore_yaw
+
+            def frontier():
+                preferred = preferred_explore_frontier(grid, start, heading, config,
+                                                       allow_unknown=snapshot.unknown_traversable)
+                return preferred if preferred is not None else nearest_frontier(
+                    grid, start, config, allow_unknown=snapshot.unknown_traversable)
+
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
-                goal = preferred_explore_frontier(grid, start, heading, config,
-                                                  allow_unknown=snapshot.unknown_traversable)
-                if goal is None:
-                    goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
+                goal = frontier()
                 if goal is None:
                     return 'explore_complete', snapshot
             else:
@@ -228,6 +232,14 @@ class Navigator:
                     if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
                         goal = farther
         result = plan_path(grid, start, goal, config)
+        if explore and result.reason == 'no_path':
+            # A clear destination can be cut off by a new wall. Retain goals
+            # while a detour exists, but replace a proven unreachable one with
+            # a frontier reachable in this same accepted map snapshot.
+            goal = frontier()
+            if goal is None:
+                return 'explore_complete', snapshot
+            result = plan_path(grid, start, goal, config)
         if explore and result.ok:
             corridor = corridor_alignment(grid, start, goal, yaw, config)
             centered = corridor is None
