@@ -52,8 +52,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private var liveEncoding = false
     private var encodedLiveFrames = 0
     private var liveEncodingMS = 0.0
-    private var lastLiveMeshIdentity: CaptureIdentity? // liveEncodingQueue only
-    private var lastLiveMeshCapture = -Double.infinity
+    private var liveMeshCache = LiveMeshCache() // liveEncodingQueue only
     private var lastRateTime = 0.0
     private var lastEncodedCount = 0
     private var lastSentCount = 0
@@ -437,13 +436,12 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             let jpeg = try liveEncoder.jpeg(image, width: 960, height: 720, quality: 0.6)
             let intrinsics = try WireProtocol.scaledIntrinsics(floats(frame.camera.intrinsics),
                 sourceWidth: width, sourceHeight: height, width: 960, height: 720)
-            if lastLiveMeshIdentity != identity {
-                lastLiveMeshIdentity = identity
-                lastLiveMeshCapture = -.infinity
+            // Keep the current snapshot in every replaceable live bundle. The
+            // laptop coalesces frames to its map cadence, so a once-only v3
+            // packet could disappear before the map worker accepts it.
+            let mesh = liveMeshCache.current(identity: identity, capture: frame.timestamp) {
+                liveMesh(frame)
             }
-            let sendMesh = frame.timestamp - lastLiveMeshCapture >= 1
-            let mesh = sendMesh ? liveMesh(frame) : nil
-            if sendMesh { lastLiveMeshCapture = frame.timestamp }
             let bundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg, intrinsics: intrinsics,
                 depth: raw.depth, confidence: confidence, depthWidth: raw.width, depthHeight: raw.height,
                 floor: liveFloor(frame), mesh: mesh)

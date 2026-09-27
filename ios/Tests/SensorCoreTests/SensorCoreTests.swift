@@ -3,6 +3,24 @@ import XCTest
 @testable import SensorCore
 
 final class SensorCoreTests: XCTestCase {
+    func testLiveMeshSnapshotIsRepeatedBetweenOneSecondResamples() {
+        var cache = LiveMeshCache()
+        let first = CaptureIdentity(sessionID: "first", epoch: 1)
+        let second = CaptureIdentity(sessionID: "second", epoch: 1)
+        var samples = 0
+        func sample() -> Data {
+            samples += 1
+            return samples == 2 ? Data() : Data([UInt8(samples)])
+        }
+        XCTAssertEqual(cache.current(identity: first, capture: 0, sample: sample), Data([1]))
+        XCTAssertEqual(cache.current(identity: first, capture: 0.5, sample: sample), Data([1]))
+        XCTAssertEqual(samples, 1)
+        XCTAssertEqual(cache.current(identity: first, capture: 1.1, sample: sample), Data())
+        XCTAssertEqual(cache.current(identity: first, capture: 1.5, sample: sample), Data())
+        XCTAssertEqual(samples, 2)
+        XCTAssertEqual(cache.current(identity: second, capture: 1.6, sample: sample), Data([3]))
+        XCTAssertEqual(samples, 3)
+    }
     func testControlPriorityReservesNetworkWithoutStoppingLocalCapture() {
         let budget = CaptureCadence(liveHz: 30, archiveHz: 2, seriousThermal: false, controlPriority: true)
         XCTAssertEqual(budget.liveHz, 10)
