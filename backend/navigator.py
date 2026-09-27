@@ -23,8 +23,9 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 
-from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit, is_frontier,
-                                nearest_frontier, path_blocked, path_message, plan_path)
+from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
+                                corridor_alignment, nearest_frontier,
+                                path_blocked, path_message, plan_path, preferred_explore_frontier)
 from backend.occupancy import OccupancySnapshot
 
 logger = logging.getLogger(__name__)
@@ -127,8 +128,22 @@ class Navigator:
 
     # Planning runs in worker threads -------------------------------------------------
 
-    def _plan(self, occupancy, start, goal, explore):
+    def _plan(self, occupancy, start, goal, explore, yaw=0.):
         """Read the authoritative snapshot in this worker, then plan only known-clear floor."""
+        def straight_ahead(points):
+            fx, fz = math.sin(yaw), math.cos(yaw)
+            farthest = 0.
+            for px, pz in points[1:]:
+                dx, dz = px - start[0], pz - start[1]
+                forward = dx * fx + dz * fz
+                lateral = abs(dx * fz - dz * fx)
+                if forward < farthest - .05 or lateral > .12:
+                    return False
+                farthest = max(farthest, forward)
+                if farthest >= 1.:
+                    return True
+            return False
+
         snapshot = occupancy()
         problem = map_problem(snapshot, self.settings.map_max_age_s)
         if problem:
@@ -137,11 +152,39 @@ class Navigator:
         if not snapshot.traversable(*start):
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         if explore:
-            if goal is None or not is_frontier(grid, goal, config):
-                goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
+            if (goal is None or grid.world_to_cell(*goal) is None
+                    or not snapshot.traversable(*goal)):
+                goal = preferred_explore_frontier(grid, start, yaw, config,
+                                                  allow_unknown=snapshot.unknown_traversable)
+                if goal is None:
+                    goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
                 if goal is None:
                     return 'explore_complete', snapshot
+            else:
+                # Keep one cruise down the hallway as the camera reveals more
+                # floor. A goal that was yesterday's frontier should advance
+                # before the rover reaches it and brakes for another search.
+                farther = preferred_explore_frontier(grid, start, yaw, config,
+                                                    allow_unknown=snapshot.unknown_traversable)
+                if farther is not None:
+                    fx, fz = math.sin(yaw), math.cos(yaw)
+                    dx, dz = farther[0] - goal[0], farther[1] - goal[1]
+                    if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
+                        goal = farther
         result = plan_path(grid, start, goal, config)
+        if explore and result.ok:
+            corridor = corridor_alignment(grid, start, goal, yaw, config)
+            centered = corridor is None
+            if corridor is not None:
+                via, width, offset = corridor
+                centered = width >= 1.2 and abs(offset) < .12
+                if abs(offset) >= .12:
+                    first = plan_path(grid, start, via, config)
+                    second = plan_path(grid, via, goal, config)
+                    if first.ok and second.ok:
+                        result = PlanResult(first.points[:-1] + second.points, None,
+                                            first.expansions + second.expansions)
+            result = replace(result, fast_corridor=centered and straight_ahead(result.points))
         return 'plan', snapshot, goal, result
 
     def _check(self, occupancy, points, segment, revision=None):
@@ -219,6 +262,7 @@ class Navigator:
             self._show(initial.points)
         job = None
         progress = None  # (x, z, yaw, since) while motion is commanded
+        fast_corridor = False
         try:
             while True:
                 now = time.monotonic()
@@ -230,6 +274,7 @@ class Navigator:
                             job.cancel()
                             job = None
                         snapshot = follower = progress = None
+                        fast_corridor = False
                         goal, last_plan = None, -math.inf
                         self._show([])
                         if not self._submit(generation, RUN_MODES[kind], 0., 0.):
@@ -255,6 +300,7 @@ class Navigator:
                         # A mapped area can have no frontier until more camera
                         # evidence arrives. Stay in Explore at zero and check again.
                         goal, follower, progress, last_plan = None, None, None, now
+                        fast_corridor = False
                         self._show([])
                         if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                             return self._finish('command_stale')
@@ -263,6 +309,7 @@ class Navigator:
                     if outcome_kind == 'check' and outcome[2]:
                         if explore and outcome[2] == 'path_blocked':
                             goal, follower, progress, last_plan = None, None, None, now
+                            fast_corridor = False
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
@@ -274,6 +321,7 @@ class Navigator:
                         if not result.ok:
                             if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
                                 goal, follower, progress, last_plan = None, None, None, now
+                                fast_corridor = False
                                 self._show([])
                                 if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                     return self._finish('command_stale')
@@ -281,6 +329,7 @@ class Navigator:
                                 continue
                             return self._finish(PLAN_STOP_REASONS.get(result.reason, result.reason))
                         self.goal = goal
+                        fast_corridor = result.fast_corridor
                         follower = (follower.replaced(result.points) if follower is not None
                                     else PurePursuit(result.points, s.follower))
                         self._show(result.points)
@@ -294,7 +343,7 @@ class Navigator:
                     if snapshot is None or now - last_plan >= s.replan_s:  # -inf forces an immediate plan
                         last_plan = now
                         job = asyncio.ensure_future(asyncio.to_thread(
-                            self._plan, occupancy, (x, z), goal, explore))
+                            self._plan, occupancy, (x, z), goal, explore, yaw))
                     elif follower is not None and now - last_check >= s.blocked_check_s:
                         last_check = now
                         job = asyncio.ensure_future(asyncio.to_thread(
@@ -305,6 +354,7 @@ class Navigator:
                     if not snapshot.traversable(x, z):
                         if explore:
                             goal, follower, progress, last_plan = None, None, None, now
+                            fast_corridor = False
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                 return self._finish('command_stale')
@@ -321,14 +371,18 @@ class Navigator:
                             job.cancel()
                             job = None
                         follower, goal, last_plan = None, None, -math.inf  # next frontier
+                        fast_corridor = False
                     else:
                         v, w = command.v_mps, command.yaw_rate_rps
+                        if explore and fast_corridor and v >= .12 and w == 0.:
+                            v = .2  # only the observed, centered straight hallway segment
                         # Reject a pursuit arc cutting a corner of the footprint-clear path.
                         heading = yaw + w * period / 2
                         if not snapshot.traversable(x + v * math.sin(heading) * period,
                                                     z + v * math.cos(heading) * period):
                             if explore:
                                 goal, follower, progress, last_plan = None, None, None, now
+                                fast_corridor = False
                                 self._show([])
                                 if not self._submit(generation, RUN_MODES[kind], 0., 0.):
                                     return self._finish('command_stale')

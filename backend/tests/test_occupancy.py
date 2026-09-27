@@ -137,17 +137,16 @@ class ClassificationTests(unittest.TestCase):
 
 
 class BoundsTests(unittest.TestCase):
-    def test_extent_is_capped_around_the_ar_origin_and_far_points_are_dropped(self):
+    def test_wire_window_is_capped_and_out_of_range_points_are_dropped(self):
         grid = OccupancyGrid(SESSION)
         far = np.array([[HALF_EXTENT_M + 3, FLOOR_Y, 0], [0, FLOOR_Y, -HALF_EXTENT_M - 2],
                         [0, 50., 0], [np.nan, FLOOR_Y, 0], [np.inf, 0, 0]])
-        start = -HALF_EXTENT_M - 2 + CELL_M / 2  # one point per cell center
-        huge = plane(start, HALF_EXTENT_M + 2, start, HALF_EXTENT_M + 2, FLOOR_Y, step=CELL_M)
-        feed(grid, np.concatenate([huge, far]), frames=2)
+        known = np.concatenate([plane(-1, 1, -1, 1, FLOOR_Y),
+                                [[-9.975, FLOOR_Y, -9.975], [9.975, FLOOR_Y, 9.975]]])
+        feed(grid, np.concatenate([known, far]), frames=3)
         message = grid.message_if_due(0.)
-        cap = round(2 * HALF_EXTENT_M / CELL_M)
-        self.assertEqual((message['width'], message['height']), (cap, cap))
-        self.assertEqual(message['origin'], [-HALF_EXTENT_M, -HALF_EXTENT_M])
+        self.assertEqual((message['width'], message['height']), (400, 400))
+        self.assertEqual(message['origin'], [-10., -10.])
         self.assertGreater(grid.dropped, 0)
         self.assertLessEqual(len(message['cells']), 400000)  # dashboard parser limit
 
@@ -241,6 +240,33 @@ def send_frames(client, phone, session, count=3, first=1):
 
 
 class LiveOccupancyTests(unittest.TestCase):
+    def test_rgb_depth_points_and_navigation_grid_both_follow_a_moving_phone(self):
+        rows, cols = np.mgrid[0:15, 0:20]
+        depth = floor_rays(rows, cols)[0].astype('<f4')
+        confidence = np.full(depth.shape, 2, dtype='u1')
+        a = -PITCH
+        with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('occ-moving'))
+                for frame_id, x in enumerate((0., 18.), 1):
+                    transform = [1, 0, 0, 0, 0, math.cos(a), math.sin(a), 0,
+                                 0, -math.sin(a), math.cos(a), 0, x, CAMERA_HEIGHT, 0, 1]
+                    for repeat in range(3):
+                        target = client.app.state.map_stats['published'] + client.app.state.map_stats['no_new_points'] + 1
+                        packet = fresh(bundle(depth, confidence, transform=transform,
+                                              session='occ-moving'), frame_id=frame_id * 10 + repeat,
+                                       t_capture=float(frame_id * 10 + repeat))
+                        phone.send_bytes(packet)
+                        wait_for(lambda: client.app.state.map_stats['published']
+                                 + client.app.state.map_stats['no_new_points'] >= target)
+                    chunk = next_of(live, 'points', limit=200)
+                    self.assertAlmostEqual(float(np.mean(chunk['positions'][0::3])), x, delta=.5)
+                    snapshot = client.app.state.occupancy.map_snapshot()
+                    _, dx, z = floor_rays(4, 10)
+                    self.assertEqual(snapshot.cell(x + dx, z), 1)
+                    if x:
+                        self.assertGreater(snapshot.origin[0], 7.)
+
     def test_floor_frames_reach_live_viewers_as_an_occupancy_grid(self):
         with TestClient(create_app(':memory:')) as client, client.websocket_connect('/live') as live:
             with client.websocket_connect('/phone') as phone:

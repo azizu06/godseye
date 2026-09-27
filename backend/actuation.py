@@ -24,7 +24,7 @@ class RatePoint(BaseModel):
 class TimedMotorCommand:
     direction: int
     pwm: int
-    lease_ms: int = 200
+    lease_ms: int = 1500
 
 
 class ActuationCalibration(BaseModel):

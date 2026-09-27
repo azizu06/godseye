@@ -21,11 +21,14 @@ backend/calibration.py) to OBSTACLE_MAX_M are obstacle evidence. The gap between
 two bands (rugs, depth noise), anything below the floor, and anything above
 OBSTACLE_MAX_M (ceiling, overhangs) are ignored. Occupied wins over free once it has OCCUPIED_MIN_HITS hits
 and at least OCCUPIED_FREE_RATIO of the cell's free hits, so single outliers never
-flip a cell. Evidence never decays: a removed object stays occupied.
+flip a cell. Old obstacle voxels can retire only when two newer accepted raw depth
+frames independently prove that their complete projected footprint is empty.
 
-Bounds: cells cover x, z in [-HALF_EXTENT_M, HALF_EXTENT_M) around the AR origin
-(at most 400 x 400 cells) and Y in [-4, 4) m; other points are dropped. The voxel
-store holds at most MAX_VOXELS entries; new voxels beyond that are dropped.
+Sparse evidence spans a wide AR world coordinate range; each classified navigation
+and wire picture is a 20 m window that follows the accepted camera position, so the
+rover does not hit the original 10 m map edge. Y is in [-4, 4) m. The voxel store
+holds at most MAX_VOXELS entries; when full, distant stored voxels yield to fresh
+nearby evidence so mapping can continue through more hallways.
 
 A frame reaches the grid in two steps: `frame_evidence` does the per-point work
 anywhere (a worker thread) without touching any grid, and `OccupancyGrid.commit`
@@ -41,7 +44,8 @@ import numpy as np
 
 CELL_M = .05  # frozen by docs/INTERFACES.md
 VOXEL_H_M = .02
-HALF_EXTENT_M = 10.
+HALF_EXTENT_M = 100_000.  # int64 key packing; far beyond useful ARKit tracking
+VIEW_SIDE = 400  # 20 m rolling window; 160k cells stay inside the v1 viewer limit
 Y_MIN_M, Y_MAX_M = -4., 4.
 MAX_VOXELS = 500_000  # 6 MB of keys and counts
 FLOOR_TOL_M = .04
@@ -71,9 +75,93 @@ class Evidence:
     keys: np.ndarray  # sorted unique voxel keys, read-only
     outside: int  # points outside the grid bounds
     camera_y: float | None = None  # same-frame ARKit camera height, when available
+    camera_xz: tuple[float, float] | None = None
 
 
-def frame_evidence(positions, *, camera_y: float | None = None) -> Evidence:
+@dataclass(frozen=True)
+class DepthView:
+    """Accepted frame's raw depth evidence without retaining its RGB image."""
+    session_id: str
+    map_epoch: int
+    t_capture: float
+    transform: np.ndarray
+    intrinsics: np.ndarray
+    image_size: tuple[int, int]
+    depth: np.ndarray
+    confidence: np.ndarray
+
+
+def depth_view(frame) -> DepthView:
+    return DepthView(frame.session_id, frame.map_epoch, frame.t_capture, frame.transform,
+                     frame.intrinsics, frame.image.size, frame.depth, frame.confidence)
+
+
+def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, second,
+                                *, max_candidates=1024, cursor=0):
+    """Old occupied voxel centers seen through in both distinct raw depth frames.
+
+    This is deliberately conservative: a whole padded projection of each 5x5x2 cm
+    voxel must have medium-or-high-confidence depth farther than its farthest possible point
+    plus the visual cleanup margin. An occlusion or missing pixel retains evidence.
+    The caller applies these keys only if the second frame itself is accepted.
+    """
+    empty = np.empty(0, np.int64)
+    if (floor_y is None or first is None or second is None
+            or (first.session_id, first.map_epoch) != (second.session_id, second.map_epoch)
+            or first.t_capture >= second.t_capture):
+        return empty
+    levels = keys % _LEVELS
+    height = Y_MIN_M + (levels + .5) / _SLICES_PER_M - floor_y
+    candidates = np.flatnonzero((hits >= OCCUPIED_MIN_HITS)
+                                & (height >= obstacle_from_m - _EPS)
+                                & (height <= OBSTACLE_MAX_M + _EPS))
+    if not len(candidates):
+        return empty
+    count = min(len(candidates), max_candidates)
+    selected = candidates[(np.arange(count) + cursor) % len(candidates)]
+    old = keys[selected]
+    columns = old // _LEVELS
+    ix, iz = np.divmod(columns, _SIDE)
+    world = np.column_stack(((ix - _SIDE // 2 + .5) / _PER_M,
+                             Y_MIN_M + (old % _LEVELS + .5) / _SLICES_PER_M,
+                             (iz - _SIDE // 2 + .5) / _PER_M))
+
+    def visible_through(view):
+        depth, confidence = view.depth, view.confidence
+        dh, dw = depth.shape
+        iw, ih = view.image_size
+        if (depth.size > 65536 or confidence.shape != depth.shape or iw <= 0 or ih <= 0):
+            return np.zeros(len(old), bool)
+        camera = (world - view.transform[:3, 3]) @ view.transform[:3, :3]
+        optical = -camera[:, 2]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            u = (view.intrinsics[0, 0] * camera[:, 0] / optical
+                 + view.intrinsics[0, 2]) * dw / iw - .5
+            v = (-view.intrinsics[1, 1] * camera[:, 1] / optical
+                 + view.intrinsics[1, 2]) * dh / ih - .5
+            # The bounding sphere covers any stored point inside this voxel.
+            radius = math.sqrt((CELL_M / 2) ** 2 * 2 + (VOXEL_H_M / 2) ** 2)
+            pixels = max(view.intrinsics[0, 0] * dw / iw,
+                         view.intrinsics[1, 1] * dh / ih) * radius / (optical - radius) + 1
+        valid = ((optical > radius + .05) & (optical <= 5 - radius)
+                 & np.isfinite(u) & np.isfinite(v) & np.isfinite(pixels))
+        result = np.zeros(len(old), bool)
+        for i in np.flatnonzero(valid):
+            left, right = math.floor(u[i] - pixels[i]), math.ceil(u[i] + pixels[i])
+            top, bottom = math.floor(v[i] - pixels[i]), math.ceil(v[i] + pixels[i])
+            if left < 0 or top < 0 or right >= dw or bottom >= dh:
+                continue
+            d = depth[top:bottom + 1, left:right + 1]
+            c = confidence[top:bottom + 1, left:right + 1]
+            threshold = optical[i] + radius + max(.12, optical[i] * .05)
+            result[i] = bool(np.all((c >= 1) & np.isfinite(d) & (d <= 5) & (d > threshold)))
+        return result
+
+    return old[visible_through(first) & visible_through(second)]
+
+
+def frame_evidence(positions, *, camera_y: float | None = None,
+                   camera_xz: tuple[float, float] | None = None) -> Evidence:
     """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
     p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     with np.errstate(invalid='ignore'):
@@ -85,7 +173,7 @@ def frame_evidence(positions, *, camera_y: float | None = None) -> Evidence:
     keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                      + iy[inside].astype(np.int64))
     keys.setflags(write=False)
-    return Evidence(keys, int(len(p) - inside.sum()), camera_y)
+    return Evidence(keys, int(len(p) - inside.sum()), camera_y, camera_xz)
 
 
 @dataclass(frozen=True)
@@ -171,6 +259,7 @@ class OccupancyGrid:
         usable = calibration is not None and not calibration.blockers
         self.obstacle_from_m = calibration.obstacle_min_m - HEIGHT_MARGIN_M if usable else OBSTACLE_MIN_M
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
+        self.evicted = 0  # distant world evidence replaced by nearby new voxels
         self.accepted_at = None
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
@@ -181,6 +270,9 @@ class OccupancyGrid:
         self._last_picture = None
         self._floor_y = None  # Accepted floor in this AR map; reset with the grid.
         self._camera_y = None
+        self._camera_xz = (0., 0.)
+        self._last_depth_view = None
+        self._retirement_cursor = 0
         self._lock = threading.Lock()
 
     @property
@@ -191,13 +283,47 @@ class OccupancyGrid:
         """Fold one frame's world points ((N, 3) ARKit meters) into the evidence."""
         self.commit(frame_evidence(positions), now)
 
-    def commit(self, evidence: Evidence, now: float) -> None:
+    def clear_depth_history(self):
+        """Break two-view proof on phone disconnect or loss of AR tracking."""
+        with self._lock:
+            self._last_depth_view = None
+            self._retirement_cursor = 0
+
+    def retirement_candidates(self, current: DepthView):
+        """Read-only proof in the map worker; a discarded frame changes no grid state."""
+        with self._lock:
+            first = self._last_depth_view
+            cursor = self._retirement_cursor
+            keys, hits, floor_y = self._keys.copy(), self._hits.copy(), self._floor_y
+        if (first is None or (current.session_id, current.map_epoch) != self.session
+                or current.t_capture <= first.t_capture):
+            return np.empty(0, np.int64), cursor
+        if floor_y is None and len(keys):
+            floor_y = estimate_floor(keys % _LEVELS)
+        retired = contradicted_obstacle_keys(keys, hits, floor_y, self.obstacle_from_m,
+                                             first, current, cursor=cursor)
+        return retired, cursor + 1024
+
+    def commit(self, evidence: Evidence, now: float, *, retirement_keys=None,
+               retirement_cursor=None, depth_view: DepthView | None = None) -> None:
         """Fold one accepted frame in; `now` is a monotonic time in seconds.
 
         Only array inserts: about 1 ms at MAX_VOXELS, cheap enough for an event loop.
         """
         keys = evidence.keys
         with self._lock:
+            if depth_view is not None:
+                if (depth_view.session_id, depth_view.map_epoch) != self.session:
+                    raise ValueError('depth view belongs to another map')
+                self._last_depth_view = depth_view
+                if retirement_cursor is not None:
+                    self._retirement_cursor = retirement_cursor
+            removed = 0
+            if retirement_keys is not None and len(retirement_keys):
+                keep = ~np.isin(self._keys, retirement_keys, assume_unique=True)
+                removed = len(self._keys) - int(keep.sum())
+                if removed:
+                    self._keys, self._hits = self._keys[keep], self._hits[keep]
             if evidence.camera_y is not None and math.isfinite(evidence.camera_y):
                 self._camera_y = evidence.camera_y
                 # A flat-terrain rover's floor is below its camera. Prefer the
@@ -207,9 +333,15 @@ class OccupancyGrid:
                     if candidate is not None and candidate < evidence.camera_y:
                         if self._floor_y is None or candidate <= self._floor_y + .15:
                             self._floor_y = candidate
+            if (evidence.camera_xz is not None and len(evidence.camera_xz) == 2
+                    and all(math.isfinite(value) for value in evidence.camera_xz)):
+                self._camera_xz = evidence.camera_xz
             self.dropped += evidence.outside
             self.accepted_at = now
             if not len(keys):
+                if removed:
+                    self._dirty = True
+                    self.revision += 1
                 return
             at = np.searchsorted(self._keys, keys)
             seen = at < len(self._keys)
@@ -218,8 +350,27 @@ class OccupancyGrid:
             new, at = keys[~seen], at[~seen]
             room = max(0, self.max_voxels - len(self._keys))
             if len(new) > room:
-                self.dropped += len(new) - room
-                new, at = new[:room], at[:room]
+                if len(new) > self.max_voxels:
+                    self.dropped += len(new) - self.max_voxels
+                    new = new[:self.max_voxels]
+                # Free a batch so each following capture does not sort a full
+                # memory of distant voxels on the event loop again.
+                evict = min(len(self._keys), max(0, len(new) - room,
+                                                 max(1, self.max_voxels // 10)))
+                if evict:
+                    columns = self._keys // _LEVELS
+                    ix, iz = np.divmod(columns, _SIDE)
+                    cx = math.floor(self._camera_xz[0] * _PER_M) + _SIDE // 2
+                    cz = math.floor(self._camera_xz[1] * _PER_M) + _SIDE // 2
+                    distance = (ix.astype(np.float64) - cx) ** 2 + (iz.astype(np.float64) - cz) ** 2
+                    keep = np.ones(len(self._keys), bool)
+                    if evict == len(keep):
+                        keep[:] = False
+                    else:
+                        keep[np.argpartition(distance, len(keep) - evict)[len(keep) - evict:]] = False
+                    self._keys, self._hits = self._keys[keep], self._hits[keep]
+                    self.evicted += evict
+                at = np.searchsorted(self._keys, new)
             self._keys = np.insert(self._keys, at, new)
             self._hits = np.insert(self._hits, at, 1)
             self._dirty = True
@@ -230,26 +381,26 @@ class OccupancyGrid:
         # map. Prefer a fresh valid estimate (including a newly seen lower
         # floor); fall back to its last observed height, never old free cells.
         with self._lock:
-            floor_y, camera_y = self._floor_y, self._camera_y
+            floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
         if getattr(self.calibration, 'unknown_traversable', False) and camera_y is not None:
             if floor_y is not None:
-                return classify(keys, hits, self.obstacle_from_m, floor_y=floor_y)
+                return classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
             candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
             if candidate is None or candidate >= camera_y:
                 return None
-            picture = classify(keys, hits, self.obstacle_from_m, floor_y=candidate)
+            picture = classify(keys, hits, self.obstacle_from_m, floor_y=candidate, center_xz=camera_xz)
             if picture is not None:
                 with self._lock:
                     self._floor_y = candidate
             return picture
-        picture = classify(keys, hits, self.obstacle_from_m)
+        picture = classify(keys, hits, self.obstacle_from_m, center_xz=camera_xz)
         if picture is not None:
             with self._lock:
                 self._floor_y = picture[3]
             return picture
         with self._lock:
             floor_y = self._floor_y
-        return (classify(keys, hits, self.obstacle_from_m, floor_y=floor_y)
+        return (classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
                 if floor_y is not None else None)
 
     def snapshot(self):
@@ -339,7 +490,8 @@ def estimate_floor(levels: np.ndarray):
     return float(np.average(centers, weights=area[lo:hi]))
 
 
-def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M, *, floor_y=None):
+def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTACLE_MIN_M, *,
+             floor_y=None, center_xz=(0., 0.)):
     """(first column, first row, uint8 cells[rows=z, cols=x], floor_y) of the known area, or None."""
     if not len(keys):
         return None
@@ -349,19 +501,30 @@ def classify(keys: np.ndarray, hits: np.ndarray, obstacle_from_m: float = OBSTAC
         floor_y = estimate_floor(levels)
     if floor_y is None:
         return None
+    center_col = math.floor(center_xz[0] * _PER_M) + _SIDE // 2
+    center_row = math.floor(center_xz[1] * _PER_M) + _SIDE // 2
+    col_start = max(0, min(_SIDE - VIEW_SIDE, center_col - VIEW_SIDE // 2))
+    row_start = max(0, min(_SIDE - VIEW_SIDE, center_row - VIEW_SIDE // 2))
+    ix, iz = np.divmod(columns, _SIDE)
+    inside = ((ix >= col_start) & (ix < col_start + VIEW_SIDE)
+              & (iz >= row_start) & (iz < row_start + VIEW_SIDE))
+    if not np.any(inside):
+        return None
+    levels, hits = levels[inside], hits[inside]
+    columns = (ix[inside] - col_start) * VIEW_SIDE + iz[inside] - row_start
     height = Y_MIN_M + (levels + .5) / _SLICES_PER_M - floor_y
     free = np.bincount(columns, np.where(np.abs(height) <= FLOOR_TOL_M + _EPS, hits, 0),
-                       minlength=_SIDE * _SIDE)
+                       minlength=VIEW_SIDE * VIEW_SIDE)
     blocked = np.bincount(columns, np.where((height >= obstacle_from_m - _EPS)
                                             & (height <= OBSTACLE_MAX_M + _EPS), hits, 0),
-                          minlength=_SIDE * _SIDE)
-    state = np.zeros(_SIDE * _SIDE, np.uint8)
+                          minlength=VIEW_SIDE * VIEW_SIDE)
+    state = np.zeros(VIEW_SIDE * VIEW_SIDE, np.uint8)
     state[free >= FREE_MIN_HITS] = 1
     state[(blocked >= OCCUPIED_MIN_HITS) & (blocked >= OCCUPIED_FREE_RATIO * free)] = 2
-    grid = state.reshape(_SIDE, _SIDE).T  # [iz, ix]: row-major rows along +z, as the dashboard reads
+    grid = state.reshape(VIEW_SIDE, VIEW_SIDE).T  # [iz, ix]: rows along +z
     known = grid != 0
     rows, cols = np.flatnonzero(known.any(axis=1)), np.flatnonzero(known.any(axis=0))
     if not len(rows):
         return None
     cells = np.ascontiguousarray(grid[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1])
-    return int(cols[0]), int(rows[0]), cells, floor_y
+    return int(col_start + cols[0]), int(row_start + rows[0]), cells, floor_y

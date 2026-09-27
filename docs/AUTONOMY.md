@@ -48,7 +48,7 @@ then enables the laptop link when sensing and Uno feedback are ready. It never a
 The operator can instead enable the link from the paired dashboard. In the explicitly
 armed uncalibrated prototype Explore mode, that choice stays latched until Stop,
 mode change, or a dashboard control-disable action. A sensing or permit gap clears
-pending movement and the ESP brakes after 200 ms; Explore waits for fresh data and
+pending movement and the ESP brakes after a full second without a new command; Explore waits for fresh data and
 replans. A real phone/rover disconnect retires the physical drive session, then
 foreground computer setup and the backend establish a fresh session when all live
 readiness checks recover. Backgrounding cannot capture or drive; foregrounding
@@ -78,7 +78,7 @@ The phone build is installed; physical geometry and response curves remain unmea
 
 The bridge advertises its 64-bit permit as `{P<16 uppercase hex digits>}` every
 50 ms on its existing notification characteristic. A permit is valid for at most
-250 ms on the ESP clock. Notifications are transport feedback, not motor execution.
+500 ms on the ESP clock. Notifications are transport feedback, not motor execution.
 
 `N=201,H=<32 uppercase hex drive-session digits>,C=<permit>` queues Stop and opens
 that new session. Its `{A<session>}` acknowledgement follows the UART Stop handoff;
@@ -89,7 +89,7 @@ During the explicit Stop/Arm acknowledgement barrier, a brief gap in ESP status
 holds the pending Arm until a fresh permit arrives; the barrier still times out
 after three seconds, and no drive command uses a stale permit.
 
-`N=202,H=<session>,C=<permit>,S=<increasing uint32>,D1=<direction>,D2=<PWM>,T=200`
+`N=202,H=<session>,C=<permit>,S=<increasing uint32>,D1=<direction>,D2=<PWM>,T=1500`
 becomes the bounded stock `N=2` packet only when the session, sequence and permit
 are valid again at UART dispatch. `D1=0,D2=0` is an idle zero in the live session.
 The legacy `N=100` Stop always retires it. After the UART Stop handoff,
@@ -99,16 +99,16 @@ active stops it; a separate explicit Stop is required before manual takeover.
 Other legacy commands retain their existing rules. No arbitrary UART passthrough
 or indefinite motor command is added.
 
-The 200 ms bridge watchdog sends Stop on missed refresh. It keeps the already
+The 1 s bridge watchdog sends Stop on a sustained missed refresh. It keeps the already
 armed session so a later command with a new permit and sequence may resume;
 the late packet itself cannot revive the old motor lease. The Uno still receives
-its own independent 200 ms timed command. Invalid sessions, replay, explicit
+its own independent 1.5 s timed command. Invalid sessions, replay, explicit
 Stop and disconnect retire the arm. Queue expiry, reconnect, malformed fragments and 32-bit clock wrap are
 covered by `python3 firmware/elegoo-ble/test/run.py`. The server rejects movement older than 150 ms again at socket dispatch; the phone
 rechecks permit receipt age before its bounded BLE write.
 Expired movement samples are discarded without refreshing their timestamps or
 motor leases. A fresh successor may continue the current session; without one,
-the firmware sends Stop at 200 ms. Arm, Stop, invalid sessions and lost
+the firmware sends Stop at 1 s. Arm, Stop, invalid sessions and lost
 feedback retain their separate checks.
 
 ## Measurements before driving
@@ -258,11 +258,27 @@ the full footprint clearance. Measured mode still requires known-clear floor.
 Actual motor speed, yaw sign and stopping distance remain unverified. This is only
 for supervised tests in open space, not a claim of accurate autonomous driving.
 
-The existing pose/map follower chooses forward or pivot direction, then the profile
-uses PWM 60, matching the existing phone manual-control default, never synthetic
-speed curves or reverse. Commands update continuously with no added pauses or run
-duration limit. Each command retains the firmware's renewable 200 ms lease. Stop, tracking/depth freshness, authenticated pairing, unique arm sessions,
-ESP permits, Uno feedback and link watchdogs remain enforced. No automatic arming.
+The pose/map follower chooses forward or pivot direction. Explore prefers reachable
+unexplored space ahead and, when both hallway walls are observed, first moves toward
+their center before following the far end. A straight path with at least 1 m of
+clear route ahead requests the prototype's 0.2 m/s nominal command and PWM 180;
+an observed corridor must also be at least 1.2 m wide and centered. Off-center
+travel, pivots and slower approaches retain PWM 60. The
+autonomous phone/ESP command path permits up to PWM 180; stock manual control
+remains capped at 80. This is three times the former prototype duty setting,
+not a measured threefold travel speed. The phone app and ESP firmware must both
+be updated before using it. The occupancy planning window follows the rover
+through consecutive hallways rather than ending at 10 m from the AR origin;
+Explore holds a reachable forward destination across minor map updates and
+extends that destination as fresh depth reveals more hallway, avoiding a stop at
+each old frontier. It checks its route for new obstacles between full replans
+every three seconds. Medium-or-high-confidence depth can clear a departed
+obstacle after two distinct views see through its former footprint.
+The prototype never invents reverse motion or synthetic speed curves. Commands
+update continuously with no added pauses or run duration limit. Each command
+uses the firmware's 1 s command-loss brake and the Uno's 1.5 s fallback. Stop, tracking/depth freshness,
+authenticated pairing, unique arm sessions, ESP permits, Uno feedback and link
+watchdogs remain enforced. A latched Explore request may rearm after transient loss.
 The dashboard labels this profile **Uncalibrated prototype**. Select Explore or Navigate,
 then explicitly Arm. Stop and reassess if the rover turns in the wrong direction.
 
@@ -275,7 +291,7 @@ samples remain excluded; displayed point clouds retain high-confidence sampling.
 
 The idle rover WebSocket tolerates up to three seconds of silence; the armed link
 tolerates up to five seconds before retiring a broken transport. Backend feedback
-readiness remains 200 ms, independently of socket liveness. Prototype Explore
+readiness remains 500 ms, independently of socket liveness. Prototype Explore
 waits at zero through longer sensor gaps and retries a new arm after an actual
 disconnect once fresh readiness returns; only explicit Stop clears that choice.
 

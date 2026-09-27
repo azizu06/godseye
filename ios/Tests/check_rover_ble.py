@@ -123,7 +123,7 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
                     var fields: [String: Any] = ["version": 1, "type": type,
                         "session": "0123456789ABCDEF0123456789ABCDEF", "permit": second.permit]
                     if type == "command" {
-                        fields.merge(["seq": seq, "direction": 3, "power": 40, "lease_ms": 200]) { _, new in new }
+                        fields.merge(["seq": seq, "direction": 3, "power": 40, "lease_ms": 1500]) { _, new in new }
                     }
                     return try AutonomyCommand.decode(JSONSerialization.data(withJSONObject: fields))
                 }

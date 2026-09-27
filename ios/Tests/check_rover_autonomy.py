@@ -121,7 +121,7 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, 
                     elif phase == 'arming' and arm_ack:
                         commands += 1
                         await ws.send(json.dumps(dict(version=1, type='command', session=SESSION,
-                            permit=message['permit'], seq=commands, direction=3, power=40, lease_ms=200)))
+                            permit=message['permit'], seq=commands, direction=3, power=40, lease_ms=1500)))
                         if heartbeat_loss:
                             phase = 'silent'
                     elif phase != 'silent' and asyncio.get_running_loop().time() >= idle_until:

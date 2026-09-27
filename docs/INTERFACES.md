@@ -127,7 +127,9 @@ Write it behind one Python function, `drive(v_mps, yaw_rate_rps)`, so nothing el
 ```
 
 - Speed limits: 0.10–0.15 m/s to start, 0.20 m/s maximum. Turning: 0.5 rad/s maximum.
-- The car stops if no valid command arrives within **300 ms**.
+- The paired iPhone/ESP hackathon adapter brakes after **1 s** without a fresh
+  autonomous command; its Uno timer expires after **1.5 s**. Manual control
+  retains the shorter 200 ms timer.
 
 ## Fake data (so nobody waits)
 

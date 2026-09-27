@@ -75,7 +75,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         packet = self.car.next_message()
         self.assertEqual(packet, dict(version=1, type='command', session=SESSION.upper(),
                                      seq=20, permit=self.car.status.permit,
-                                     direction=3, power=40, lease_ms=200))
+                                     direction=3, power=40, lease_ms=1500))
         self.assertIsNone(self.car.next_message())
         with self.assertRaises(ValueError):
             self.car.send(self.drive(20))
@@ -108,7 +108,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
     async def test_brief_permit_gap_drops_queued_motion_without_retiring_arm(self):
         await self.arm()
         self.car.send(self.drive())
-        self.now += .21
+        self.now += .51
         self.assertIsNone(self.car.next_message())
         self.assertEqual(self.car.armed_session, SESSION.upper())
         self.assertEqual(self.losses, [])
@@ -122,20 +122,20 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         stop = self.car.next_message()
         self.car.receive(dict(version=1, type='ack', id='Z' + stop['id']))
-        self.now += .21
+        self.now += .51
         await self.settle()
         self.assertFalse(pending.done(), 'a brief gap must not fail the explicit Arm')
         self.assertIsNone(self.car.next_message(), 'Arm needs a fresh post-Stop permit')
         self.feedback()
         await self.settle()
-        self.now += .21
+        self.now += .51
         self.assertIsNone(self.car.next_message(), 'an expired permit cannot dispatch Arm')
         self.assertFalse(pending.done())
         self.feedback()
         arm = self.car.next_message()
         self.assertEqual((arm['type'], arm['permit']), ('arm', self.car.status.permit))
         self.car.receive(dict(version=1, type='ack', id='A' + SESSION.upper()))
-        self.now += .21
+        self.now += .51
         await self.settle()
         self.assertFalse(pending.done(), 'post-Arm feedback must also be fresh')
         self.feedback()
@@ -147,6 +147,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError): self.car.send(self.drive(yaw_rate_rps=.2))
         with self.assertRaises(ValueError): self.car.send(self.drive(v_mps=.02))
         with self.assertRaises(ValueError): self.car.send(self.drive(issued_at_ms=99999999))
+        self.now += .3
+        self.assertEqual(self.car.health(), 'ok', 'a short feedback gap should not pulse Stop')
         self.now += .201
         self.assertEqual(self.car.health(), 'stale')
         with self.assertRaises(ValueError): self.car.send(self.drive())
@@ -175,7 +177,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         for changes in [dict(uno_age_ms=1501.), dict(uno_age_ms=float('nan')),
                         dict(enabled=False), dict(seq=True), dict(permit='bad')]:
             with self.subTest(changes=changes), self.assertRaises(ValueError): self.feedback(**changes)
-        self.now += .201
+        self.now += .501
         self.assertEqual(self.car.health(), 'stale')
 
 
@@ -379,9 +381,9 @@ class RelayHTTPTests(unittest.TestCase):
                             self.assertGreaterEqual(move['achieved'], .1 - .02)  # measured stopping distance allowance
                             commands = [p for p in packets if p['type'] == 'command' and p['power']]
                             # The slowest measured forward power (the prototype's fixed PWM 60, whose speed is
-                            # unknown), straight only, each on the 200 ms lease. Distance comes from the pose.
+                            # unknown), straight only, each on the longer lease. Distance comes from the pose.
                             power = 60 if getattr(actuation, 'prototype', False) else 20
-                            self.assertTrue(commands and all((p['direction'], p['power'], p['lease_ms']) == (3, power, 200)
+                            self.assertTrue(commands and all((p['direction'], p['power'], p['lease_ms']) == (3, power, 1500)
                                                              for p in commands))
                             self.assertFalse(app.state.armed)
                             self.assertIsNone(car.armed_session)
@@ -432,7 +434,7 @@ class RelayHTTPTests(unittest.TestCase):
                         self.assertEqual(goal.status_code, 200, goal.text)
                         wait_for(lambda: any(p['type'] == 'command' and p['power'] > 0 for p in packets))
                         commands = [p for p in packets if p['type'] == 'command']
-                        self.assertTrue(all(p['lease_ms'] == 200 and 0 <= p['power'] <= 80 for p in commands))
+                        self.assertTrue(all(p['lease_ms'] == 1500 and 0 <= p['power'] <= 80 for p in commands))
                         source.frames = False  # poses and firmware feedback stay healthy
                         wait_for(lambda: not app.state.armed)
                         self.assertEqual(app.state.stop_reason, 'sensing_stale')

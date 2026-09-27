@@ -21,7 +21,7 @@ from backend.actuation import load_actuation
 from backend.motion import DriveCommand, DriveStop
 
 MAX_DISPATCH_AGE_MS = 150
-STATUS_MAX_S = .2
+STATUS_MAX_S = .5
 
 
 class RoverStatus(BaseModel):
@@ -225,7 +225,7 @@ class RelayCar:
         return dict(version=1, type='command', session=self.armed_session,
                     seq=command.seq, permit=self.status.permit,
                     direction=motor.direction if motor else 0, power=motor.pwm if motor else 0,
-                    lease_ms=200)
+                    lease_ms=motor.lease_ms if motor else 1500)
 
     async def serve(self, ws):
         if not self.authorized(ws.headers.get('authorization')) or self.connected:
@@ -257,7 +257,7 @@ class RelayCar:
         async def receiver():
             while True:
                 # Idle transport may survive Wi-Fi jitter. Motion still requires
-                # <200 ms feedback, fresh permits, and the existing arm barrier.
+                # Fresh feedback, permits, and the existing arm barrier.
                 timeout = 5. if self.armed_session is not None else 3.
                 text = await asyncio.wait_for(ws.receive_text(), timeout)
                 if len(text) > 2048:

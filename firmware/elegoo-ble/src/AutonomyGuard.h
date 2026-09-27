@@ -7,7 +7,7 @@
 // canForward immediately before UART dispatch, then call forwarded. No motor I/O.
 class AutonomyGuard {
  public:
-  static constexpr uint32_t PERMIT_MS = 250, WATCHDOG_MS = 200;
+  static constexpr uint32_t PERMIT_MS = 500, WATCHDOG_MS = 1000;
 
   void connection(bool connected) {
     stop();
@@ -70,7 +70,7 @@ class AutonomyGuard {
 
   void brake() { moving = false; brakeSequence = lastSequence; }
 
-  // True requests an immediate Stop; the Uno's 200 ms motor lease remains
+  // True requests an immediate Stop; the Uno's 1.5 s fallback timer remains
   // independent. A later fresh command may resume the explicitly armed run.
   bool tick(uint32_t now) {
     if (moving && uint32_t(now - lastDrive) >= WATCHDOG_MS) {

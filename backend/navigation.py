@@ -121,6 +121,7 @@ class PlanResult:
     reason: str | None  # None, out_of_bounds, start_blocked, goal_occupied, goal_unknown,
     #                     no_path or search_limit
     expansions: int = 0
+    fast_corridor: bool = False  # explicitly observed two-wall, centered straight Explore path
 
     @property
     def ok(self) -> bool:
@@ -504,6 +505,99 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
                     seen[n] = 1
                     queue.append(n)
     return None
+
+
+def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
+                               config: PlannerConfig, *, allow_unknown=False):
+    """Reachable unexplored boundary with forward progress and room around the rover.
+
+    The nearest boundary can be behind or against a hallway wall. Search the same
+    traversable component, then favor distance along the current heading and a
+    clear central approach. A side frontier wins once the straight corridor ends.
+    """
+    sx, sz = (float(v) for v in start_xz)
+    if allow_unknown:
+        grid = _fit(grid, [(sx, sz)], config)
+        if grid is None:
+            return None
+    start = grid.world_to_cell(sx, sz)
+    if start is None:
+        return None
+    mask = traversable_mask(grid, dataclasses.replace(config, unknown_traversable=allow_unknown))
+    if not mask[start]:
+        return None
+    frontiers = mask & _safe_frontiers(grid, config)
+    h, w = mask.shape
+    seen = np.zeros((h, w), bool)
+    seen[start] = True
+    queue, head = [start], 0
+    forward = (math.sin(yaw), math.cos(yaw))
+    side = (forward[1], -forward[0])
+    best = None
+    best_score = -math.inf
+    radius = max(1, math.ceil(1. / grid.cell_m))
+    moves = ((-1, 0), (1, 0), (0, -1), (0, 1),
+             (-1, -1), (-1, 1), (1, -1), (1, 1))
+    while head < len(queue) and head < config.max_expansions:
+        r, c = queue[head]
+        head += 1
+        if frontiers[r, c]:
+            x, z = grid.cell_center(r, c)
+            dx, dz = x - sx, z - sz
+            if dx * dx + dz * dz >= config.frontier_min_distance_m ** 2:
+                r0, r1 = max(0, r - radius), min(h, r + radius + 1)
+                c0, c1 = max(0, c - radius), min(w, c + radius + 1)
+                obstacle_r, obstacle_c = np.nonzero(grid.cells[r0:r1, c0:c1] == OCCUPIED)
+                clearance = (min(1., float(np.hypot(obstacle_r + r0 - r,
+                                                   obstacle_c + c0 - c).min()) * grid.cell_m)
+                             if len(obstacle_r) else 1.)
+                progress = dx * forward[0] + dz * forward[1]
+                lateral = abs(dx * side[0] + dz * side[1])
+                score = 4. * progress - .5 * lateral + 2. * clearance
+                if score > best_score:
+                    best, best_score = (x, z), score
+        for dr, dc in moves:
+            nr, nc = r + dr, c + dc
+            if (0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not seen[nr, nc]
+                    and (not dr or not dc or (mask[r, nc] and mask[nr, c]))):
+                seen[nr, nc] = True
+                queue.append((nr, nc))
+    return best
+
+
+def corridor_alignment(grid: Grid, start_xz, goal_xz, yaw: float,
+                       config: PlannerConfig):
+    """Observed two-wall hallway's center half a meter ahead and its width/offset."""
+    sx, sz = start_xz
+    fx, fz = math.sin(yaw), math.cos(yaw)
+    dx, dz = goal_xz[0] - sx, goal_xz[1] - sz
+    forward = dx * fx + dz * fz
+    if forward < .8 or abs(dx * fz - dz * fx) > forward * .5:
+        return None
+    ax, az = sx + .55 * fx, sz + .55 * fz
+    side = (fz, -fx)
+
+    def wall_distance(sign):
+        steps = math.ceil(1.5 / grid.cell_m)
+        for n in range(1, steps + 1):
+            distance = n * grid.cell_m
+            cell = grid.world_to_cell(ax + sign * distance * side[0],
+                                      az + sign * distance * side[1])
+            if cell is None:
+                return None
+            if grid.cells[cell] == OCCUPIED:
+                return distance
+        return None
+
+    left, right = wall_distance(-1), wall_distance(1)
+    if left is None or right is None:
+        return None
+    offset = (right - left) / 2
+    waypoint = (ax + offset * side[0], az + offset * side[1])
+    cell = grid.world_to_cell(*waypoint)
+    if cell is None or not traversable_mask(grid, config)[cell]:
+        return None
+    return waypoint, left + right, offset
 
 
 def _wrap(angle: float) -> float:

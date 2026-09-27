@@ -21,15 +21,15 @@ int main() {
     arm(g);
     assert(!g.canForward(A, 0, 2, 2));
     assert(g.accept(A, 1, 2, 2));
-    assert(g.canForward(A, 1, 2, 250));
-    assert(!g.canForward(A, 1, 2, 252)); // Valid at receipt, expired before UART.
+    assert(g.canForward(A, 1, 2, 500));
+    assert(!g.canForward(A, 1, 2, 502)); // Valid at receipt, expired before UART.
     assert(g.issue(3, 240));
     assert(g.accept(A, 2, 3, 241));
     assert(!g.canForward(A, 1, 2, 242)); // A newer command superseded the old one.
     assert(g.canForward(A, 2, 3, 242));
     g.forwarded(242, true);
-    assert(!g.tick(441));
-    assert(g.tick(442));
+    assert(!g.tick(1241));
+    assert(g.tick(1242));
     assert(g.active());
     assert(!g.canForward(A, 2, 3, 443));
     assert(g.issue(4, 444));
@@ -60,9 +60,9 @@ int main() {
     AutonomyGuard g; arm(g);
     assert(g.accept(A, 1, 2, 2));
     g.forwarded(3, true);
-    assert(g.issue(3, 202));
-    assert(!g.canForward(A, 1, 2, 203));
-    assert(g.accept(A, 2, 3, 203)); // Old movement stopped; fresh command may resume.
+    assert(g.issue(3, 1002));
+    assert(!g.canForward(A, 1, 2, 1003));
+    assert(g.accept(A, 2, 3, 1003)); // Old movement stopped; fresh command may resume.
     assert(g.active());
   }
   {
@@ -80,11 +80,11 @@ int main() {
   {
     AutonomyGuard g; arm(g, UINT32_MAX - 100);
     assert(g.accept(A, 1, 2, UINT32_MAX - 90));
-    assert(g.canForward(A, 1, 2, 150));
-    assert(!g.canForward(A, 1, 2, 152));
+    assert(g.canForward(A, 1, 2, 400));
+    assert(!g.canForward(A, 1, 2, 402));
     g.forwarded(UINT32_MAX - 80, true);
-    assert(!g.tick(118));
-    assert(g.tick(119));
+    assert(!g.tick(918));
+    assert(g.tick(919));
   }
   {
     AutonomyGuard g; g.connection(true);
@@ -93,7 +93,7 @@ int main() {
     assert(!g.issue(1, 1)); // Never refresh a permit by reissuing its value.
     assert(!g.arm("INVALID", 1, 1));
     assert(g.issue(2, 2));
-    assert(!g.arm(A, 2, 253));
+    assert(!g.arm(A, 2, 503));
   }
   puts("Autonomy permits, session barrier, replay rejection, timed braking and fresh resume checks passed.");
 }
