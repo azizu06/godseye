@@ -283,3 +283,25 @@ class NoiseMetricTests(unittest.TestCase):
         self.assertIn(
             nearby[0], obs.surface_keys
         )  # actual captured geometry remains untouched
+
+
+class FullCameraStabilityTests(unittest.TestCase):
+    def test_camera_lift_pitch_and_roll_cannot_credit_a_stable_view(self):
+        from dataclasses import replace
+
+        for field, value in (
+            ("position", (1.0, 0.7, 1.0)),
+            ("pitch", 0.3),
+            ("roll", 0.2),
+        ):
+            with self.subTest(field=field):
+                evidence = ScanEvidence(1.0, (1.0, 1.0), 0.0, set(), ExploreSettings())
+                first = replace(
+                    observation(2.0), position=(1.0, 0.1, 1.0), pitch=-0.2, roll=0.0
+                )
+                self.assertTrue(evidence.accept(first))
+                self.assertFalse(
+                    evidence.accept(replace(first, t_capture=3.0, **{field: value}))
+                )
+                self.assertTrue(evidence.accept(replace(first, t_capture=4.0)))
+                self.assertFalse(evidence.ready)

@@ -283,3 +283,46 @@ class ExploreRunnerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             self.assertEqual(len(h.commands), count)
             self.assertEqual(h.nav.exploration_status["observed_views"], 0)
+
+    async def test_camera_lift_during_third_worker_prevents_old_view_credit(self):
+        import threading
+        from unittest.mock import patch
+        from backend.exploration import ScanEvidence
+
+        entered, release = threading.Event(), threading.Event()
+        accept = ScanEvidence.accept
+        h = ScanHarness()
+        original = h.snapshot
+        lifted = False
+
+        def snapshot():
+            value = original()
+            if lifted:
+                return replace(
+                    value,
+                    observation=replace(value.observation, position=(h.x, 0.7, h.z)),
+                )
+            return value
+
+        h.nav._occupancy = snapshot
+
+        def slow(evidence, observation):
+            result = accept(evidence, observation)
+            if evidence.ready:
+                entered.set()
+                release.wait(2)
+            return result
+
+        with patch.object(ScanEvidence, "accept", slow):
+            h.nav.start_explore(1)
+            deadline = time.monotonic() + 1
+            while not entered.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.002)
+            self.assertTrue(entered.is_set())
+            lifted = True
+            # Allow the already-running snapshot worker to capture the lift.
+            await asyncio.sleep(0.03)
+            release.set()
+            await asyncio.sleep(0.01)
+            self.assertEqual(h.nav.exploration_status["observed_views"], 0)
+            h.stop("operator_stop")

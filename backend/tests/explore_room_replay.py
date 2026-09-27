@@ -105,8 +105,14 @@ def capture(position, yaw, boxes, stamp, jitter=0.0):
     )
 
 
-def replay(*, jitter=0.0, known=None):
+def replay(*, jitter=0.0, known=None, partial=False):
     grid, boxes = classroom()
+    if partial:
+        # Only the front two metres were previously surveyed. Beyond that,
+        # reveal floor only where this camera's actual raycasts return floor.
+        cells = grid.cells.copy()
+        cells[40:, :][cells[40:, :] == 1] = 0
+        grid = Grid.from_array(cells, origin=grid.origin, cell_m=grid.cell_m)
     settings = ExploreSettings()
     planner = PlannerConfig(
         robot_radius_m=0.20,
@@ -130,6 +136,7 @@ def replay(*, jitter=0.0, known=None):
     limited = 0
     reason = None
     for step in range(settings.max_views):
+        known_floor_before = int(np.count_nonzero(grid.cells))
         evidence = ScanEvidence(stamp, position, yaw, known, settings)
         for frame in range(settings.min_frames):
             stamp += 1.0
@@ -137,6 +144,20 @@ def replay(*, jitter=0.0, known=None):
                 position, yaw, boxes, stamp, jitter * (1 if frame % 2 == 0 else -1)
             )
             evidence.accept(obs)
+            if partial:
+                cells = grid.cells.copy()
+                for key in obs.surface_keys:
+                    column, level = divmod(key, 400)
+                    x, z = divmod(column, 400)
+                    row, col = z - 200, x - 200
+                    if (
+                        level in (199, 200)
+                        and 0 <= row < cells.shape[0]
+                        and 0 <= col < cells.shape[1]
+                        and cells[row, col] == 0
+                    ):
+                        cells[row, col] = 1
+                grid = Grid.from_array(cells, origin=grid.origin, cell_m=grid.cell_m)
         if not evidence.ready:
             reason = "scan_capture_unusable"
             break
@@ -144,8 +165,12 @@ def replay(*, jitter=0.0, known=None):
         known |= new
         signature = visible_boundary(grid, position, yaw, obs, 0.0, settings)
         ledger.record(position, yaw, signature)
-        witness.record(position, yaw, 0, len(new))
-        if len(new) < settings.low_gain_surface_voxels:
+        ground_gain = int(np.count_nonzero(grid.cells)) - known_floor_before
+        witness.record(position, yaw, ground_gain, len(new))
+        if (
+            ground_gain < settings.low_gain_cells
+            and len(new) < settings.low_gain_surface_voxels
+        ):
             attempted.update(signature)
         trace.append(
             dict(
@@ -153,6 +178,7 @@ def replay(*, jitter=0.0, known=None):
                 position=[round(v, 3) for v in position],
                 yaw_degrees=round(math.degrees(yaw) % 360),
                 new_surface_voxels=len(new),
+                new_ground_cells=ground_gain,
                 observed_surface_voxels=len(known),
                 predicted_boundary_cells=len(signature),
             )
@@ -183,6 +209,8 @@ def replay(*, jitter=0.0, known=None):
             sensor="Forward raycast depth,2500high-confidence samples,5m mapping bound",
             policy="Production defaults; travel and settle simulated, evidence captures distinct",
             depth_jitter_m=jitter,
+            partially_surveyed_floor=partial,
+            unresolved_unknown_cells=int(np.count_nonzero(grid.cells == 0)),
             terminal=reason,
             views=len(trace),
             translated_positions=len(witness.positions),
@@ -201,7 +229,13 @@ if __name__ == "__main__":
     fresh, known = replay()
     revisited, _ = replay(known=known)
     jittered, _ = replay(jitter=0.002, known=known)
-    output = dict(fresh_scan=fresh, revisit=revisited, jittered_revisit=jittered)
+    partial, _ = replay(partial=True)
+    output = dict(
+        fresh_scan=fresh,
+        revisit=revisited,
+        jittered_revisit=jittered,
+        partially_surveyed=partial,
+    )
     path = (
         sys.argv[1] if len(sys.argv) > 1 else "/tmp/godseye-exploration-room-trace.json"
     )

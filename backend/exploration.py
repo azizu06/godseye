@@ -365,6 +365,7 @@ class ScanEvidence:
         self.frames = 0
         self.counts = Counter()
         self.last_capture = watermark
+        self.camera_anchor = None
 
     def accept(self, observation):
         s = self.settings
@@ -379,12 +380,41 @@ class ScanEvidence:
             or abs(wrap(observation.camera_yaw - self.yaw)) > s.stable_yaw_rad
         ):
             return False
+        if self.camera_anchor is not None:
+            first = self.camera_anchor
+            if (
+                math.dist(observation.position, first.position) > s.stable_position_m
+                or abs(observation.pitch - first.pitch) > s.stable_yaw_rad
+                or abs(wrap(observation.roll - first.roll)) > s.stable_yaw_rad
+            ):
+                # An unstable full camera view breaks consecutive corroboration.
+                # Keep the fixed anchor: a different view needs a new dwell.
+                self.last_capture = observation.t_capture
+                self.frames = 0
+                self.counts.clear()
+                return False
+        else:
+            self.camera_anchor = observation
         self.last_capture = observation.t_capture
         self.frames += 1
         self.counts.update(
             key for key in set(observation.surface_keys) if not self._near_known(key)
         )
         return True
+
+    def matches_view(self, observation):
+        first = self.camera_anchor
+        return (
+            first is not None
+            and usable(observation, self.settings)
+            and supported_view(observation)
+            and math.dist(observation.position, first.position)
+            <= self.settings.stable_position_m
+            and abs(wrap(observation.camera_yaw - self.yaw))
+            <= self.settings.stable_yaw_rad
+            and abs(observation.pitch - first.pitch) <= self.settings.stable_yaw_rad
+            and abs(wrap(observation.roll - first.roll)) <= self.settings.stable_yaw_rad
+        )
 
     def _near_known(self, key):
         """Tolerate one mapping voxel of jitter for stopping metrics only.

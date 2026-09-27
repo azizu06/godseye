@@ -214,6 +214,14 @@ async def run_exploration(nav, generation):
                     scan_since = now
                     status["phase"] = "scanning"
                 elif phase == "scanning":
+                    if evidence.ready and not evidence.matches_view(obs):
+                        # A newer accepted camera view may arrive while the
+                        # third capture is processed off-loop. Do not credit
+                        # that old dwell after vertical or tilt/roll drift.
+                        status["phase"] = "settling"
+                        stable_since = now
+                        evidence = None
+                        continue
                     if not evidence.ready:
                         if now - scan_since > cfg.capture_timeout_s:
                             return nav._finish("scan_capture_unusable")
@@ -224,6 +232,13 @@ async def run_exploration(nav, generation):
                         if not nav._submit(generation, "explore", 0.0, 0.0):
                             return nav._finish("command_stale")
                         await asyncio.to_thread(evidence.accept, obs)
+                        # A snapshot started before this worker can itself be
+                        # stale. Refresh accepted evidence before the ready check.
+                        if snapshot_job is not None:
+                            snapshot_job.cancel()
+                            snapshot_job = None
+                        snapshot = await asyncio.to_thread(nav._occupancy)
+                        last_snapshot = time.monotonic()
                         await asyncio.sleep(period)
                         continue
                     if evidence.ready:

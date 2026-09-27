@@ -50,3 +50,21 @@ opted-in prototype profile. Do not add synthetic floor, extend timestamps or
 substitute fixture calibration to make the physical demo move. The prototype's
 operator estimates remain estimates. Floor/tabletop ambiguity and dynamic
 occlusion remain sensing limitations; semantic object labels do not grant clearance.
+
+### Recorded offline outcomes
+
+The default 4 by 6 m raycast fixture, after neighboring-voxel jitter tolerance,
+ran 64 fresh views at 38 separated positions and stopped at `scan_budget` while
+still adding detail. A retained-history metric replay and its ±2 mm depth-jitter
+variant each settled after 12 views at seven positions. These history-seeded
+runs are explicitly counterfactual policy tests; the current production novelty
+ledger starts with the initial high-confidence observation of each mission.
+
+A second case begins with only the front two metres of floor surveyed and reveals
+additional floor solely from actual raycast floor returns. It ran 64 views at
+30 separated positions, leaving 23 unknown cells, and stopped partial at
+`scan_budget`. Its last six surface gains were 10, 5, 11, 10, 11 and 25 voxels.
+This demonstrates useful progressive inspection without falsely certifying a
+thorough or complete classroom scan. Selection took at most 364 ms in the first
+run and 350 ms in the partial-floor run on the development machine; those are
+offline measurements, not real-time hardware guarantees.
