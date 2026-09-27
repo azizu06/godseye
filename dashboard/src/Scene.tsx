@@ -1159,7 +1159,7 @@ export default function Scene(props: SceneProps) {
         <div className="viewport-brand" aria-label="PIP spatial workspace">
           <Crosshair size={19} strokeWidth={1.4} aria-hidden="true" />
           <span>
-            PIP<small>PERSONAL INDOOR PATHFINDER</small>
+            PIP<small>PERSONAL INTELLIGENT PATHFINDER</small>
           </span>
         </div>
         <div className="segmented">

@@ -1,4 +1,4 @@
-# PIP — Personal Indoor Pathfinder
+# PIP — Personal Intelligent Pathfinder
 
 PIP sends **Scout**, our rover, wherever you point or say. A hackathon project that pairs a small rover with an iPhone to navigate its surroundings and build a live 3D view of the world on a laptop.
 
