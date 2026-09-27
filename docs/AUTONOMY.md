@@ -35,8 +35,10 @@ The implementation provides:
 
 The laptop owns planning. A separate authenticated `/rover` WebSocket carries
 small control messages to the iPhone while `/phone` continues carrying perception.
-The phone remains the sole Bluetooth owner and requires explicit enablement from
-the phone or paired dashboard to switch from manual to laptop control. Stop, app inactivity, capture identity changes,
+The phone remains the sole Bluetooth owner. Computer control is the default on
+foreground launch: remembered pairing starts setup, capture and the selected BLE rover,
+then enables the laptop link when sensing and Uno feedback are ready. It never arms.
+The operator can instead enable the link from the paired dashboard. Stop, app inactivity, capture identity changes,
 tracking loss or a lost transport revoke control; reconnect never resumes it.
 
 Before forwarding autonomous movement, the ESP must independently check a fresh
@@ -115,10 +117,16 @@ not replace these autonomy checks.
 ## Run and use the mounted-phone controls
 
 The phone and dashboard use the same local pairing key. It is never committed,
-placed in a URL, or exported with the map. The app and dashboard keep it in memory.
+placed in a URL, or exported with the map. The phone remembers it in the
+[device-local Keychain](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly);
+the dashboard keeps it in tab memory. **Forget laptop pairing** removes the saved
+credential and disables computer startup. Capture preferences and the last verified
+selected rover's identifier are remembered locally; a new nearby rover is never
+selected automatically.
 A debug launch can provision `GODSEYE_ROVER_PAIRING_KEY`, `GODSEYE_LAPTOP_ENDPOINT`,
-and `GODSEYE_DASHBOARD_REMOTE=1` through devicectl environment variables; this enables
-setup control only, never motion. Normal launches require pairing in the app.
+and `GODSEYE_ROVER_IDENTIFIER` through devicectl environment variables for one-time
+provisioning. Normal and Xcode launches then use the saved settings without phone
+taps. Automatic setup never sends arm or movement commands.
 
 ```sh
 python3 -m tools.run_rover_backend --init
@@ -132,14 +140,18 @@ measurement templates. The installed local detector runtime is
 manifest live in `~/.local/share/godseye/models/`. See the [official model docs](https://docs.ultralytics.com/models/yolo11/).
 A missing detector stays down; the setup controls still work, but driving stays blocked.
 
-1. Open God's Eye on the phone. Connect **Dashboard remote** with the laptop's
-   capture URL and pairing key before mounting. Keep the app foregrounded; remote
-   control keeps the display awake. A locked/background app cannot capture camera data.
+1. Pair the laptop and select the Bluetooth rover once. **Computer control on launch**
+   defaults on. Opening or foregrounding God's Eye restores dashboard remote, starts
+   capture, finds only the saved rover, and enables laptop control when ready. Keep the
+   app foregrounded; remote control keeps the display awake. A locked/background app
+   cannot capture camera data.
 2. Open the dashboard. Press **Escape → Connection settings**, enable REST commands,
    and enter the same key. The key and command permission do not survive reload.
-3. Open **Rover controls → Mounted phone**. Start capture, find the Bluetooth rover,
-   select **GodsEye-Rover-D022**, then enable laptop control once tracking and Uno
-   feedback are ready. These steps do not arm or move the rover.
+3. Open **Rover controls → Mounted phone** to observe setup or change it. If no rover
+   has been saved, select **GodsEye-Rover-D022** there. After Stop or a control loss,
+   click **Enable laptop control** in this panel; recovery does not silently restore
+   the link. Stop also cancels startup while it is waiting for tracking or Bluetooth.
+   A fresh foreground launch may prepare control again, but always needs a new arm.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
    Explore starts planning upon explicit arm. Manual PWM driving stays on the phone.

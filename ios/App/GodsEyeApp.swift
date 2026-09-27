@@ -33,22 +33,19 @@ struct CaptureView: View {
     @ObservedObject var capture: CaptureController
     @ObservedObject var rover: RoverController
     @AppStorage("laptopEndpoint") private var endpoint = ""
+    @AppStorage("computerControlOnLaunch") private var computerMode = true
     @State private var stream = true
-    @State private var fullSensorUpload = true
-    @State private var record = true
-    @State private var mesh = true
-    @State private var lossless = true
-    @State private var rate = 30.0
-    @State private var archiveRate = 2.0
+    @AppStorage("uploadFullSensors") private var fullSensorUpload = true
+    @AppStorage("recordFullSensors") private var record = true
+    @AppStorage("reconstructMesh") private var mesh = true
+    @AppStorage("losslessColor") private var lossless = true
+    @AppStorage("liveFrameRate") private var rate = 30.0
+    @AppStorage("archiveFrameRate") private var archiveRate = 2.0
     @StateObject private var autonomy = RoverAutonomyLink()
     @StateObject private var remote = PhoneRemoteLink()
     @State private var provisionedRemote = false
-    // Local development provisioning from devicectl; stays in process memory.
-    #if DEBUG
-    @State private var autonomyKey = ProcessInfo.processInfo.environment["GODSEYE_ROVER_PAIRING_KEY"] ?? ""
-    #else
     @State private var autonomyKey = ""
-    #endif
+    @State private var pairingNotice = ""
 
     private var captureOptions: CaptureOptions {
         CaptureOptions(endpoint: endpoint, stream: stream, fullSensorUpload: fullSensorUpload,
@@ -57,7 +54,20 @@ struct CaptureView: View {
 
     private func connectDashboard() {
         remote.connect(capture: capture, rover: rover, autonomy: autonomy,
-                       options: captureOptions, key: autonomyKey)
+                       options: captureOptions, key: autonomyKey, automaticSetup: computerMode)
+        if remote.enabled {
+            let key = autonomyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            Task {
+                pairingNotice = await ComputerPairing.shared.save(key)
+                    ? "Laptop pairing remembered on this iPhone"
+                    : "Connected, but pairing could not be saved"
+            }
+        }
+    }
+
+    private func startComputerMode() {
+        guard provisionedRemote, computerMode, !remote.enabled, !autonomyKey.isEmpty else { return }
+        connectDashboard()
     }
 
     var body: some View {
@@ -86,6 +96,9 @@ struct CaptureView: View {
                     RoverControlView(rover: rover)
                     GroupBox("Autonomous driving") {
                         VStack(alignment: .leading, spacing: 10) {
+                            Toggle("Computer control on launch", isOn: $computerMode)
+                            Text("Starts capture, connects the saved rover, and enables laptop control when tracking is ready. Arm and drive from the dashboard.")
+                                .font(.caption).foregroundStyle(.secondary)
                             Text(autonomy.status).font(.subheadline)
                             SecureField("Laptop control pairing key", text: $autonomyKey)
                                 .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -95,10 +108,20 @@ struct CaptureView: View {
                                 if remote.enabled { remote.disconnect() }
                                 else { connectDashboard() }
                             }.buttonStyle(.bordered)
-                            Text("Connect before mounting, then use the dashboard to start capture, connect Bluetooth, and enable laptop control. Keep this app open; the screen stays awake while paired.")
+                            Text("Keep this app open; the screen stays awake while paired. Stop stays stopped until you enable control again from the dashboard or reopen the app.")
                                 .font(.caption).foregroundStyle(.secondary)
+                            if !pairingNotice.isEmpty { Text(pairingNotice).font(.caption) }
+                            Button("Forget laptop pairing", role: .destructive) {
+                                computerMode = false
+                                remote.disconnect(); autonomy.disconnect(); rover.stop()
+                                autonomyKey = ""
+                                Task {
+                                    pairingNotice = await ComputerPairing.shared.forget()
+                                        ? "Laptop pairing forgotten" : "Could not remove saved pairing"
+                                }
+                            }.buttonStyle(.bordered)
                             Button(autonomy.enabled ? "Disable laptop control" : "Enable laptop control") {
-                                if autonomy.enabled { autonomy.disconnect() }
+                                if autonomy.enabled { remote.cancelAutomaticSetup(); autonomy.disconnect() }
                                 else { autonomy.connect(rover: rover, capture: capture, key: autonomyKey) }
                             }.buttonStyle(.bordered)
                                 .disabled(!autonomy.enabled && (!capture.running || !rover.verified))
@@ -146,7 +169,7 @@ struct CaptureView: View {
 
                     HStack {
                         Button(capture.running ? "Stop capture" : "Start capture") {
-                            if capture.running { capture.stop() }
+                            if capture.running { remote.cancelAutomaticSetup(); autonomy.disconnect(); rover.stop(); capture.stop() }
                             else {
                                 capture.start(captureOptions)
                             }
@@ -164,16 +187,27 @@ struct CaptureView: View {
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                 remote.disconnect(reason: "Dashboard remote disconnected while app inactive")
             }
-            .onAppear {
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                startComputerMode()
+            }
+            .onChange(of: computerMode) { enabled in
+                if enabled { startComputerMode() }
+                else { remote.cancelAutomaticSetup(); autonomy.disconnect(); rover.stop() }
+            }
+            .task {
+                guard !provisionedRemote else { return }
+                autonomyKey = await ComputerPairing.shared.load() ?? ""
                 #if DEBUG
-                // Explicit local development launch provisioning, never shipped
-                // credentials or automatic motion. No reconnect after a stop.
-                if !provisionedRemote {
-                    provisionedRemote = true
-                    if let value = ProcessInfo.processInfo.environment["GODSEYE_LAPTOP_ENDPOINT"] { endpoint = value }
-                    if ProcessInfo.processInfo.environment["GODSEYE_DASHBOARD_REMOTE"] == "1" { connectDashboard() }
+                // One-time local provisioning survives ordinary Xcode launches.
+                let environment = ProcessInfo.processInfo.environment
+                if let value = environment["GODSEYE_ROVER_PAIRING_KEY"] { autonomyKey = value }
+                if let value = environment["GODSEYE_LAPTOP_ENDPOINT"] { endpoint = value }
+                if let value = environment["GODSEYE_ROVER_IDENTIFIER"], let id = UUID(uuidString: value) {
+                    UserDefaults.standard.set(id.uuidString, forKey: "preferredRoverIdentifier")
                 }
                 #endif
+                provisionedRemote = true
+                if UIApplication.shared.applicationState == .active { startComputerMode() }
             }
         }
     }

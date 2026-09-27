@@ -4,7 +4,7 @@ The iPhone can control the ELEGOO Smart Robot Car V4 through its ESP board using
 
 ## Mounted-phone dashboard controls
 
-Pair **Dashboard remote** before mounting and keep the app foregrounded. From the dashboard's **Rover controls → Mounted phone**, start/stop capture, discover/select the Bluetooth rover, enable/disable laptop control, or stop the rover. These setup actions never arm or send movement. Capture startup and Bluetooth selection have been verified on the real iPhone and Uno. Reconnecting the setup channel stops the rover and disables laptop control; it never resumes motion. See [setup and validation](../docs/AUTONOMY.md#run-and-use-the-mounted-phone-controls) for the local pairing key and backend command.
+**Computer control on launch** defaults on. Pair once; the phone remembers the key in Keychain, the laptop URL, capture settings and verified selected rover. Opening or foregrounding the app starts capture, reconnects that rover and enables laptop control when tracking/Uno feedback are ready. It never arms or resumes a drive. Keep the app foregrounded. All further setup, Stop and enable actions are available in the dashboard's **Rover controls → Mounted phone**. Stop cancels pending automatic setup; a later tracking recovery cannot override it. If no rover is saved, select one from the dashboard once. **Forget laptop pairing** clears the saved key. See [setup and validation](../docs/AUTONOMY.md#run-and-use-the-mounted-phone-controls).
 
 ## Laptop USB: use the currently connected Uno
 
