@@ -143,12 +143,13 @@ class Confidence(Input):
 
 
 class Frame(Pose):
-    version: Literal[1, 2]
+    version: Literal[1, 2, 3]
     type: Literal['frame']
     image: Image
     depth: Depth
     confidence: Confidence
     floor: dict | None = None
+    mesh_voxels: str | None = None
 
 
 def decode_frame(data: bytes) -> Frame:
@@ -190,6 +191,7 @@ class MapUpdate:
     depth: DepthView | None = None
     retirement_keys: object = None
     retirement_cursor: int | None = None
+    mesh_keys: object = None
 
 
 class LatestFrame:
@@ -674,9 +676,12 @@ def create_app(db_path: str | None = None, build_points=None,
         """
         dense = any(listener.dense for listener in tuple(app.state.listeners))
         view = None
+        mesh_keys = None
         if custom_builder is None:
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
             view = depth_view(frame)
+            if frame.mesh_points is not None:
+                mesh_keys = frame_evidence(frame.mesh_points).keys
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
             candidates = depth_to_points(frame, max_points=samples)
             # Carpet commonly has medium LiDAR confidence. Prototype navigation
@@ -713,7 +718,7 @@ def create_app(db_path: str | None = None, build_points=None,
             chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
         except NoNewPoints:
             chunk = None
-        return MapUpdate(candidates.t_capture, evidence, chunk, view, retired, cursor)
+        return MapUpdate(candidates.t_capture, evidence, chunk, view, retired, cursor, mesh_keys)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.
@@ -727,7 +732,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     grid.commit(update.evidence, time.monotonic(),
                                 retirement_keys=update.retirement_keys,
                                 retirement_cursor=update.retirement_cursor,
-                                depth_view=update.depth)
+                                depth_view=update.depth, mesh_keys=update.mesh_keys)
                 except Exception:  # an occupancy bug must not cost the live points
                     app.state.occupancy_stats['failed'] += 1
                     logger.exception('occupancy update failed')

@@ -46,6 +46,13 @@ def main():
         np.testing.assert_array_equal(floor_frame.floor.polygon,
                                       [[1, -4], [3, -4], [3, -2], [1, -2]])
         print('Swift v2 classified-floor bundle accepted by both backend decoders.')
+        mesh_payload = Path(str(output) + '.mesh.bin').read_bytes()
+        mesh_transport = decode_frame(mesh_payload)
+        mesh_frame = parse_frame_bundle(mesh_payload, session_id="swift-contract-fixture",
+                                        map_epoch=3, pose=pose)
+        assert mesh_transport.version == 3 and mesh_frame.mesh_points is not None
+        np.testing.assert_allclose(mesh_frame.mesh_points, [[2, 1.1, -3]])
+        print('Swift v3 current-mesh bundle accepted by both backend decoders.')
         capture = decode_rich(Path(str(output) + '.capture').read_bytes())
         assert capture.header['session_id'] == 'swift-contract-fixture'
         assert capture.header['map_epoch'] == 3 and capture.header['frame_id'] == 18
