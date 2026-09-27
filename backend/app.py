@@ -30,8 +30,8 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
-from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_to_points, points_message,
-                             points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
+from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
+                             points_message, points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.mission_entry import load_entry, record_entry
@@ -664,12 +664,18 @@ def create_app(db_path: str | None = None, build_points=None,
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
             view = depth_view(frame)
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
-            candidates = depth_to_points(frame, max_points=samples)
+            prototype_depth = getattr(calibration, 'depth_confidence', 2) == 1
+            try:
+                candidates = depth_to_points(frame, max_points=samples)
+            except InsufficientDepth:
+                if not prototype_depth:
+                    raise
+                candidates = None  # display may be empty; navigation still needs valid medium depth
             # Carpet commonly has medium LiDAR confidence. Prototype navigation
             # accumulates that evidence across frames; displayed points retain
             # their existing high-confidence policy. Decode the JPEG only once.
             evidence_points = (depth_to_points(frame, max_points=max(samples, 6000), min_confidence=1).positions
-                               if getattr(calibration, 'depth_confidence', 2) == 1 else candidates.positions)
+                               if prototype_depth else candidates.positions)
         else:
             candidates = build_points(payload, session_id, map_epoch)
             evidence_points = candidates.positions
@@ -689,11 +695,14 @@ def create_app(db_path: str | None = None, build_points=None,
             except Exception:
                 app.state.occupancy_stats['failed'] += 1
                 logger.exception('occupancy depth retirement failed')
-        try:
-            chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
-        except NoNewPoints:
-            chunk = None
-        return MapUpdate(candidates.t_capture, evidence, chunk, view, retired, cursor)
+        chunk = None
+        if candidates is not None:
+            try:
+                chunk = app.state.point_memory.select(candidates, limit=DENSE_MAX_POINTS if dense else None)
+            except NoNewPoints:
+                pass
+        return MapUpdate(frame.t_capture if custom_builder is None else candidates.t_capture,
+                         evidence, chunk, view, retired, cursor)
 
     def accept_map(grid):
         """Event-loop half: commit a current frame to its map's grid, then publish its points.

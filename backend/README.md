@@ -111,6 +111,13 @@ one in-flight bundle per phone.
   camera-to-world transform place them, with the same geometry as
   `localization.py`. Frames with fewer than 16 usable pixels, bad bundles, and
   non-`normal` tracking produce no chunk; the phone link stays up.
+  In the explicit prototype profile, navigation can independently accept at least
+  16 finite, in-range medium-or-high-confidence pixels even when fewer than 16
+  high-confidence pixels leave the display empty. Display points are never
+  promoted from medium confidence; measured mode still requires high confidence.
+  These frames count as `no_new_points` while accumulating occupancy evidence.
+  Floor/readiness and normal tracking, fresh timestamp, session/epoch, replay and
+  reset acceptance checks still apply; accepting depth never arms the rover.
 - **Chunks carry mostly newly observed voxels** (`backend/point_dedupe.py`).
   Each frame back-projects up to `GODSEYE_POINT_SAMPLES` candidates, keeps one
   per world voxel of `GODSEYE_POINT_VOXEL_M`, drops voxels already sent in this

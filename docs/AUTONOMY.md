@@ -301,6 +301,13 @@ provenance, unchanged measured gates, API readiness, command bounds and continuo
 Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
+Navigation acceptance is independent of display extraction: at least 16 valid
+medium-or-high-confidence depth samples can update prototype occupancy with an
+empty display cloud. Sparse accepted geometry still needs a valid floor and the
+existing readiness checks before motion. Measured mode remains high-confidence
+only; invalid, replayed, old, untracked or wrong-map data cannot refresh accepted
+sensing. Hardware-free real binary `/phone` regressions:
+`python -m unittest backend.tests.test_prototype_depth -v`.
 
 The idle rover WebSocket tolerates up to three seconds of silence; the armed link
 tolerates up to five seconds before retiring a broken transport. Backend feedback
