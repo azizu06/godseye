@@ -24,7 +24,16 @@ export interface VoiceReply {
   scope: string | null;
   /** One-use token to have the applied result spoken in Scout's voice. */
   confirm: string | null;
+  /**
+   * A short spoken command the backend recognized without the answer model:
+   * `stop` was already performed (its answer says whether it worked); `confirm`
+   * and `cancel` are for the dashboard's one live suggestion card.
+   */
+  command: VoiceCommand | null;
 }
+
+export type VoiceCommand = "stop" | "confirm" | "cancel";
+const COMMANDS: VoiceCommand[] = ["stop", "confirm", "cancel"];
 
 const MAX_RECORD_MS = 15000;
 const MIN_RECORD_MS = 400;
@@ -57,26 +66,34 @@ export function parseVoiceReply(data: unknown): VoiceReply | null {
       actions: [],
       scope,
       confirm: null,
+      command: null,
     };
   const question = text(value.question, 500);
   const answer = text(value.answer, 600);
   const actions = parseActions(value.actions);
+  const command = COMMANDS.includes(value.command as VoiceCommand)
+    ? (value.command as VoiceCommand)
+    : null;
+  // "go"/"cancel" carry no answer or actions: the dashboard reports what it did.
+  const forCard = command === "confirm" || command === "cancel";
   if (
     value.status !== "ok" ||
     !question ||
     !actions ||
-    (!answer && !actions.length)
+    (forCard && actions.length > 0) ||
+    (!answer && !actions.length && !forCard)
   )
     return null;
   const speech = parseSpeech(value.speech);
   return {
     question,
-    answer,
-    speech,
-    speechFailed: !speech && !actions.length,
+    answer: forCard ? null : answer,
+    speech: forCard ? null : speech,
+    speechFailed: !speech && !actions.length && !forCard,
     actions,
     scope,
-    confirm: actions.length ? text(value.confirm, 64) : null,
+    confirm: actions.length || forCard ? text(value.confirm, 64) : null,
+    command,
   };
 }
 
@@ -110,11 +127,17 @@ function failure(status: number): string {
 export function VoiceAsk({
   config,
   onActions,
+  onCommand,
   children,
 }: {
   config: ConnectionConfig;
   /** Applies validated view actions and returns what actually happened. */
   onActions?: (actions: VoiceAction[], scope: string | null) => Promise<string>;
+  /** Carries out a spoken "go" or "cancel" on the suggestion cards and returns what happened. */
+  onCommand?: (
+    command: "confirm" | "cancel",
+    scope: string | null,
+  ) => Promise<string>;
   children?: ReactNode;
 }) {
   const enabled = config.source === "external" && config.commands;
@@ -211,9 +234,21 @@ export function VoiceAsk({
         setMessage("No question heard. Click the microphone and speak.");
         return;
       }
-      if (reply.actions.length) {
-        const result =
-          performance.now() - sent > ACTION_DEADLINE_MS
+      const command =
+        reply.command === "confirm" || reply.command === "cancel"
+          ? reply.command
+          : null;
+      if (reply.actions.length || command) {
+        const late = performance.now() - sent > ACTION_DEADLINE_MS;
+        const result = command
+          ? late
+            ? "Scout heard that too late, so nothing moved. Say it again."
+            : !onCommand
+              ? "Voice confirmation is unavailable here. Nothing moved."
+              : await onCommand(command, reply.scope).catch(
+                  () => "The voice command failed. Check the rover on screen.",
+                )
+          : late
             ? "Scout answered too late, so nothing changed. Ask again."
             : !onActions
               ? "Dashboard actions are unavailable here. Nothing changed."

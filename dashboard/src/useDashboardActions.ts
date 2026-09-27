@@ -16,7 +16,13 @@ import {
   detectionImageUrl,
   detectionsLive,
 } from "./detections";
-import { offerForMap, navAction } from "./navProposals";
+import {
+  navAction,
+  offerForMap,
+  voiceCommand,
+  voicePrompt,
+  waitForCard,
+} from "./navProposals";
 import { mapKey } from "./protocol";
 import type { CameraPose, SceneHandle } from "./Scene";
 import type { Mission } from "./state";
@@ -28,6 +34,8 @@ interface Snapshot<P> {
   camera: CameraPose | null;
 }
 const MAX_HISTORY = 20;
+// How long a new rover suggestion's spoken reply waits for its card's backend check.
+const CARD_CHECK_MS = 8000;
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -119,8 +127,15 @@ export function useDashboardActions<P extends string>(opts: {
         if (!replyScope || replyScope !== now.mission.mapKey)
           return "The map changed while Scout was answering. Nothing was suggested.";
         offerForMap(replyScope, [suggestion]);
-        return suggestion.name === "stop_navigation"
-          ? "Stop is on screen. Press it, or Stop in Rover controls, to stop the rover."
+        if (suggestion.name === "stop_navigation")
+          return "Stop is on screen. Press it, or Stop in Rover controls, to stop the rover.";
+        // Speak what the checked card offers and how to confirm it by voice.
+        const card = await waitForCard(
+          `${replyScope}:${suggestion.id}`,
+          CARD_CHECK_MS,
+        );
+        return card
+          ? voicePrompt(suggestion, card.state())
           : "I put that suggestion on screen. Nothing moves unless you confirm it there.";
       }
       const d = now.mission.detections;
@@ -194,5 +209,16 @@ export function useDashboardActions<P extends string>(opts: {
     },
     [],
   );
-  return { controls, setControls, run };
+
+  /** A spoken "go" or "cancel", for the map the reply was grounded on only if it is still shown. */
+  const runCommand = useCallback(
+    (command: "confirm" | "cancel", replyScope: string | null) =>
+      !replyScope || replyScope !== latest.current.mission.mapKey
+        ? Promise.resolve(
+            "The map changed while Scout was listening. Nothing moved.",
+          )
+        : voiceCommand(command, replyScope),
+    [],
+  );
+  return { controls, setControls, run, runCommand };
 }

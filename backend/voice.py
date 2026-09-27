@@ -2,7 +2,9 @@
 
 The answer may also propose typed dashboard view actions (`resolve_actions`). They are validated
 here as a whole and applied only by the dashboard; nothing here executes them, and none can arm,
-drive or steer the car.
+drive or steer the car. A few short utterances skip the answer model (`spoken_command`): a plain
+stop performs the operator Stop at once, and "go" or "cancel" is handed to the dashboard, which acts
+only on its one live confirmation card through that card's own buttons (NAV_ACTIONS.md).
 
 Nothing is retained: the uploaded clip, transcript, answer and reply audio live only for one
 request. Nothing here logs question, answer or audio content, and provider errors are sanitized.
@@ -205,6 +207,28 @@ MOVE_UNCLEAR = ("Say one move with its number and unit, like forward 20 centimet
                 "Nothing was suggested.")
 MOVE_RANGE = "That is outside what I can suggest: " + LIMITS_TEXT + ". Nothing was suggested."
 UNSUPPORTED_ACTIONS = {'take_photo': NO_PHOTO}
+STOPPED = 'Stopped. The rover is disarmed and any route or move has ended.'
+STOP_FAILED = 'I could not confirm the stop. Press Stop now.'
+
+# Short commands recognized without the answer model, from the transcript as lowercase words. A stop
+# is a few words including "stop" or "halt" and nothing but filler; confirming and cancelling must be
+# one of these exact phrases. Anything else goes to the answer model as before.
+STOP_WORDS = frozenset({'stop', 'halt'})
+STOP_FILLER = frozenset({'the', 'rover', 'car', 'scout', 'now', 'please', 'it', 'emergency', 'hey', 'no',
+                         'moving', 'everything', 'right'})
+MAX_STOP_WORDS = 6
+CONFIRM_PHRASES = frozenset({'go', 'go ahead', 'confirm', 'yes', 'yes go', 'start'})
+CANCEL_PHRASES = frozenset({'cancel', 'cancel that', 'cancel it', 'no', 'never mind', 'nevermind'})
+
+
+def spoken_command(text):
+    """'stop', 'confirm', 'cancel' or None for a transcript, by the fixed word lists above only."""
+    words = re.sub(r"[^a-z]+", ' ', text.lower().replace("'", '')).split() if isinstance(text, str) else []
+    if words and len(words) <= MAX_STOP_WORDS and STOP_WORDS & set(words) and \
+            set(words) <= STOP_WORDS | STOP_FILLER:
+        return 'stop'
+    phrase = ' '.join(words)
+    return 'confirm' if phrase in CONFIRM_PHRASES else 'cancel' if phrase in CANCEL_PHRASES else None
 
 
 class _Refusal(Exception):
@@ -334,8 +358,11 @@ def resolve_actions(raw, objects, classes, heard=None):
         return [], (refusal.code, refusal.text)
 
 
-def register_voice_routes(app, providers, budget, evidence):
-    """`evidence()` -> dict(session, objects, events, live, scout, route, extras, classes) of the shown map."""
+def register_voice_routes(app, providers, budget, evidence, stop=None):
+    """`evidence()` -> dict(session, objects, events, live, scout, route, extras, classes) of the shown map.
+
+    `stop()` is the operator Stop (`POST /stop`'s own code); a spoken stop calls it before replying.
+    """
     busy = asyncio.Lock()
     asked = 0
     pending = {}  # one-use confirmation token -> monotonic expiry, one per action reply
@@ -348,6 +375,32 @@ def register_voice_routes(app, providers, budget, evidence):
                         data=base64.b64encode(wav).decode('ascii'))
         except Exception:
             return dict(status='error')
+
+    def confirmation():
+        """A one-use token for having the dashboard's actual result spoken once (/voice/confirm)."""
+        now = time.monotonic()
+        for token in [t for t, expiry in pending.items() if expiry < now]:
+            del pending[token]
+        while len(pending) >= 8:
+            pending.pop(next(iter(pending)))
+        token = secrets.token_urlsafe(16)
+        pending[token] = now + CONFIRM_S
+        return token
+
+    async def stopped(result, request):
+        """Stop first, then say whether it happened; a stop never waits for a card or a confirmation."""
+        try:
+            if stop is None:
+                raise RuntimeError('no stop')
+            stop()
+            ok = True
+        except Exception:
+            ok = False
+        result.update(status='ok', command='stop', stopped=ok, answer=STOPPED if ok else STOP_FAILED)
+        if await request.is_disconnected():
+            raise HTTPException(499, 'Question cancelled')
+        result['speech'] = await speak(result['answer'])
+        return result
 
     @app.get('/voice')
     async def voice_status():
@@ -392,6 +445,13 @@ def register_voice_routes(app, providers, budget, evidence):
             if question is None:
                 return result
             result['question'] = question
+            command = spoken_command(question)
+            if command == 'stop':
+                return await stopped(result, request)
+            if command is not None:
+                # "go" or "cancel": the dashboard acts on its one live card and reports what happened.
+                result.update(status='ok', command=command, confirm=confirmation(), actions=[])
+                return result
             classes = found.get('classes', ())
             context = grounding(session, found['objects'], found['events'], now=time.time(), live=found['live'],
                                 scout=found.get('scout'), route=found.get('route'), extras=found.get('extras'),
@@ -407,19 +467,15 @@ def register_voice_routes(app, providers, budget, evidence):
             actions, refusal = resolve_actions(raw, found['objects'], classes, heard=question)
             if refusal:
                 result['action_error'], answer = refusal
+            if [a['name'] for a in actions] == ['stop_navigation']:
+                return await stopped(result, request)  # the model heard a stop: no card, stop now
             if answer is None and not actions:
                 raise HTTPException(502, 'Answer unavailable')
             result.update(status='ok', answer=answer)
             if actions:
-                # The dashboard applies these, then may have its actual result spoken once via /voice/confirm.
-                now = time.monotonic()
-                for token in [t for t, expiry in pending.items() if expiry < now]:
-                    del pending[token]
-                while len(pending) >= 8:
-                    pending.pop(next(iter(pending)))
-                result['confirm'] = secrets.token_urlsafe(16)
-                pending[result['confirm']] = now + CONFIRM_S
-                result['actions'] = actions
+                # The dashboard applies these, then has its actual result spoken once via /voice/confirm;
+                # a rover suggestion is spoken with how to confirm it by voice once its card is checked.
+                result.update(confirm=confirmation(), actions=actions)
                 return result
             if await request.is_disconnected():
                 raise HTTPException(499, 'Question cancelled')

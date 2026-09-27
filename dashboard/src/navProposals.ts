@@ -1,9 +1,11 @@
 /**
  * Voice-suggested rover actions as confirmation cards. A voice reply can only
  * offer them: validation happens on the backend (`/nav/propose`), and only a
- * person's click on a card sends `/nav/confirm`, once. A confirmed move is then
- * measured by the phone's pose (`GET /nav/move`). See backend/NAV_ACTIONS.md.
+ * person's click on a card, or a spoken "go" when exactly one card is live,
+ * sends `/nav/confirm`, once. A confirmed move is then measured by the phone's
+ * pose (`GET /nav/move`). See backend/NAV_ACTIONS.md.
  */
+import type { MissionController } from "./useMission";
 
 export const NAV_ACTION_NAMES = [
   "propose_navigation",
@@ -349,5 +351,216 @@ export const currentOffers = () => offers;
 export function resetOffers() {
   offers = [];
   seen.clear();
+  cards.clear();
   listeners.forEach((listener) => listener());
+}
+
+// Spoken confirmation ---------------------------------------------------------
+//
+// A spoken "go" or "cancel" (classified by the backend without the answer
+// model) acts only through a card's own buttons: each card registers what its
+// buttons would do right now, and a command acts only when exactly one card on
+// the shown map is live. Every backend check is unchanged.
+
+/** How long a card waits at its spoken "say go to arm" prompt; the proposal lifetime. */
+export const ARM_PROMPT_MS = 30000;
+
+/** What a spoken "go" presses on a card: its confirm button, or its arm step. */
+export type VoiceStep = "confirm" | "arm";
+
+export interface CardVoiceState {
+  /** Still waiting for the backend check. */
+  checking: boolean;
+  /** Checked and unconfirmed, or waiting at its spoken arm prompt: a command may act on it. */
+  live: boolean;
+  /** The one step "go" performs now, or null when something blocks it. */
+  step: VoiceStep | null;
+  /** Why "go" does nothing on this live card now (spoken instead). */
+  blocked: string | null;
+  /** Why this card is not live: voided, expired, already confirmed. */
+  why: string | null;
+}
+
+export interface CardHandle {
+  key: string;
+  mapKey: string;
+  action: NavAction;
+  /** Evaluated when asked, against the latest rover state and clock. */
+  state: () => CardVoiceState;
+  /** Presses exactly the card's button for `step`; resolves to what happened. */
+  go: (step: VoiceStep) => Promise<string>;
+  /** The card's own dismiss (which cancels its proposal); returns what happened. */
+  cancel: () => string;
+}
+
+const cards = new Map<string, CardHandle>();
+const cardListeners = new Set<Listener>();
+
+/** A card registers its voice handle while mounted; returns the unregister. */
+export function registerCard(card: CardHandle) {
+  cards.set(card.key, card);
+  cardChanged();
+  return () => {
+    if (cards.get(card.key) === card) cards.delete(card.key);
+    cardChanged();
+  };
+}
+
+/** A card's phase changed: wake anything waiting for it to settle. */
+export function cardChanged() {
+  cardListeners.forEach((listener) => listener());
+}
+
+/** The card for `key` once its backend check finished, or null after `timeoutMs`. */
+export function waitForCard(
+  key: string,
+  timeoutMs: number,
+): Promise<CardHandle | null> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const card = cards.get(key);
+      if (!card || card.state().checking) return false;
+      done(card);
+      return true;
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    const done = (card: CardHandle | null) => {
+      clearTimeout(timer);
+      cardListeners.delete(listener);
+      resolve(card);
+    };
+    const listener = () => void check();
+    cardListeners.add(listener);
+    check();
+  });
+}
+
+const UNIT_WORDS: Record<string, string> = {
+  cm: "centimeters",
+  m: "meters",
+  in: "inches",
+  deg: "degrees",
+};
+
+/** The suggestion as a short spoken phrase. */
+export function spokenTitle(action: NavAction) {
+  const args = action.args;
+  if (action.name === "stop_navigation") return "Stop";
+  if (action.name === "propose_exploration") return "Explore";
+  if (action.name === "propose_move")
+    return args.direction === "forward"
+      ? `Move forward ${Number(args.amount)} ${UNIT_WORDS[String(args.unit)]}`
+      : `Turn ${String(args.direction)} ${Number(args.amount)} degrees`;
+  return args.target === "point"
+    ? "Drive to that point"
+    : `Drive to the ${String(args.class)}`;
+}
+
+const STEP_WORDS: Record<string, string> = {
+  exploration: "select Explore mode",
+  move: "move",
+  destination: "drive",
+};
+
+/** What Scout says once a new card was checked: how to confirm it by voice, or why it cannot. */
+export function voicePrompt(action: NavAction, state: CardVoiceState) {
+  const title = spokenTitle(action);
+  if (!state.live)
+    return `${title} is not available. ${state.why ?? ""} Nothing moved.`
+      .replace(/\s+/g, " ")
+      .trim();
+  if (state.step === "arm")
+    return `${title} is ready. Say go to arm for this move, or cancel.`;
+  if (state.step === "confirm") {
+    const kind =
+      action.name === "propose_exploration"
+        ? "exploration"
+        : action.name === "propose_move"
+          ? "move"
+          : "destination";
+    return `${title} is ready. Say go to ${STEP_WORDS[kind]}, or cancel.`;
+  }
+  return `${title} is on screen. ${state.blocked ?? ""} Say cancel to drop it.`
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Carry out a spoken "go" or "cancel" for the shown map. "go" acts only when
+ * exactly one card is live, and then only through that card's own button;
+ * otherwise nothing happens and the reason is returned to be spoken.
+ * "cancel" dismisses every live card on the shown map (cancelling never moves).
+ */
+export async function voiceCommand(
+  command: "confirm" | "cancel",
+  mapKey: string | null,
+): Promise<string> {
+  const all = [...cards.values()];
+  const here = all.filter((card) => mapKey !== null && card.mapKey === mapKey);
+  const live = here.filter((card) => card.state().live);
+  if (command === "cancel") {
+    if (!live.length) return "There is no suggestion to cancel. Nothing moved.";
+    const said = live.map((card) => card.cancel());
+    return live.length === 1
+      ? said[0]
+      : `Cancelled ${live.length} suggestions. Nothing moved.`;
+  }
+  if (live.length > 1)
+    return "More than one suggestion is on screen. Press the one you want, or say cancel. Nothing moved.";
+  if (!live.length) {
+    if (here.some((card) => card.state().checking))
+      return "That suggestion is still being checked. Say go again in a moment. Nothing moved.";
+    const latest = here.at(-1)?.state();
+    if (latest?.why) return `${latest.why} Nothing moved.`;
+    if (all.some((card) => card.state().live))
+      return "That suggestion is for a different map. Ask again. Nothing moved.";
+    return "There is nothing to confirm. Nothing moved.";
+  }
+  const [card] = live;
+  const state = card.state();
+  if (!state.step)
+    return `${state.blocked ?? "That suggestion cannot be confirmed now."} Nothing moved.`;
+  return card.go(state.step);
+}
+
+/** The Arm button's availability in Rover controls (`components.tsx`), shared with a spoken arm step. */
+export function roverHealthy(
+  controller: Pick<
+    MissionController,
+    "mission" | "config" | "autonomy" | "stale"
+  >,
+) {
+  const { mission, config, autonomy, stale } = controller;
+  const health = mission.health;
+  return (
+    !stale &&
+    health?.phone === "ok" &&
+    health.car === "ok" &&
+    health.detector === "ok" &&
+    (autonomy?.adapter !== "iphone" ||
+      (autonomy.ready && health.mode !== "manual" && !!config.roverKey))
+  );
+}
+
+/**
+ * Why Rover controls' Arm cannot be pressed now, or null. While motion is
+ * possible that button is Stop instead, so an arm step is refused then too.
+ */
+export function armBlock(
+  controller: Pick<
+    MissionController,
+    "mission" | "config" | "autonomy" | "stale" | "pending" | "requiresStop"
+  >,
+): string | null {
+  const { config, autonomy, pending } = controller;
+  if (controller.requiresStop)
+    return "The rover may already be armed or starting. Say stop, or wait.";
+  if (!config.commands) return "This feed is telemetry only.";
+  if (pending) return "Another rover command is in progress.";
+  if (autonomy?.adapter === "iphone") {
+    if (!(config.roverKey || config.serverPaired))
+      return "Enter the rover pairing key in Connection settings.";
+  } else if (!roverHealthy(controller))
+    return "Waiting for healthy components.";
+  return null;
 }

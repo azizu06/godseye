@@ -15,8 +15,9 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.tests.test_changes import BACKPACK, FAR, REFS, Scene
-from backend.voice import (MAX_ACTIONS, MAX_CONTEXT_OBJECTS, VoiceProviders, approach_summary, frame_detections,
-                           grounding, providers_from_env, resolve_actions, scene_extras)
+from backend.voice import (MAX_ACTIONS, MAX_CONTEXT_OBJECTS, STOP_FAILED, STOPPED, VoiceProviders,
+                           approach_summary, frame_detections, grounding, providers_from_env, resolve_actions,
+                           scene_extras, spoken_command)
 
 # Synthetic stand-in for a browser MediaRecorder clip: bytes are opaque to the backend.
 CLIP = b'\x1aE\xdf\xa3' + bytes(range(256)) * 8
@@ -575,7 +576,89 @@ class ActionRouteTests(unittest.TestCase):
             self.assertNotIn('actions', result)
             self.assertNotIn('action_error', result)
             self.assertNotIn('confirm', result)
+            self.assertNotIn('command', result)
             self.assertEqual(result['answer'], 'Nothing new.')
+
+
+class SpokenCommandTests(unittest.TestCase):
+    def test_only_short_fixed_phrases_skip_the_answer_model(self):
+        for text in ('stop', 'Stop.', 'STOP!', 'stop stop', 'Stop the rover.', 'halt', 'No, stop!',
+                     'Scout, stop now please.', 'emergency stop', 'Stop, stop, stop.'):
+            self.assertEqual(spoken_command(text), 'stop', text)
+        for text in ('go', 'Go!', 'Yes, go.', 'yes', 'Confirm.', 'start', 'go ahead'):
+            self.assertEqual(spoken_command(text), 'confirm', text)
+        for text in ('cancel', 'Cancel that.', 'No.', 'Never mind.', 'nevermind'):
+            self.assertEqual(spoken_command(text), 'cancel', text)
+        # Anything longer, negated or mixed is a question for the answer model, never a guess.
+        for text in ("Don't stop.", 'stop and go', 'Where did the rover stop?', 'go to the chair', 'Start exploring.',
+                     'yes please drive', 'go forward 20 centimeters', 'no stop sign here', 'the', '', None,
+                     'stop the rover now please scout stop'):
+            self.assertIsNone(spoken_command(text), text)
+
+
+class SpokenStopAndConfirmRouteTests(unittest.TestCase):
+    def test_a_plain_spoken_stop_runs_the_operator_stop_without_the_answer_model_and_says_so(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice = providers(FakeTranscriber('Stop the rover!'))
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                with patch.object(client.app.state.motion, 'halt', wraps=client.app.state.motion.halt) as halt:
+                    result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+                    halt.assert_called()  # the same zero-command halt as the Stop button
+                health = client.get('/health').json()
+            self.assertEqual(voice.answerer.calls, [])
+            self.assertEqual((result['status'], result['command'], result['stopped']), ('ok', 'stop', True))
+            self.assertEqual(result['answer'], STOPPED)
+            self.assertEqual(result['speech']['status'], 'ready')
+            self.assertEqual(voice.speaker.texts, [STOPPED])
+            self.assertNotIn('actions', result)
+            self.assertNotIn('confirm', result)
+            self.assertEqual((health['armed'], health['stop_reason']), (False, 'operator_stop'))
+
+    def test_a_stop_the_answer_model_hears_is_done_now_instead_of_becoming_a_card(self):
+        with tempfile.TemporaryDirectory() as folder:
+            answer = {'answer': 'I put a stop suggestion on screen.', 'actions': [act('stop_navigation')]}
+            voice = providers(FakeTranscriber('Could you make it stop driving?'), FakeAnswerer(answer))
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+                health = client.get('/health').json()
+            self.assertEqual(len(voice.answerer.calls), 1)
+            self.assertEqual((result['command'], result['stopped'], result['answer']), ('stop', True, STOPPED))
+            self.assertNotIn('actions', result)  # no card and no model prose
+            self.assertEqual(voice.speaker.texts, [STOPPED])
+            self.assertEqual(health['stop_reason'], 'operator_stop')
+
+    def test_a_failed_stop_is_spoken_as_unconfirmed_and_speech_failure_still_returns_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice = providers(FakeTranscriber('halt'), speaker=FakeSpeaker(RuntimeError('secret-detail')))
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                with patch.object(client.app.state.motion, 'halt', side_effect=RuntimeError('car gone')):
+                    result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+            self.assertEqual((result['stopped'], result['answer']), (False, STOP_FAILED))
+            self.assertEqual(result['speech'], {'status': 'error'})
+            self.assertEqual(voice.speaker.texts, [STOP_FAILED])
+
+    def test_go_and_cancel_skip_the_answer_model_and_leave_the_result_to_the_dashboard(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice = providers(FakeTranscriber('Yes, go.'))
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                before = client.get('/health').json()
+                result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+                self.assertEqual((result['status'], result['command'], result['actions']), ('ok', 'confirm', []))
+                self.assertIsNone(result['answer'])
+                self.assertIsNone(result['speech'])
+                # The backend confirms, arms or moves nothing; the dashboard's card does, then speaks its result.
+                after = client.get('/health').json()
+                self.assertEqual((after['armed'], after['mode'], after['stop_reason']),
+                                 (before['armed'], before['mode'], before['stop_reason']))
+                spoken = client.post('/voice/confirm', json={'token': result['confirm'],
+                                                             'text': 'There is nothing to confirm. Nothing moved.'})
+                self.assertEqual(spoken.json()['speech']['status'], 'ready')
+                voice.transcriber.text = 'Never mind.'
+                result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+                self.assertEqual(result['command'], 'cancel')
+                self.assertIn('confirm', result)
+            self.assertEqual(voice.answerer.calls, [])
+            self.assertEqual(voice.speaker.texts, ['There is nothing to confirm. Nothing moved.'])
 
 
 class AdapterTests(unittest.TestCase):

@@ -35,6 +35,7 @@ import {
 } from "./transport";
 import { objectName } from "./Scene";
 import { objectEvidence, objectStateText } from "./objectDisplay";
+import { armBlock, roverHealthy } from "./navProposals";
 
 export function ObjectIcon({
   kind,
@@ -573,13 +574,7 @@ export function OperatorControls({
     : null;
   const canStop = controller.requiresStop;
   const physical = autonomy?.adapter === "iphone";
-  const allHealthy =
-    !stale &&
-    health?.phone === "ok" &&
-    health.car === "ok" &&
-    health.detector === "ok" &&
-    (!physical ||
-      (autonomy.ready && health.mode !== "manual" && !!config.roverKey));
+  const allHealthy = roverHealthy(controller);
   const control = (
     label: string,
     icon: ReactNode,
@@ -753,14 +748,7 @@ export function OperatorControls({
             className={`button ${canStop ? "stop-button" : "primary"}`}
             aria-label={canStop ? "STOP ROVER" : "Arm rover"}
             title={canStop ? "Stop rover" : "Arm rover"}
-            disabled={
-              !canStop &&
-              (!available ||
-                !!pending ||
-                (physical
-                  ? !(config.roverKey || config.serverPaired)
-                  : !allHealthy))
-            }
+            disabled={!canStop && armBlock(controller) !== null}
             onClick={() =>
               void command(
                 canStop ? "/stop" : "/arm",

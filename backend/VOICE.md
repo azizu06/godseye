@@ -4,10 +4,12 @@ Ask Scout a spoken question about what it has observed and hear a spoken answer.
 Off by default: without configured providers `GET /voice` reports
 `{"version":1,"status":"unavailable"}`, `POST /voice/ask` returns 503 before reading
 audio, and the dashboard shows "Voice Q&A unavailable on this backend." Besides
-answers it can change this dashboard's view (see Dashboard actions) and put a rover
-destination, exploration, stop or short measured move suggestion on screen for a person
-to confirm ([NAV_ACTIONS.md](NAV_ACTIONS.md)). It never arms, drives or steers the car itself,
-certifies an area as clear, recognizes people, or invents routes or destinations.
+answers it can change this dashboard's view (see Dashboard actions), put a rover
+destination, exploration or short measured move suggestion on screen for a person
+to confirm by click or by saying "go", and stop the rover at once when told to
+([NAV_ACTIONS.md](NAV_ACTIONS.md)). It never arms, drives or steers the car on its own:
+every movement needs a person's click or spoken "go" on its card. It never certifies an
+area as clear, recognizes people, or invents routes or destinations.
 
 ## Data flow
 
@@ -24,7 +26,9 @@ certifies an area as clear, recognizes people, or invents routes or destinations
 3. The backend sends the clip to ElevenLabs
    [speech-to-text](https://elevenlabs.io/docs/api-reference/speech-to-text/convert)
    (`scribe_v2`, multipart, `xi-api-key`). An empty transcript returns
-   `status: "no_speech"` without further calls.
+   `status: "no_speech"` without further calls. A short command skips Gemini
+   (`voice.spoken_command`, fixed word lists, case and punctuation ignored); see
+   Spoken commands.
 4. `voice.grounding()` builds the only scene knowledge Gemini receives, from the
    shown map (active, else newest stored): up to 40 newest objects (class, Gemini
    crop label only when `labeled`, position in scan meters, state, observations,
@@ -42,7 +46,8 @@ certifies an area as clear, recognizes people, or invents routes or destinations
    with `speech: {"status":"error"}`.
 
 Response: `{version, session_id, map_epoch, status, question, answer, evidence:
-{objects, changes}, speech: {status, mime, duration_s, data(base64 WAV)} | null}`.
+{objects, changes}, speech: {status, mime, duration_s, data(base64 WAV)} | null}`, plus
+`command` (and `stopped`) for a spoken command.
 Provider failures return sanitized 502s (`Speech transcription unavailable`,
 `Answer unavailable`). If the client disconnects, remaining paid stages are skipped.
 
@@ -69,8 +74,9 @@ matches). Accepted actions get fresh server ids and are returned as
 
 Anything else rejects every action and replaces the answer with a fixed, spoken reason
 (`action_error`: `invalid`, `ambiguous` "Which one?", `not_found`, or `unsupported`).
-`propose_navigation`, `propose_exploration`, `stop_navigation` and `propose_move` must stand alone and
-only become confirmation cards (see [NAV_ACTIONS.md](NAV_ACTIONS.md)); `take_photo` is
+`propose_navigation`, `propose_exploration`, `stop_navigation` and `propose_move` must stand alone;
+all but the stop only become confirmation cards (see [NAV_ACTIONS.md](NAV_ACTIONS.md)), and a
+resolved `stop_navigation` is carried out at once like a spoken stop (see Spoken commands); `take_photo` is
 `unsupported` because the phone offers no remote capture (use **High-res photo** on the
 phone). Object labels are data: they cannot add names, classes or objects.
 
@@ -82,7 +88,10 @@ post the actual result text (success or "Nothing changed" failure) to `POST /voi
 `{token, text}`, which speaks it with the same ElevenLabs voice (one call per token, at most
 400 characters, 60 s expiry; reused or unknown tokens get 409, invalid text 422). The model's
 prose is never shown or spoken for action replies, and there is no browser-speech fallback:
-if speech fails the result stays on screen. The class filter narrows what this viewer draws
+if speech fails the result stays on screen. For a rover suggestion that result is spoken once
+its card's `/nav/propose` check finishes (up to 8 s) and says how to confirm it by voice, for
+example "Explore is ready. Say go to select Explore mode, or cancel.", or why it is unavailable.
+The class filter narrows what this viewer draws
 before the 3D evidence policy (`objectDisplay.ts`) applies, and like that policy it always
 keeps the selected object. Stored objects, Spatial memory and the detection list stay
 complete; the dock says how many objects (and people) the filter hides, and **Show all**
@@ -96,6 +105,31 @@ reports its capture time and age. Neither requests a new photo.
 cd dashboard && npx vitest run src/dashboardActions.test.ts src/VoiceAsk.test.ts
 GODSEYE_DASHBOARD_TEST_PORT=<free port> npx playwright test tests/voiceActions.spec.ts
 ```
+
+## Spoken commands
+
+After transcription, `voice.spoken_command()` classifies a few short utterances without
+Gemini (lowercased words, punctuation ignored); anything else is an ordinary question:
+
+- **Stop**: at most 6 words that include "stop" or "halt" and otherwise only filler
+  ("stop", "stop stop", "stop the rover", "halt", "no, stop!", "emergency stop"; not
+  "don't stop" or "where did it stop?"). The backend runs the operator Stop, the same
+  `operator_halt()` as `POST /stop` (device emergency stop, disarm, end any route or move,
+  void every pending proposal), before replying, then speaks "Stopped. The rover is
+  disarmed and any route or move has ended." (`command: "stop"`, `stopped: true`). If the
+  stop raised, it says "I could not confirm the stop. Press Stop now." (`stopped: false`).
+  A `stop_navigation` that Gemini resolves from a longer request does the same; it is never
+  a card. Like `/stop`, it needs no pairing key, proposal or card.
+- **Go** ("go", "go ahead", "confirm", "yes", "yes go", "start") and **cancel** ("cancel",
+  "cancel that", "cancel it", "no", "never mind"): the reply is `command: "confirm"` or
+  `"cancel"` with `actions: []` and a one-use `confirm` token. The backend acts on nothing;
+  the dashboard applies it to its one live suggestion card through that card's own buttons
+  (see [NAV_ACTIONS.md](NAV_ACTIONS.md) Spoken confirmation) and has the actual result
+  spoken via `/voice/confirm`.
+
+A command still costs one transcription (and one question of the budget), and like any
+question it waits while another is in flight (429), so the dashboard's Stop button stays the
+fastest stop. The microphone is still click-to-talk; there is no wake word.
 
 ## Live frame and approach route
 
