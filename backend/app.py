@@ -49,6 +49,7 @@ from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
+from backend.prototype import PrototypeGeometry, filter_prototype_self_mesh
 
 logger = logging.getLogger(__name__)
 DENSE_MAP_INTERVAL_S = 1 / 30
@@ -682,7 +683,9 @@ def create_app(db_path: str | None = None, build_points=None,
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
             view = depth_view(frame)
             if frame.mesh_points is not None:
-                mesh_keys = frame_evidence(frame.mesh_points).keys
+                mesh_points = (filter_prototype_self_mesh(frame.mesh_points, frame.transform, calibration)
+                               if isinstance(calibration, PrototypeGeometry) else frame.mesh_points)
+                mesh_keys = frame_evidence(mesh_points).keys
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
             prototype_depth = getattr(calibration, 'depth_confidence', 2) == 1
             try:

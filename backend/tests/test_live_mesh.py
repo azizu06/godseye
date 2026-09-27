@@ -9,7 +9,7 @@ from backend.app import create_app
 from backend.frame_bundle import FrameValidationError, parse_frame_bundle
 from backend.mapping import floor_plane_points
 from backend.occupancy import FREE, OCCUPIED, OccupancyGrid, frame_evidence
-from backend.prototype import prototype_geometry
+from backend.prototype import prototype_geometry, filter_prototype_self_mesh
 from backend.tests.test_localization import bundle, fixture
 from backend.tests.test_map_transport import fresh, hello, wait_for
 from backend.tests.test_objects import FakeDetector, LEFT_CUP
@@ -46,6 +46,14 @@ class LiveMeshTests(unittest.TestCase):
             self.assertGreater(state.occupancy.voxels, 0)
             self.assertGreater(state.chunk_id, 0)
             self.assertEqual(client.get('/health').json()['detector'], 'ok')
+
+    def test_prototype_self_mesh_clears_rear_chassis_but_keeps_forward_and_side_obstacles(self):
+        frame = parse_frame_bundle(mesh_bundle([[24, 42, 60], [28, 42, 60],
+                                                [12, 42, 60], [24, 42, 68]]),
+                                   session_id='synthetic', map_epoch=2)
+        kept = filter_prototype_self_mesh(frame.mesh_points, frame.transform,
+                                          prototype_geometry(.2286, .127))
+        np.testing.assert_allclose(kept, [[.6, 2.1, 3.], [1.2, 2.1, 3.4]])
 
     def test_v3_decodes_bounded_world_voxels(self):
         frame = parse_frame_bundle(mesh_bundle([[20, 42, 60]]),
