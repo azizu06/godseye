@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import type { Vec2 } from "./protocol";
 import type { Mission } from "./state";
@@ -163,13 +163,15 @@ export function ApproachRouteCard({
   personLastSeen,
   now,
   onClear,
+  children,
 }: {
   state: RouteState;
   personLastSeen: number | null;
   now: number;
   onClear: () => void;
+  children?: ReactNode;
 }) {
-  if (state.phase === "idle") return null;
+  if (state.phase === "idle" && !children) return null;
   const result = "result" in state ? state.result : undefined;
   const a = result?.assumptions;
   const seen =
@@ -182,41 +184,115 @@ export function ApproachRouteCard({
       aria-label="Suggested approach route"
       data-testid="route-card"
     >
-      <header>
-        <span className="eyebrow">Suggested approach · visualization only</span>
-        <button
-          className="icon-button"
-          aria-label="Clear approach route"
-          onClick={onClear}
-        >
-          <X size={14} />
-        </button>
-      </header>
-      {state.phase === "picking" && !result && (
-        <p>
-          Click the entrance or start point on the floor. The route begins
-          exactly where you click.
-        </p>
+      {children}
+      {state.phase !== "idle" && (
+        <>
+          <header>
+            <span className="eyebrow">
+              Suggested approach · visualization only
+            </span>
+            <button
+              className="icon-button"
+              aria-label="Clear approach route"
+              onClick={onClear}
+            >
+              <X size={14} />
+            </button>
+          </header>
+          {state.phase === "picking" && !result && (
+            <p>
+              Click the entrance or start point on the floor. The route begins
+              exactly where you click.
+            </p>
+          )}
+          {state.phase === "planning" && (
+            <p>Checking observed-free floor against the current map…</p>
+          )}
+          {result?.status === "ok" && (
+            <p data-testid="route-status">
+              Route {result.length_m.toFixed(1)} m to an observed-free approach
+              point beside the person · unverified · not a rover path
+            </p>
+          )}
+          {result?.status === "unavailable" && (
+            <p data-testid="route-status">
+              Route unavailable · {reasonText[result.reason] ?? result.reason}
+            </p>
+          )}
+          <p className="route-assumptions">
+            {seen}
+            {a &&
+              ` · assumes a ${(a.walker_radius_m * 2).toFixed(1)} m wide walker with ${a.margin_m.toFixed(2)} m margin · observed-free cells only · unknown space blocked · doors not inferred`}
+          </p>
+        </>
       )}
-      {state.phase === "planning" && (
-        <p>Checking observed-free floor against the current map…</p>
-      )}
-      {result?.status === "ok" && (
-        <p data-testid="route-status">
-          Route {result.length_m.toFixed(1)} m to an observed-free approach
-          point beside the person · unverified · not a rover path
-        </p>
-      )}
-      {result?.status === "unavailable" && (
-        <p data-testid="route-status">
-          Route unavailable · {reasonText[result.reason] ?? result.reason}
-        </p>
-      )}
-      <p className="route-assumptions">
-        {seen}
-        {a &&
-          ` · assumes a ${(a.walker_radius_m * 2).toFixed(1)} m wide walker with ${a.margin_m.toFixed(2)} m margin · observed-free cells only · unknown space blocked · doors not inferred`}
-      </p>
     </section>
+  );
+}
+
+export function ReconSummary({
+  recon,
+  selected,
+  onSelect,
+}: {
+  recon: ReturnType<typeof import("./useReconApproaches").useReconApproaches>;
+  selected: string | null;
+  onSelect: (id: string) => void;
+}) {
+  if (!recon.rows.length) return null;
+  const available = recon.rows.filter(
+    (row) => row.result?.status === "ok",
+  ).length;
+  const unavailable = recon.rows.filter(
+    (row) => row.result?.status === "unavailable",
+  ).length;
+  return (
+    <div className="recon-summary" data-testid="recon-summary">
+      <strong
+        className="person-found"
+        role="status"
+        data-testid={recon.freshCount ? "person-found" : undefined}
+      >
+        {recon.freshCount === 1
+          ? "Person found"
+          : recon.freshCount
+            ? `${recon.freshCount} people found`
+            : "People last seen"}
+      </strong>
+      <p>
+        {available} suggested {available === 1 ? "approach" : "approaches"} ·{" "}
+        {unavailable} unavailable
+        {recon.rows.length - available - unavailable > 0
+          ? ` · ${recon.rows.length - available - unavailable} checking`
+          : ""}
+      </p>
+      <p className="route-assumptions">
+        From fixed mission entry when recorded · observed-free floor only ·
+        unverified · not rover paths
+      </p>
+      <div className="recon-people">
+        {recon.rows.map((row) => (
+          <button
+            key={row.id}
+            className={selected === row.id ? "selected" : ""}
+            onClick={() => onSelect(row.id)}
+            data-testid="recon-person"
+            data-person-id={row.id}
+          >
+            <span>
+              Person {row.number}
+              {!row.fresh ? " · last seen" : ""}
+            </span>
+            <span>
+              {row.result?.status === "ok"
+                ? `${row.result.length_m.toFixed(1)} m · suggested approach`
+                : row.result?.status === "unavailable"
+                  ? `Unavailable · ${reasonText[row.result.reason] ?? row.result.reason}`
+                  : "Checking observed-free floor…"}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

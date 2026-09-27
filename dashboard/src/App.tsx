@@ -15,13 +15,18 @@ import {
 } from "lucide-react";
 import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
+import { useReconApproaches } from "./useReconApproaches";
 import { VoiceAsk } from "./VoiceAsk";
 import { PhoneControls } from "./PhoneControls";
 import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
 import { retainedPeople } from "./personMemory";
-import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
+import {
+  ApproachRouteCard,
+  ReconSummary,
+  useApproachRoute,
+} from "./ApproachRoutePanel";
 import { useMission } from "./useMission";
 import { useDashboardActions } from "./useDashboardActions";
 import { hiddenByFilter } from "./dashboardActions";
@@ -231,12 +236,18 @@ export default function App() {
     sourceKey: JSON.stringify([config.source, config.wsUrl, config.apiUrl]),
     now,
   });
+  const recon = useReconApproaches(config.apiUrl, mission, {
+    ready: !stale && controller.mapConfirmed && mission.health?.phone === "ok",
+    sourceKey: JSON.stringify([config.source, config.wsUrl, config.apiUrl]),
+    now,
+  });
   const routeResult =
     "result" in approach.route ? approach.route.result : undefined;
   const approachDrawing =
     "start" in approach.route
       ? {
           start: approach.route.start,
+          startKind: "operator" as const,
           points: routeResult?.status === "ok" ? routeResult.points : null,
           approach: routeResult?.status === "ok" ? routeResult.approach : null,
         }
@@ -362,6 +373,13 @@ export default function App() {
         liveDetections={live}
         retainedPeople={retained}
         approachRoute={approachDrawing}
+        personNumbers={Object.fromEntries(
+          recon.rows.map((row) => [row.id, row.number]),
+        )}
+        reconRoutes={recon.drawings.map((route) => ({
+          ...route,
+          highlighted: route.id === selected,
+        }))}
         now={now}
         pickingRouteStart={pickingRouteStart && !panel}
         onRouteStart={approach.pickStart}
@@ -370,12 +388,6 @@ export default function App() {
         showBoxes={controls.boxes}
         showLabels={controls.labels}
         handle={sceneHandle}
-      />
-      <ApproachRouteCard
-        state={approach.route}
-        personLastSeen={approach.person?.last_seen ?? null}
-        now={now}
-        onClear={approach.clear}
       />
       <DetectionOverlay
         detections={mission.detections}
@@ -590,34 +602,50 @@ export default function App() {
           )}
         </aside>
       )}
-      <VoiceAsk config={config} onActions={actions.run}>
-        {(controls.classes || !controls.boxes || !controls.labels) && (
-          <div className="view-filter" data-testid="view-filter">
-            <span>
-              {controls.classes
-                ? `Showing ${controls.classes.map(className).join(", ")}`
-                : "Showing all classes"}
-              {!controls.boxes && " · boxes hidden"}
-              {!controls.labels && " · labels hidden"}
-              {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
-              {hidden.people > 0 &&
-                `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
-            </span>
-            <button
-              onClick={() =>
-                actions.setControls((c) => ({
-                  ...c,
-                  classes: null,
-                  boxes: true,
-                  labels: true,
-                }))
-              }
-            >
-              Show all
-            </button>
-          </div>
-        )}
-      </VoiceAsk>
+      <div className="mission-overlays">
+        <ApproachRouteCard
+          state={approach.route}
+          personLastSeen={approach.person?.last_seen ?? null}
+          now={now}
+          onClear={approach.clear}
+        >
+          {recon.rows.length > 0 && (
+            <ReconSummary
+              recon={recon}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          )}
+        </ApproachRouteCard>
+        <VoiceAsk config={config} onActions={actions.run}>
+          {(controls.classes || !controls.boxes || !controls.labels) && (
+            <div className="view-filter" data-testid="view-filter">
+              <span>
+                {controls.classes
+                  ? `Showing ${controls.classes.map(className).join(", ")}`
+                  : "Showing all classes"}
+                {!controls.boxes && " · boxes hidden"}
+                {!controls.labels && " · labels hidden"}
+                {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
+                {hidden.people > 0 &&
+                  `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
+              </span>
+              <button
+                onClick={() =>
+                  actions.setControls((c) => ({
+                    ...c,
+                    classes: null,
+                    boxes: true,
+                    labels: true,
+                  }))
+                }
+              >
+                Show all
+              </button>
+            </div>
+          )}
+        </VoiceAsk>
+      </div>
       <NavigationProposals controller={controller} />
       {notice && (
         <div className="toast" role="status">

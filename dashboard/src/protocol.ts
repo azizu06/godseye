@@ -14,6 +14,15 @@ export interface WorldObject {
   observations: number;
   state: ObjectState;
 }
+export interface MissionEntry {
+  session_id: string;
+  map_epoch: number;
+  start: Vec2;
+  frame_id: number;
+  t_capture: number;
+  started_at_ms: number;
+  basis: "explore_start";
+}
 export interface Health {
   phone: "ok" | "stale" | "down";
   car: "ok" | "stale" | "down";
@@ -22,6 +31,7 @@ export interface Health {
   mode: Mode;
   armed: boolean;
   stop_reason: string | null;
+  mission_entry?: MissionEntry | null;
 }
 export interface Pose {
   position: Vec3;
@@ -93,6 +103,27 @@ export type Message =
   | Wire<"detections", DetectionFrame>;
 export const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
+function validMissionEntry(value: unknown): value is MissionEntry {
+  if (!value || typeof value !== "object") return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.session_id === "string" &&
+    e.session_id.length > 0 &&
+    e.session_id.length <= 256 &&
+    Number.isSafeInteger(e.map_epoch) &&
+    Number(e.map_epoch) >= 0 &&
+    Array.isArray(e.start) &&
+    e.start.length === 2 &&
+    e.start.every(isFiniteNumber) &&
+    Number.isSafeInteger(e.frame_id) &&
+    Number(e.frame_id) >= 0 &&
+    isFiniteNumber(e.t_capture) &&
+    e.t_capture >= 0 &&
+    Number.isSafeInteger(e.started_at_ms) &&
+    Number(e.started_at_ms) >= 0 &&
+    e.basis === "explore_start"
+  );
+}
 const vector = (v: unknown, size: number) =>
   Array.isArray(v) && v.length === size && v.every(isFiniteNumber);
 const member = (v: unknown, values: string[]) =>
@@ -289,6 +320,13 @@ export function parseMessage(raw: unknown): Message | null {
             (isFiniteNumber(m.displacement_m) && m.displacement_m >= 0));
         break;
     }
+    if (valid && m.type === "health" && "mission_entry" in m)
+      return {
+        ...m,
+        mission_entry: validMissionEntry(m.mission_entry)
+          ? m.mission_entry
+          : null,
+      } as Message;
     return valid ? (raw as Message) : null;
   } catch {
     return null;

@@ -19,7 +19,11 @@ import {
 import { displayedStoredObjects, type PersonTrack } from "./personMemory";
 /** An operator-started approach route to draw: start always, path once planned. */
 export interface ApproachDrawing {
+  id?: string;
+  label?: string;
+  highlighted?: boolean;
   start: Vec2;
+  startKind?: "mission" | "operator";
   points: Vec2[] | null;
   approach: Vec2 | null;
 }
@@ -37,9 +41,10 @@ export function useSceneLabels(
   onSelect: (id: string) => void,
   objectsVisible: boolean,
   live: LiveMarker[] = [],
-  route: ApproachDrawing | null = null,
+  routes: ApproachDrawing[] = [],
   now = Date.now(),
   showWeak = false,
+  personNumbers: Record<string, number> = {},
   floor: number | null = null,
   people: PersonTrack[] = [],
 ): SceneLabel[] {
@@ -65,7 +70,9 @@ export function useSceneLabels(
                 onClick={() => onSelect(o.id)}
               >
                 <span className="marker-dot" />
-                {className(o.class)}
+                {personNumbers[o.id]
+                  ? `Person ${personNumbers[o.id]}`
+                  : className(o.class)}
                 {possible ? "?" : ""}
                 <span className="marker-confidence">
                   {Math.round(o.confidence * 100)}%
@@ -122,27 +129,39 @@ export function useSceneLabels(
           </span>
         ),
       });
-    if (route) {
-      labels.push({
-        id: "__route-start",
-        position: [route.start[0], overlayY(floor, "rover"), route.start[1]],
-        content: (
-          <span className="route-label" data-testid="route-start-label">
-            START · operator-selected
-          </span>
-        ),
-      });
+    for (const [index, route] of routes.entries()) {
+      if (
+        route.startKind !== "mission" ||
+        !routes.slice(0, index).some((r) => r.startKind === "mission")
+      )
+        labels.push({
+          id: `__route-start-${index}`,
+          position: [route.start[0], overlayY(floor, "rover"), route.start[1]],
+          content: (
+            <span className="route-label" data-testid="route-start-label">
+              {route.startKind === "mission"
+                ? "MISSION ENTRY · fixed"
+                : "START · operator-selected"}
+            </span>
+          ),
+        });
       if (route.approach)
         labels.push({
-          id: "__route-approach",
+          id: `__route-approach-${route.id ?? index}`,
           position: [
             route.approach[0],
             overlayY(floor, "rover"),
             route.approach[1],
           ],
           content: (
-            <span className="route-label" data-testid="route-approach-label">
-              APPROACH POINT · suggested
+            <span
+              className="route-label"
+              data-testid="route-approach-label"
+              data-person-id={route.id}
+            >
+              {route.label
+                ? `${route.label} · approach suggested`
+                : "APPROACH POINT · suggested"}
             </span>
           ),
         });
@@ -191,10 +210,12 @@ export function useSceneLabels(
     onSelect,
     objectsVisible,
     live,
-    route,
+    routes,
     now,
     showWeak,
+    personNumbers,
     floor,
+    people,
   ]);
 }
 // DOM nodes belong exclusively to the outer React root. Projection only updates

@@ -98,6 +98,22 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 
+`health` optionally includes `mission_entry` (also in `GET /health` and arm responses):
+`null`, or `{ session_id, map_epoch, start: [x,z], frame_id, t_capture, started_at_ms,
+basis: "explore_start" }`. It is the measured camera-floor projection at the first
+successful Explore arm, fixed before Explore can move. `frame_id` and `t_capture`
+identify that accepted phone pose; `started_at_ms` is backend wall time in milliseconds.
+Pose freshness follows the active backend readiness profile (including the explicit
+prototype profile), with no separate entry-only age threshold.
+The nested session/epoch must match the viewer's active source/map before use.
+Missing, null, malformed or mismatched entries are unavailable, never a fallback to
+current position or the AR origin. The entry persists across Stop/rearm and same-map
+reconnect/restart; a new session/epoch has none until its first successful Explore.
+Legacy/restarted sessions without a recorded entry are not backfilled: start a new
+session at the intended entry point. This metadata changes no motion authority or
+walking-clearance assumptions; `/route` remains the existing visualization-only API.
+
+
 ## 3. Dashboard → Mac: REST on `http://<mac>:8765`
 
 | Method | Path | Body | Does |
@@ -109,9 +125,15 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 | POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
 | POST | `/rescan` | none | Save a baseline and start the revisit |
-| POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` | Suggested walking approach to a recently observed person; unavailable on stale/unsupported or changed evidence. Visualization only, never a goal or motion; history retained (additive, see `backend/README.md`) |
+| POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z], "purpose"?: "selected" / "recon" }` | Suggested walking approach to a recently observed person; unavailable on stale/unsupported or changed evidence. Visualization only, never a goal or motion; history retained (additive, see `backend/README.md`) |
 | POST | `/ask` | `{ "question": "where's my backpack?" }` | Answer from saved objects (P2) |
 | GET | `/objects`, `/events`, `/health` | none | Current state |
+
+`/route` defaults to `purpose: "selected"`, retaining the selected suggestion for
+read-only voice answers. `purpose: "recon"` independently plans each person without
+changing the selected request, cache or another recon response. Both purposes
+apply identical target, map and lifecycle evidence checks; neither commands motion.
+An invalid purpose is rejected with `422`.
 
 ## 4. Mac → car
 

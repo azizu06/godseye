@@ -3395,6 +3395,11 @@ input[type="checkbox"] {
 .route-card p {
   margin: 6px 0 0;
 }
+.route-card .person-found {
+  color: #ffcf91;
+  font-size: 17px;
+  font-weight: 700;
+}
 .route-assumptions {
   color: var(--muted);
   font: 10px/1.5 var(--mono);
@@ -3612,4 +3617,70 @@ input[type="checkbox"] {
     width: calc(100% - 24px);
     max-width: none;
   }
+}
+
+/* Keep the existing route and voice affordances visible without overlapping. */
+.mission-overlays {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+  max-width: calc(100% - 40px);
+  max-height: calc(100% - 100px);
+  overflow: auto;
+}
+.mission-overlays > .route-card,
+.mission-overlays > .voice-ask {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  max-width: none;
+}
+@media (max-width: 1100px) {
+  .mission-overlays {
+    bottom: 96px;
+  }
+}
+@media (max-width: 760px) {
+  .mission-overlays {
+    right: 12px;
+    width: calc(100% - 24px);
+    max-width: none;
+    max-height: calc(100% - 180px);
+  }
+}
+
+.recon-people {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 8px;
+}
+.recon-people button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 6px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  font: inherit;
+  cursor: pointer;
+}
+.recon-people button.selected {
+  border-color: #ffb86b;
+}
+.recon-people button span:last-child {
+  color: var(--muted);
+  font-size: 10px;
+}
+.recon-summary + header {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }
