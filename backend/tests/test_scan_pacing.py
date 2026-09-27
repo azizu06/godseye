@@ -162,7 +162,12 @@ class NavigatorPacingTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(.2)
                     self.assertTrue(all(c == (0., 0.) for c in rover.commands[before:]))
                 else:
-                    h.stop(interrupt)
+                    if interrupt == 'generation':
+                        h.generation += 1
+                        await h.finished(timeout=1.)
+                        self.assertEqual(h.stops, ['command_stale'])
+                    else:
+                        h.stop(interrupt)
                     before = len(rover.commands)
                     await asyncio.sleep(.3)
                     self.assertEqual(rover.commands[before:], [])
@@ -192,6 +197,6 @@ class NavigatorPacingTests(unittest.IsolatedAsyncioTestCase):
               '; traveled m', round(baseline[1] - 1., 3), '->', round(paced[1] - 1., 3))
 
     async def test_actual_obstacle_and_stop_preempt_active_checkpoint(self):
-        for interrupt in ('obstacle', 'operator_stop', 'session_reset', 'phone_disconnected'):
+        for interrupt in ('obstacle', 'operator_stop', 'session_reset', 'phone_disconnected', 'generation'):
             with self.subTest(interrupt=interrupt):
                 await self.run_route(True, interrupt)
