@@ -390,12 +390,15 @@ export default function App() {
         showLabels={controls.labels}
         handle={sceneHandle}
       />
-      <div className="flight-controls joystick-flight">
-        <OperatorControls controller={controller} compact />
-        <Joystick
-          controller={controller}
-          blocked={!!panel || settings || newSession || help}
-        />
+      <div className="flight-dock">
+        <NavigationProposals controller={controller} />
+        <div className="flight-controls joystick-flight">
+          <OperatorControls controller={controller} compact />
+          <Joystick
+            controller={controller}
+            blocked={!!panel || settings || newSession || help}
+          />
+        </div>
       </div>
       <DetectionOverlay
         detections={mission.detections}
@@ -658,7 +661,6 @@ export default function App() {
           )}
         </VoiceAsk>
       </div>
-      <NavigationProposals controller={controller} />
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>
