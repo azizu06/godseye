@@ -150,6 +150,13 @@ class BridgeCore {
     if (nonzero && (direction < 1 || direction > 6 || power < 1 || power > 180)) {
       reject(); return;
     }
+    const bool arc = direction == 5 || direction == 6;
+    int innerPower = power / 2;
+    if (doc.containsKey("D3")) {
+      if (!arc || !doc["D3"].is<int>()) { reject(); return; }
+      innerPower = doc["D3"];
+      if (innerPower < power / 2 || innerPower > power) { reject(); return; }
+    }
     const uint32_t sequence = doc["S"];
     if (!autonomy.accept(id, sequence, permit, now)) {
       if (autonomy.active()) return; // Expired permit: drop it without retiring the arm.
@@ -164,13 +171,12 @@ class BridgeCore {
     strcpy(motion.session, id);
     StaticJsonDocument<256> canonical;
     canonical["H"] = nonzero ? "M" : "S";
-    const bool arc = direction == 5 || direction == 6;
     canonical["N"] = nonzero ? (arc ? 4 : 2) : 100;
     if (arc) {
       // Stock Uno N=4 sets both forward motor speeds. The ESP's own 1 s
       // command-loss brake sends N=100 if the untimed arc stops refreshing.
-      canonical["D1"] = direction == 5 ? power : power / 2;
-      canonical["D2"] = direction == 5 ? power / 2 : power;
+      canonical["D1"] = direction == 5 ? power : innerPower;
+      canonical["D2"] = direction == 5 ? innerPower : power;
     } else if (nonzero) {
       canonical["D1"] = direction;
       canonical["D2"] = power;
@@ -184,6 +190,7 @@ class BridgeCore {
     if (deserializeJson(doc, buffer) || !doc["N"].is<int>() || !doc["H"].is<const char*>()) {
       reject(); return;
     }
+    if (doc.containsKey("D3") && doc["N"].as<int>() != 202) { reject(); return; }
     if (doc["N"].as<int>() == 201 || doc["N"].as<int>() == 202) {
       parseAutonomy(doc, now);
       return;

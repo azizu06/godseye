@@ -53,7 +53,8 @@ class SyntheticResponse:
     """Invented linear wheel response at PWM180; no physical calibration claim.
 
     D1 1/2 counter-rotate wheels, 3 drives both forward, 5/6 drive one wheel
-    at half PWM and the other at full PWM, as in BridgeCore's packet mapping.
+    at the optional inner PWM (legacy half PWM) and the other at full PWM,
+    as in BridgeCore's packet mapping.
     Positive yaw follows backend convention (toward +X from +Z). Track width is
     the effective turning parameter, independent of the collision-body fixture.
     """
@@ -75,7 +76,11 @@ class SyntheticResponse:
             return 0., (1 if packet.direction == 1 else -1) * 2 * wheel / self.track_width_m
         if packet.direction == 3:
             return wheel, 0.
-        inner = self.wheel_speed_mps * (packet.pwm // 2) / 180
+        inner_power = getattr(packet, 'inner_power', None)
+        inner_power = packet.pwm // 2 if inner_power is None else inner_power
+        if not packet.pwm // 2 <= inner_power <= packet.pwm:
+            raise ValueError('invalid prototype inner-wheel power')
+        inner = self.wheel_speed_mps * inner_power / 180
         return (wheel + inner) / 2, (1 if packet.direction == 5 else -1) * (wheel - inner) / self.track_width_m
 
 
@@ -207,7 +212,9 @@ def run_scenario(scenario: Scenario, *, response=None, body=None, response_mode=
     def record(requested=(0., 0.), actual=(0., 0.), packet=None, status='stop', target=None):
         trace.append(dict(t=round(elapsed, 6), x=round(pose.x, 8), z=round(pose.z, 8),
                           yaw=round(pose.yaw, 8), requested=list(requested), actual=list(actual),
-                          packet=[packet.direction, packet.pwm] if packet else None,
+                          packet=([packet.direction, packet.pwm] +
+                                  ([packet.inner_power] if getattr(packet, 'inner_power', None) is not None else []))
+                                 if packet else None,
                           status=status, target=list(target) if target else None))
 
     while elapsed < scenario.max_time_s - 1e-9:
@@ -314,7 +321,7 @@ function line(points,color,width=2){if(!points.length)return;ctx.beginPath();poi
 const frame=run.trace[index],plan=run.plans.filter(p=>p.t<=frame.t).at(-1);if(plan)line(plan.points,'#8896a8');line(run.trace.slice(0,index+1).map(p=>[p.x,p.z]),'#65dec3',3);
 function dot(xz,color,r){ctx.beginPath();ctx.arc(...point(...xz),r,0,Math.PI*2);ctx.fillStyle=color;ctx.fill()}dot(run.goal,'#eee6c5',6);if(frame.target)dot(frame.target,'#e8c26a',4);
 const body=data.synthetic_footprint,corners=[[-1,-1],[1,-1],[1,1],[-1,1]].map(([a,b])=>[frame.x+a*body.length_m/2*Math.sin(frame.yaw)+b*body.width_m/2*Math.cos(frame.yaw),frame.z+a*body.length_m/2*Math.cos(frame.yaw)-b*body.width_m/2*Math.sin(frame.yaw)]);line([...corners,corners[0]],'#80edda',2);line([[frame.x,frame.z],[frame.x+body.length_m*Math.sin(frame.yaw),frame.z+body.length_m*Math.cos(frame.yaw)]],'#fff',2);
-byId('clock').textContent=frame.t.toFixed(1)+' / '+run.metrics.elapsed_s.toFixed(1)+' s';scrub.value=index;byId('command').textContent='State: '+frame.status+'\nPacket: '+(frame.packet?'D1='+frame.packet[0]+' PWM='+frame.packet[1]:'STOP')+'\nRequested: '+frame.requested.map(n=>n.toFixed(3)).join(', ')+'\nSynthetic: '+frame.actual.map(n=>n.toFixed(3)).join(', ')+'\n           m/s, rad/s';}
+byId('clock').textContent=frame.t.toFixed(1)+' / '+run.metrics.elapsed_s.toFixed(1)+' s';scrub.value=index;byId('command').textContent='State: '+frame.status+'\nPacket: '+(frame.packet?'D1='+frame.packet[0]+' PWM='+frame.packet[1]+(frame.packet.length>2?' inner='+frame.packet[2]:''):'STOP')+'\nRequested: '+frame.requested.map(n=>n.toFixed(3)).join(', ')+'\nSynthetic: '+frame.actual.map(n=>n.toFixed(3)).join(', ')+'\n           m/s, rad/s';}
 select.onchange=choose;scrub.oninput=()=>{index=+scrub.value;playTime=run.trace[index].t;draw()};byId('play').onclick=()=>{if(index===run.trace.length-1){index=0;playTime=0}playing=!playing;byId('play').textContent=playing?'Pause':'Play'};window.onresize=draw;
 function tick(now){if(playing){playTime+=(now-last)/1000*+byId('speed').value;while(index<run.trace.length-1&&run.trace[index+1].t<=playTime)index++;draw();if(index===run.trace.length-1){playing=false;byId('play').textContent='Play'}}last=now;requestAnimationFrame(tick)}choose();requestAnimationFrame(tick);
 </script></html>'''

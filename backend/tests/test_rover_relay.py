@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from backend.app import create_app
 from backend.motion import DriveCommand, DriveStop
 from backend.rover_relay import RelayCar
+from backend.prototype import PrototypeActuation
 from backend.tests.test_actuation import fixture
 from backend.calibration import RoverCalibration
 from tools.car_rehearsal import EmptyDetector, PhoneScene, TEST_CALIBRATION, wait_for
@@ -91,6 +92,16 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.car.next_message())
         with self.assertRaises(ValueError):
             self.car.send(self.drive(4))
+
+    async def test_prototype_gentle_arc_reaches_phone_with_inner_wheel_power(self):
+        self.car.actuation = PrototypeActuation()
+        await self.arm()
+        self.car.send(self.drive(v_mps=.2, yaw_rate_rps=.1))
+        packet = self.car.next_message()
+        self.assertEqual((packet['direction'], packet['power']), (5, 180))
+        self.assertEqual(packet['inner_power'], 162)
+        self.car.send(self.drive(2, v_mps=.2))
+        self.assertNotIn('inner_power', self.car.next_message())
 
     async def test_dispatch_age_rechecked_after_backpressure_and_never_renewed(self):
         await self.arm()

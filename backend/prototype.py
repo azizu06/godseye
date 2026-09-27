@@ -65,5 +65,12 @@ class PrototypeActuation:
         # power when steering crosses the straight/arc threshold. This is an
         # uncalibrated PWM policy, not an estimate of actual motor response.
         power = round(60 + 120 * max(0., min(1., (v_mps - .05) / .15)))
-        direction = (5 if yaw_rate_rps > 0 else 6) if abs(yaw_rate_rps) >= .15 else 3
-        return TimedMotorCommand(direction, power)
+        # Preserve small steering requests instead of switching between straight
+        # and one fixed sharp arc. At the yaw request limit the inner wheel gets
+        # half power; gentler bends keep both wheels closer to cruise. This is
+        # a normalized duty policy, not a measured differential-drive model.
+        inner = round(power * (1. - abs(yaw_rate_rps)))
+        if inner == power:
+            return TimedMotorCommand(3, power)
+        return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, power,
+                                 inner_power=max(power // 2, inner))

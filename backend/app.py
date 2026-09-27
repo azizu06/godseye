@@ -59,6 +59,7 @@ MAP_PENDING_POINTS = 2  # unsent point chunks kept per slow viewer
 DETECT_INTERVAL_S = .5  # at most 2 Hz of object inference
 DETECT_MAX_AGE_S = 2.  # discard detections finished this long after their frame arrived
 DETECTOR_OK_S = 2.  # health reports the detector ok this long after a used result
+EXPLORE_RETRY_S = 1.  # quiet backoff after a failed arm or a stopped Explore run
 
 
 class Input(BaseModel):
@@ -339,6 +340,11 @@ def create_app(db_path: str | None = None, build_points=None,
         try:
             yield
         finally:
+            stop('shutdown')
+            if app.state.auto_arm_task is not None:
+                app.state.auto_arm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await app.state.auto_arm_task
             label_task.cancel()
             with suppress(asyncio.CancelledError):
                 await label_task
@@ -462,8 +468,14 @@ def create_app(db_path: str | None = None, build_points=None,
         # its handshake, so the same hazard still cancels a new arm.
         if reason in {'operator_stop', 'mode_change', 'shutdown'}:
             app.state.auto_requested = False
+            app.state.arm_request_token = None
+            pending = app.state.auto_arm_task
+            if pending is not None and pending is not asyncio.current_task():
+                pending.cancel()
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
+        if app.state.auto_requested:
+            app.state.auto_retry_at = time.monotonic() + EXPLORE_RETRY_S
         app.state.armed = False
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
@@ -844,7 +856,6 @@ def create_app(db_path: str | None = None, build_points=None,
                     and app.state.arm_request_token is None and hazard() is None
                     and time.monotonic() >= app.state.auto_retry_at
                     and (app.state.auto_arm_task is None or app.state.auto_arm_task.done())):
-                app.state.auto_retry_at = time.monotonic() + 1.
                 app.state.auto_arm_task = asyncio.create_task(resume_explore())
             ticks += 1
             if ticks % 10 == 0:
@@ -966,32 +977,48 @@ def create_app(db_path: str | None = None, build_points=None,
         prepare's Explore default; it needs only the manual prerequisites, never a route or map."""
         if standard and app.state.mode != 'manual':
             raise HTTPException(409, 'Select Standard before arming for a move')
+        if app.state.arm_request_token is not None:
+            raise HTTPException(409, 'Rover startup is already in progress')
+        if prepare and relay is not None and app.state.mode not in ('navigate', 'explore') and not standard:
+            app.state.mode = 'explore'
+        # Only an explicit arm request selects the mission. A readiness gap or
+        # failed handshake may stop motors without discarding that choice.
+        if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
+            app.state.auto_requested = True
+        return await arm_once(prepare, standard)
+
+    async def arm_once(prepare=False, standard=False):
+        if app.state.arm_request_token is not None:
+            raise HTTPException(409, 'Rover startup is already in progress')
+        token = object()
+        app.state.arm_request_token = token
+        try:
+            return await prepare_and_arm(prepare, standard, token)
+        except Exception:
+            if app.state.auto_requested:
+                app.state.auto_retry_at = time.monotonic() + EXPLORE_RETRY_S
+            raise
+        finally:
+            if app.state.arm_request_token is token:
+                app.state.arm_request_token = None
+
+    async def prepare_and_arm(prepare, standard, token):
         if prepare and relay is not None:
-            if app.state.arm_request_token is not None:
-                raise HTTPException(409, 'Rover startup is already in progress')
-            token = object()
-            app.state.arm_request_token = token
-            try:
-                if app.state.mode not in ('navigate', 'explore') and not standard:
-                    app.state.mode = 'explore'
-                if hazard() is not None:
-                    if not device.snapshot()['connected']:
-                        raise HTTPException(409, 'The iPhone app is offline; keep it open to connect')
-                    from backend.prepare_rover import prepare_rover
-                    deadline = time.monotonic() + 12.
-                    await prepare_rover(device, lambda: app.state.arm_request_token is not token)
-                    while hazard() is not None:
-                        if app.state.arm_request_token is not token:
-                            raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
-                        if time.monotonic() >= deadline:
-                            raise HTTPException(409, 'Rover startup: ' + ', '.join(
-                                manual_blockers() if standard else autonomy_blockers()))
-                        await asyncio.sleep(.05)
-                if app.state.arm_request_token is not token:
-                    raise HTTPException(409, 'Rover startup cancelled')
-            finally:
-                if app.state.arm_request_token is token:
-                    app.state.arm_request_token = None
+            if hazard() is not None:
+                if not device.snapshot()['connected']:
+                    raise HTTPException(409, 'The iPhone app is offline; keep it open to connect')
+                from backend.prepare_rover import prepare_rover
+                deadline = time.monotonic() + 12.
+                await prepare_rover(device, lambda: app.state.arm_request_token is not token)
+                while hazard() is not None:
+                    if app.state.arm_request_token is not token:
+                        raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
+                    if time.monotonic() >= deadline:
+                        raise HTTPException(409, 'Rover startup: ' + ', '.join(
+                            manual_blockers() if standard else autonomy_blockers()))
+                    await asyncio.sleep(.05)
+            if app.state.arm_request_token is not token:
+                raise HTTPException(409, 'Rover startup cancelled')
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
         entry_pose = app.state.pose  # the exact pose accepted by this readiness check
@@ -1003,7 +1030,8 @@ def create_app(db_path: str | None = None, build_points=None,
         if relay is not None:
             try:
                 await relay.prepare(app.state.motion.session_id)
-                if generation != app.state.motion.generation or hazard() is not None:
+                if (app.state.arm_request_token is not token
+                        or generation != app.state.motion.generation or hazard() is not None):
                     raise ValueError('Stopped or lost readiness while arming')
                 entry_pose = app.state.pose  # readiness was rechecked after the await
             except (ValueError, asyncio.TimeoutError) as error:
@@ -1028,15 +1056,13 @@ def create_app(db_path: str | None = None, build_points=None,
                 logger.warning('Explore entry metadata could not be persisted')
         app.state.armed = True
         app.state.stop_reason = None
-        if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
-            app.state.auto_requested = True
         return health()
 
     async def resume_explore():
         if not app.state.auto_requested or app.state.mode != 'explore':
             return
         try:
-            await arm(prepare=False)
+            await arm_once()
         except HTTPException as error:
             logger.info('Explore still requested; waiting to rearm: %s', error.detail)
         except Exception:

@@ -94,8 +94,16 @@ after three seconds, and no drive command uses a stale permit.
 becomes the bounded stock `N=2` packet for directions 1–4, or a restricted stock
 `N=4` differential-speed forward arc for direction 5 (left) or 6 (right), only
 when the session, sequence and permit are valid again at UART dispatch. Arcs run
-the two forward motors at full/half PWM and rely on the ESP's 1 s command-loss
-Stop because stock `N=4` has no Uno timer. `D1=0,D2=0` is an idle zero in the live session.
+the two forward motors at full/half PWM when `D3` is omitted. An optional integer
+`D3=<inner PWM>` selects a gentler arc, with `D2 // 2 <= D3 <= D2`; `D2` remains
+the outer-wheel PWM. Direction 5 produces stock `N=4,D1=<outer>,D2=<inner>`;
+direction 6 produces `N=4,D1=<inner>,D2=<outer>`. The phone's autonomous command
+WebSocket accepts this as optional `inner_power` and forwards it as `D3`. Both
+phone and ESP reject null, booleans, floats, out-of-range values, and inner power
+on non-arc commands. Omission preserves the legacy half/full behavior. This
+extension does not change the frozen sensor wire, session rules or magnitude
+limits. All arcs rely on the ESP's 1 s command-loss Stop because stock `N=4`
+has no Uno timer. `D1=0,D2=0` is an idle zero in the live session.
 The legacy `N=100` Stop always retires it. After the UART Stop handoff,
 `{Z<request H>}` acknowledges that specific Stop; use a unique request ID for an
 arm barrier. `{X}` reports malformed input or a retired session. Manual movement while an autonomous session is
@@ -274,7 +282,12 @@ observed, it first moves toward their center and follows the far end.
 The follower cruises at a **nominal** 0.20 m/s. Forward and arc PWM interpolate
 continuously from 60 at 0.05 m/s to 180 at 0.20 m/s, with 140 at 0.15 m/s;
 steering at the same requested speed no longer jumps from 60 to 180. The bridge
-still uses half/full wheel power for arcs; actual turning radius is unmeasured.
+keeps that outer-wheel PWM and receives optional inner-wheel PWM for gradual arcs.
+The prototype rounds `outer PWM * (1 - abs(requested yaw rate))` to an integer,
+with requested yaw bounded to 0.5 rad/s; a 0.5 request uses half power and smaller
+requests use less differential. A request that rounds both wheel powers equal
+uses straight motion. This is an uncalibrated duty policy; actual turning radius
+is unmeasured. Older arc packets without inner power retain their half/full split.
 Approaches slow with distance and pivots retain PWM 60. The
 autonomous phone/ESP command path permits up to PWM 180; stock manual control
 remains capped at 80. This is three times the former prototype duty setting,
@@ -335,10 +348,15 @@ steering switches; `replay.html` shows route and motion with playback/scrubbing.
 See [tools/README.md](../tools/README.md#scout-driving-benchmark). These fixtures
 are invented, explicitly labeled simulation, and never loaded as rover calibration.
 
-The nominal comparison completed corridor/corner/approach in 17.3/22.0/2.2
-simulated seconds, versus 46.9/55.9/5.6 before; the obstacle detour completed
-in 18.2 seconds where the previous follower entered an inflated obstacle margin
-and failed its next plan. All four scenarios completed without synthetic chassis
+The gradual-steering comparison completes corridor/corner/approach in
+17.0/21.9/2.2 simulated seconds. The earlier navigation overhaul (`766e1fc`)
+took 17.3/22.0/2.2, versus 46.9/55.9/5.6 before that overhaul. The single-obstacle
+detour takes 18.3 seconds (previously 18.2), with no pivot or pause and full
+nominal cruise until goal approach. Direction-category switches fall from 51 to
+13; the largest simulated yaw-rate step falls from 0.536 to 0.0655 rad/s.
+This change improves steering continuity, not detour completion time. The
+original pre-overhaul follower failed its next plan inside an inflated margin.
+All four scenarios complete without synthetic chassis
 collision for nine response combinations (wheel speeds 0.15/0.30/0.45 m/s at
 PWM 180 and track widths 0.18/0.28/0.38 m). This validates software behavior
 in those models, not physical sustained navigation or a recorded rover demo.
@@ -347,6 +365,8 @@ The accompanying transport fixes retain every 20 Hz ESP permit for its full
 existing 500 ms validity (the former six-entry ring evicted it after about
 300 ms). A pending phone-side Stop survives permit gaps, and a Stop acknowledgement
 can reach the laptop during a capture gap. These changes keep the existing packet
-format. **Deployment:** restart the backend for navigation/power changes; build
-and install the phone app and flash the ESP bridge for the transport fixes.
-The tests/builds in this change do not establish that either device was updated.
+format. The subsequent gradual arcs add the optional inner-wheel field described
+above and require matching backend, phone and ESP updates. A changing-map test
+(`backend.tests.test_flowing_detour`) also runs the actual asynchronous Navigator:
+an obstacle appears after driving starts, steering begins at least 1.2 m before
+its near face, and the rover keeps translating at nominal cruise through the pass.

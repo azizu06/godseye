@@ -115,6 +115,8 @@ synthetic; it opens no hardware connections and is not a video of the rover.
 Use `--synthetic-wheel-speed-mps` and `--synthetic-track-width-m` to test different synthetic responses,
 `--response-mode ideal` to compare an ideal velocity follower, and `--scenario`
 to select a case. The actual async Navigator and changing-map behavior are
-covered separately by `backend.tests.test_scout_navigation` and
-`backend.tests.test_navigator`; this benchmark does not emulate network timing
+covered separately by `backend.tests.test_scout_navigation`,
+`backend.tests.test_navigator`, and `backend.tests.test_flowing_detour`; the last
+introduces a hallway obstacle after driving starts and checks early steering,
+continued translation and nominal cruise through the pass. This benchmark does not emulate network timing
 or raw sensor reconstruction.

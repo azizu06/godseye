@@ -127,6 +127,20 @@ class PrototypeTests(unittest.TestCase):
         self.assertTrue(all(0 <= after - before <= 1 for before, after in zip(powers, powers[1:])))
         self.assertEqual(profile.command(.001, 0.).pwm, 60)
 
+    def test_gentle_steering_reaches_wheels_without_a_fixed_sharp_arc(self):
+        profile = PrototypeActuation()
+        for yaw, inner in ((.05, 171), (.1, 162), (.3, 126), (.5, 90)):
+            for sign, direction in ((1, 5), (-1, 6)):
+                with self.subTest(yaw=sign * yaw):
+                    command = profile.command(.2, sign * yaw)
+                    self.assertEqual(command.direction, direction)
+                    self.assertEqual(command.pwm, 180)
+                    self.assertEqual(command.inner_power, inner)
+        straight = profile.command(.2, 0.)
+        self.assertEqual(straight.direction, 3)
+        self.assertIsNone(straight.inner_power)
+        self.assertIsNone(profile.command(0., .5).inner_power)
+
     def test_steering_threshold_does_not_raise_power_during_slow_approach(self):
         profile = PrototypeActuation()
         for speed in (.05, .075, .1, .15, .18, .2):

@@ -222,10 +222,13 @@ class RelayCar:
             return self.next_message()
         if age > min(MAX_DISPATCH_AGE_MS, command.valid_for_ms):
             return None
-        return dict(version=1, type='command', session=self.armed_session,
+        packet = dict(version=1, type='command', session=self.armed_session,
                     seq=command.seq, permit=self.status.permit,
                     direction=motor.direction if motor else 0, power=motor.pwm if motor else 0,
                     lease_ms=motor.lease_ms if motor else 1500)
+        if motor is not None and motor.inner_power is not None:
+            packet['inner_power'] = motor.inner_power
+        return packet
 
     async def serve(self, ws):
         if not self.authorized(ws.headers.get('authorization')) or self.connected:

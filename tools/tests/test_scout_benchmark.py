@@ -49,6 +49,15 @@ class BenchmarkGeometryTests(unittest.TestCase):
         self.assertEqual(response.rates(None), (0., 0.))
         self.assertAlmostEqual(response.rates(TimedMotorCommand(3, 60))[0], .12)
 
+    def test_gentle_differential_preserves_most_forward_speed_and_small_yaw(self):
+        response = SyntheticResponse(wheel_speed_mps=.3, track_width_m=.3)
+        for direction, sign in ((5, 1), (6, -1)):
+            v, w = response.rates(TimedMotorCommand(direction, 180, inner_power=162))
+            self.assertAlmostEqual(v, .285)
+            self.assertAlmostEqual(w, sign * .1)
+        with self.assertRaises(ValueError):
+            response.rates(TimedMotorCommand(5, 180, inner_power=181))
+
     def test_nonsensical_response_and_footprint_are_rejected(self):
         for kwargs in ({'track_width_m': 0.}, {'wheel_speed_mps': -1.},
                        {'wheel_speed_mps': math.nan}):
@@ -59,6 +68,27 @@ class BenchmarkGeometryTests(unittest.TestCase):
 
 
 class BenchmarkRunTests(unittest.TestCase):
+    def test_single_hallway_obstacle_is_passed_with_early_continuous_steering(self):
+        scenario = next(s for s in make_scenarios() if s.name == 'obstacle_detour')
+        result = run_scenario(scenario)
+        self.assertTrue(result['metrics']['completed'], result['metrics'])
+        self.assertFalse(result['metrics']['collision'])
+        self.assertEqual(result['metrics']['pivot_time_s'], 0.)
+        moving = result['trace'][:-1]
+        first_turn = next(p for p in moving if p['actual'][1])
+        # The obstacle's near face is z=2.6. Turn at least 1.2 m before it.
+        self.assertLessEqual(first_turn['z'], 1.4)
+        self.assertTrue(all(p['actual'][0] > 0 for p in moving))
+        self.assertTrue(all(abs(p['requested'][0] - .2) < 1e-9
+                            for p in moving if p['z'] < 5.))
+        # Small one-PWM corrections near straight count as direction switches
+        # but are not the old full-strength steering impulses. Bound actual
+        # synthetic yaw changes as well as the coarse category count.
+        self.assertLess(result['metrics']['steering_switches'], 20, result['metrics'])
+        yaw_steps = [abs(b['actual'][1] - a['actual'][1]) for a, b in zip(moving, moving[1:])]
+        self.assertLess(max(yaw_steps), .1)
+        self.assertLess(sum(yaw_steps), 2.)
+
     def test_close_goal_finishes_with_terminal_zero_and_measured_travel(self):
         scenario = next(s for s in make_scenarios() if s.name == 'goal_approach')
         result = run_scenario(scenario)

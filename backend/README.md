@@ -58,8 +58,9 @@ accepted so far renews freshness, so repeats with fresh wall times go stale. Pos
 bundle streams are ordered independently, so a bundle delayed behind newer poses still
 maps with its own transform (`/capture/status` `mapping` counts `discarded_order`,
 `discarded_wall_time`, `discarded_tracking`) but never renews or rewinds the pose. Frames
-captured at or before a limited/unavailable capture are not mapped after recovery, and
-recovery never re-arms. Progress state is per phone connection.
+captured at or before a limited/unavailable capture are not mapped after recovery.
+Recovery re-arms only an explicitly requested prototype Explore mission (below).
+Progress state is per phone connection.
 Older capture timestamps are discarded. Tracking loss, stale pose, phone loss,
 map reset, mode switch and operator stop disarm and log zero drive. They never
 send hardware commands. `/session` revokes the old phone connection; it must reconnect.
@@ -561,7 +562,7 @@ while the default car reports down, so runs are exercised by tests with
   while planning` and the old goal never moves. Explore starts by itself
   whenever the backend is armed in `explore` mode and drives to the nearest
   reachable frontier (a known-free cell next to unknown or the edge of the cropped
-  grid), then the next, until none is left. Before a calibrated floor is mapped, both goals and explore stop with the
+  grid), then the next, waiting and checking again when none is left. Before a calibrated floor is mapped, both goals and explore stop with the
   map readiness reason; neither can move into unknown space.
 - **Planning:** 8-connected A* on the 5 cm cells, no corner cutting, line-of-sight
   shortcuts, waypoints at most 0.25 m apart, at most 200,000 expansions. Every path
@@ -573,7 +574,7 @@ while the default car reports down, so runs are exercised by tests with
   the hard footprint; A* and shortcutting use the same costs. Narrow passages
   remain available. The pure planner's defaults are overridden at the snapshot seam.
   Explore selects the nearest reachable boundary of footprint-clear known floor,
-  inset from unknown space so its footprint stays observed; it completes when none remains.
+  inset from unknown space so its footprint stays observed; it waits for new floor when none remains.
 - **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
@@ -836,8 +837,11 @@ calibration files. These are power choices, not measured motor speeds.
 Live map/floor, tracking, feedback and authentication gates remain in effect.
 Explore restores the faster straight-line command on clear straight route legs
 after going around an obstacle, without waiting for the entire route to be straight.
-The prototype's updated bridge can also steer forward on a differential-motor
-arc; the measured adapter still uses its separately calibrated turn behavior.
+The prototype's updated bridge steers forward with optional `inner_power` on
+arc commands: outer-wheel PWM stays at the requested 60–180 power, while the yaw
+request varies inner-wheel PWM gradually between half and full outer power.
+Packets without that optional field keep the legacy half/full arc. This remains
+an uncalibrated power policy; the measured adapter uses its calibrated turn behavior.
 It keeps the original hallway bearing through short detours so a pivot beside an
 obstacle does not turn the next frontier search back toward explored floor; after
 a completed long side leg, that leg sets the bearing for the next branch.
@@ -846,6 +850,21 @@ areas; it keeps forward hallway priority only when both corridor walls are seen.
 If the rover drifts just inside the prototype's extra clearance beside a wall,
 it can follow a snapped route away while each step preserves obstacle clearance.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
+
+An explicit Explore arm latches mission intent before checking readiness; even a
+temporarily refused first arm keeps `/autonomy.auto_requested` true. Motors still
+require fresh sensing, transport feedback, and the Stop/Arm acknowledgement barrier.
+No frontier or no path pauses the current run and checks again; a no-progress stop,
+disconnect, or failed arm waits at least one second after stopping/failing before
+another ready attempt. There is only one arm attempt at a time. The dashboard keeps
+confirmed Explore intent after a failed arm and displays that Explore is resuming.
+Selecting Explore mode alone never arms or starts automatic recovery.
+
+Dashboard Stop, control disable, capture stop, rover disconnect, or an explicit
+mode choice cancels that intent and any pending recovery; late acknowledgements
+cannot arm it again. Backend shutdown drains recovery and stops motion. Intent is
+held only for the current backend process, so restart requires another explicit arm.
+Hardware-free lifecycle coverage: `python -m unittest backend.tests.test_persistent_explore -v`.
 
 Within an AR map, occupancy retains the last observed floor height when the
 height histogram temporarily loses its floor peak. Current obstacle/free evidence
