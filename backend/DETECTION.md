@@ -47,3 +47,13 @@ $HOME/.venvs/godseye/bin/python -m unittest discover -s backend/tests -p 'test_l
 The accuracy fixture uses a 90-degree camera rotation, nonzero translation, unequal
 JPEG/depth sizes, low-confidence background and a high-confidence depth outlier.
 The independent expected world point is `(-1, 1.5, 2)` meters, with error < 0.05 m.
+
+## Indoor class filter
+
+With real YOLO weights the detector keeps only COCO classes plausible inside a school
+building (`backend/detector.py` `INDOOR_CLASSES`: people, bags, furniture, electronics,
+books, bottles/cups, kitchen fixtures). Animals, food, vehicles and outdoor fixtures are
+dropped before localization, so they never become stored objects, overlay boxes or voice
+grounding. Stored objects of other classes (recorded earlier) are hidden from snapshots.
+`GODSEYE_DETECTOR_CLASSES` overrides the set (comma list) or `all` disables the filter.
+Injected test detectors keep every class.

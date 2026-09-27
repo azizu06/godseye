@@ -40,6 +40,7 @@ from backend.manual_control import capabilities as manual_capabilities, clearanc
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.mission_entry import load_entry, record_entry
 from backend.detections import classes_from_env, detections_message, overlay_classes
+from backend.detector import detector_classes_from_env
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
 from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
@@ -295,7 +296,9 @@ def create_app(db_path: str | None = None, build_points=None,
         db.execute('PRAGMA synchronous=NORMAL')
         db.executescript(Path(__file__).with_name('schema.sql').read_text())
         app.state.db = db
-        app.state.objects = ObjectMemory(db)
+        # Real YOLO weights only: the indoor class filter (injected test detectors keep every class).
+        detector_classes = detector_classes_from_env() if detector is None and weights else None
+        app.state.objects = ObjectMemory(db, visible_classes=detector_classes)
         app.state.mission_entry = load_entry(db, app.state.objects.latest_session())
         # A pre-existing scan without metadata may already have moved. Never
         # manufacture its entry on a later arm after a restart/storage failure.
@@ -303,7 +306,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.changes = ChangeTracker(db, app.state.objects)
         if detector is None and weights:
             from backend.detector import MPSDetector
-            app.state.detector = await asyncio.to_thread(MPSDetector, weights)
+            app.state.detector = await asyncio.to_thread(MPSDetector, weights, classes=detector_classes)
         else:
             app.state.detector = detector
         app.state.detected_at = None
