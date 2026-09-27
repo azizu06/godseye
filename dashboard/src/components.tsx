@@ -34,6 +34,7 @@ import {
   type ConnectionConfig,
 } from "./transport";
 import { objectName } from "./Scene";
+import { objectEvidence, objectStateText } from "./objectDisplay";
 
 export function ObjectIcon({
   kind,
@@ -56,13 +57,6 @@ export function ObjectIcon({
               : Circle;
   return <Icon size={size} />;
 }
-export const stateLabel = (state: string) =>
-  ({
-    present: "Present",
-    last_seen: "Last seen",
-    moved: "Moved",
-    not_found_on_rescan: "Not found on rescan",
-  })[state] ?? state;
 export const timeLabel = (t: number) =>
   new Date(t * 1000).toLocaleTimeString([], {
     hour: "2-digit",
@@ -238,11 +232,13 @@ export function ObjectList({
   selected,
   onSelect,
   full = false,
+  now = Date.now(),
 }: {
   objects: WorldObject[];
   selected: string | null;
   onSelect: (id: string) => void;
   full?: boolean;
+  now?: number;
 }) {
   const [search, setSearch] = useState("");
   const filtered = objects.filter((o) =>
@@ -277,8 +273,21 @@ export function ObjectList({
               </span>
             </strong>
             <small>
-              {stateLabel(o.state)} <span>·</span>{" "}
-              {Math.round(o.confidence * 100)}% confidence
+              {objectStateText(o, now)} <span>·</span>{" "}
+              {Math.round(o.confidence * 100)}% · {o.observations}{" "}
+              {o.observations === 1 ? "frame" : "frames"}
+              {objectEvidence(o) === "weak" && (
+                <span className="evidence-note" data-testid="weak-evidence">
+                  {" "}
+                  · low evidence, hidden in 3D
+                </span>
+              )}
+              {objectEvidence(o) === "possible_person" && (
+                <span className="evidence-note" data-testid="possible-person">
+                  {" "}
+                  · possible person, kept in 3D
+                </span>
+              )}
             </small>
           </span>
           <ChevronRight size={15} />
@@ -334,7 +343,7 @@ export function Inspector({
           className={`state-pill ${object.state === "moved" ? "amber" : ""}`}
         >
           <i />
-          {stateLabel(object.state)}
+          {objectStateText(object, now)}
         </span>
       </div>
       <div className="object-hero">

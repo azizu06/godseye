@@ -32,6 +32,7 @@ import {
   useSceneLabels,
   type ApproachDrawing,
 } from "./SceneLabels";
+import { displayedObjects, objectEvidence } from "./objectDisplay";
 import type { LiveMarker } from "./detections";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
 
@@ -57,6 +58,8 @@ export interface SceneProps {
   liveDetections: LiveMarker[];
   /** Suggested walking route; visualization only, never a rover goal. */
   approachRoute: ApproachDrawing | null;
+  /** Viewer clock (ms) for object last-seen wording. */
+  now: number;
   pickingRouteStart: boolean;
   onRouteStart: (x: number, z: number) => void;
 }
@@ -66,6 +69,7 @@ interface Layers {
   objects: boolean;
   trajectory: boolean;
   occupancy: boolean;
+  weakObjects: boolean;
 }
 
 function Controls({
@@ -284,6 +288,8 @@ function World({
   onGoal: (x: number, z: number) => void;
   liveDetections: LiveMarker[];
   approachRoute: ApproachDrawing | null;
+  /** Viewer clock (ms) for object last-seen wording. */
+  now: number;
   pickingRouteStart: boolean;
   onRouteStart: (x: number, z: number) => void;
 }) {
@@ -413,48 +419,50 @@ function World({
         </group>
       )}
       {layers.objects &&
-        mission.objects.map((o) => (
-          <group key={o.id} position={o.position}>
-            <mesh>
-              <boxGeometry
-                args={
-                  o.class === "backpack"
-                    ? [0.32, 0.48, 0.23]
-                    : o.class === "laptop"
-                      ? [0.45, 0.05, 0.3]
-                      : o.class === "chair"
-                        ? [0.42, 0.7, 0.42]
-                        : o.class === "bottle"
-                          ? [0.12, 0.3, 0.12]
-                          : [0.35, 0.65, 0.35]
-                }
-              />
-              <meshStandardMaterial
-                color={o.id === selected ? "#c2d6f5" : "#718198"}
+        displayedObjects(mission.objects, layers.weakObjects, selected).map(
+          (o) => (
+            <group key={o.id} position={o.position}>
+              <mesh>
+                <boxGeometry
+                  args={
+                    o.class === "backpack"
+                      ? [0.32, 0.48, 0.23]
+                      : o.class === "laptop"
+                        ? [0.45, 0.05, 0.3]
+                        : o.class === "chair"
+                          ? [0.42, 0.7, 0.42]
+                          : o.class === "bottle"
+                            ? [0.12, 0.3, 0.12]
+                            : [0.35, 0.65, 0.35]
+                  }
+                />
+                <meshStandardMaterial
+                  color={o.id === selected ? "#c2d6f5" : "#718198"}
+                  transparent
+                  opacity={o.id === selected ? 0.28 : 0.12}
+                />
+                <Edges
+                  color={
+                    o.state === "moved"
+                      ? "#e9b373"
+                      : o.id === selected
+                        ? "#d1e1fa"
+                        : "#97aecb"
+                  }
+                />
+              </mesh>
+              <Line
+                points={[
+                  [0, 0.1, 0],
+                  [0, 0.72, 0],
+                ]}
+                color={o.state === "moved" ? "#e9b373" : "#91a6c2"}
                 transparent
-                opacity={o.id === selected ? 0.28 : 0.12}
+                opacity={0.6}
               />
-              <Edges
-                color={
-                  o.state === "moved"
-                    ? "#e9b373"
-                    : o.id === selected
-                      ? "#d1e1fa"
-                      : "#97aecb"
-                }
-              />
-            </mesh>
-            <Line
-              points={[
-                [0, 0.1, 0],
-                [0, 0.72, 0],
-              ]}
-              color={o.state === "moved" ? "#e9b373" : "#91a6c2"}
-              transparent
-              opacity={0.6}
-            />
-          </group>
-        ))}
+            </group>
+          ),
+        )}
       {liveDetections.map((d) => (
         <group key={d.key} position={d.position}>
           <mesh>
@@ -741,6 +749,7 @@ export default function Scene(props: SceneProps) {
     objects: true,
     trajectory: true,
     occupancy: false,
+    weakObjects: false,
   });
   useSyncExternalStore(props.cloud.subscribe, props.cloud.snapshot);
   const hasGeometry =
@@ -768,6 +777,9 @@ export default function Scene(props: SceneProps) {
     props.surfaces.reduce((n, p) => n + p.indices.length / 3, 0);
   const container = useRef<HTMLDivElement>(null);
   const labelElements = useRef(new Map<string, HTMLDivElement>());
+  const weakCount = props.mission.objects.filter(
+    (o) => objectEvidence(o) === "weak",
+  ).length;
   const labels = useSceneLabels(
     props.mission,
     props.selected,
@@ -775,6 +787,9 @@ export default function Scene(props: SceneProps) {
     layers.objects,
     props.liveDetections,
     props.approachRoute,
+    // Ten-second steps keep age wording current without re-rendering the map every tick.
+    Math.floor(props.now / 10_000) * 10_000,
+    layers.weakObjects,
   );
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -971,6 +986,12 @@ export default function Scene(props: SceneProps) {
               <small>
                 <span className="tiny-dot" /> {props.mission.objects.length}{" "}
                 objects recognized
+                {weakCount > 0 && !layers.weakObjects && (
+                  <span data-testid="weak-hidden">
+                    {" "}
+                    · {weakCount} low-evidence hidden in 3D
+                  </span>
+                )}
               </small>
             </div>
             <div className="scene-settings-actions">
@@ -1044,7 +1065,9 @@ export default function Scene(props: SceneProps) {
                           ? "Object labels"
                           : key === "trajectory"
                             ? "Rover trail"
-                            : "Occupancy grid"}
+                            : key === "weakObjects"
+                              ? `Low-evidence objects (${weakCount})`
+                              : "Occupancy grid"}
                   </label>
                 ))}
               </div>

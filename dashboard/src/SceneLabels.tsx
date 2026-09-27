@@ -1,10 +1,20 @@
-import { useMemo, type RefObject, type ReactNode } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useEffect, useMemo, type RefObject, type ReactNode } from "react";
+import { useFrame, useThree } from "@react-three/fiber";
 import { Vector3 } from "three";
 import { LIDAR_RANGE_M } from "./sensorProfile";
 import type { Mission } from "./state";
 import type { Vec2, Vec3 } from "./protocol";
 import { className, type LiveMarker } from "./detections";
+import {
+  ageLabel,
+  displayedObjects,
+  labelPriority,
+  objectAgeS,
+  objectEvidence,
+  objectStale,
+  overlappingLabels,
+  type ScreenRect,
+} from "./objectDisplay";
 /** An operator-started approach route to draw: start always, path once planned. */
 export interface ApproachDrawing {
   start: Vec2;
@@ -16,6 +26,8 @@ export interface SceneLabel {
   position: Vec3;
   content: ReactNode;
   offset?: number;
+  /** Overlap priority; higher wins. Omitted labels are never hidden. */
+  priority?: number;
 }
 export function useSceneLabels(
   mission: Mission,
@@ -24,31 +36,46 @@ export function useSceneLabels(
   objectsVisible: boolean,
   live: LiveMarker[] = [],
   route: ApproachDrawing | null = null,
+  now = Date.now(),
+  showWeak = false,
 ): SceneLabel[] {
   return useMemo(() => {
     const labels: SceneLabel[] = objectsVisible
-      ? mission.objects.map((o) => ({
-          id: o.id,
-          position: [o.position[0], o.position[1] + 0.82, o.position[2]],
-          content: (
-            <button
-              className={`scene-label ${o.id === selected ? "selected" : ""} ${o.state === "moved" ? "moved" : ""}`}
-              onClick={() => onSelect(o.id)}
-            >
-              <span className="marker-dot" />
-              {o.class === "potted plant"
-                ? "Plant"
-                : o.class.charAt(0).toUpperCase() + o.class.slice(1)}
-              <span className="marker-confidence">
-                {Math.round(o.confidence * 100)}%
-              </span>
-            </button>
-          ),
-        }))
+      ? displayedObjects(mission.objects, showWeak, selected).map((o) => {
+          const possible = objectEvidence(o) === "possible_person";
+          const weak = objectEvidence(o) === "weak";
+          const stale = objectStale(o, now);
+          return {
+            id: o.id,
+            position: [o.position[0], o.position[1] + 0.82, o.position[2]],
+            priority: o.id === selected ? Infinity : labelPriority(o),
+            content: (
+              <button
+                className={`scene-label ${o.id === selected ? "selected" : ""} ${o.state === "moved" ? "moved" : ""} ${stale ? "stale" : ""} ${possible || weak ? "uncertain" : ""}`}
+                data-evidence={objectEvidence(o)}
+                title={`${o.observations} frame${o.observations === 1 ? "" : "s"} · ${Math.round(o.confidence * 100)}% · ${stale ? `last seen ${ageLabel(objectAgeS(o, now))}` : "recently observed"}`}
+                onClick={() => onSelect(o.id)}
+              >
+                <span className="marker-dot" />
+                {className(o.class)}
+                {possible ? "?" : ""}
+                <span className="marker-confidence">
+                  {Math.round(o.confidence * 100)}%
+                </span>
+                {stale && (
+                  <span className="marker-age">
+                    {ageLabel(objectAgeS(o, now))}
+                  </span>
+                )}
+              </button>
+            ),
+          };
+        })
       : [];
     for (const marker of live)
       labels.push({
         id: `__live-${marker.key}`,
+        priority: 1000,
         position: [
           marker.position[0],
           marker.position[1] + 0.35,
@@ -128,6 +155,8 @@ export function useSceneLabels(
     objectsVisible,
     live,
     route,
+    now,
+    showWeak,
   ]);
 }
 // DOM nodes belong exclusively to the outer React root. Projection only updates
@@ -140,7 +169,13 @@ export function ProjectLabels({
   elements: RefObject<Map<string, HTMLDivElement>>;
 }) {
   const point = useMemo(() => new Vector3(), []);
+  const invalidate = useThree((state) => state.invalidate);
+  // Label text or membership changed: re-project and re-declutter once.
+  useEffect(() => invalidate(), [labels, invalidate]);
   useFrame(({ camera, size }) => {
+    const rects: ScreenRect[] = [];
+    // Read every size before writing any style, to avoid per-label relayout.
+    const placed: [HTMLDivElement, SceneLabel, boolean, number, number][] = [];
     for (const label of labels) {
       const el = elements.current.get(label.id);
       if (!el) continue;
@@ -150,8 +185,30 @@ export function ProjectLabels({
         point.z < 1 &&
         Math.abs(point.x) < 1.2 &&
         Math.abs(point.y) < 1.2;
-      el.style.visibility = visible ? "visible" : "hidden";
-      el.style.transform = `translate(${(point.x * 0.5 + 0.5) * size.width}px,${(-point.y * 0.5 + 0.5) * size.height + (label.offset ?? 0)}px) translate(-50%,-50%)`;
+      const x = (point.x * 0.5 + 0.5) * size.width;
+      const y = (-point.y * 0.5 + 0.5) * size.height + (label.offset ?? 0);
+      if (visible) {
+        const width = el.offsetWidth,
+          height = el.offsetHeight;
+        rects.push({
+          id: label.id,
+          x: x - width / 2,
+          y: y - height / 2,
+          width,
+          height,
+          priority: label.priority ?? Infinity,
+        });
+      }
+      placed.push([el, label, visible, x, y]);
+    }
+    // Overlapping labels yield to people, live and better-evidenced objects;
+    // the hidden label returns when zooming separates them.
+    const hidden = overlappingLabels(rects);
+    for (const [el, label, visible, x, y] of placed) {
+      const overlapped = visible && hidden.has(label.id);
+      el.style.visibility = visible && !overlapped ? "visible" : "hidden";
+      el.dataset.overlapHidden = overlapped ? "true" : "false";
+      el.style.transform = `translate(${x}px,${y}px) translate(-50%,-50%)`;
       el.style.zIndex = label.id.startsWith("__") ? "1" : "2";
     }
   });

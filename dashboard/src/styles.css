@@ -702,6 +702,17 @@ h1 {
   border-color: #c8fff0;
   box-shadow: 0 0 18px #7cdec626;
 }
+.scene-label.stale {
+  opacity: 0.62;
+  border-style: dashed;
+}
+.scene-label.uncertain {
+  border-style: dashed;
+}
+.marker-age {
+  font: 8px var(--mono);
+  color: #8fa3ad;
+}
 .scene-label.moved {
   background: #352d22;
   color: #f0c58e;
