@@ -75,6 +75,24 @@ class DeviceRelayTests(unittest.TestCase):
             self.assertEqual(results[0].status_code, 409)
             self.assertFalse(app.state.armed)
 
+    def test_one_click_arm_prepares_phone_and_stop_cancels_startup(self):
+        app = create_app(db_path=':memory:', car=RelayCar(KEY, fixture()))
+        with TestClient(app) as client, client.websocket_connect('/device', headers=HEADERS) as ws:
+            ws.send_json(status())
+            wait_for(lambda: client.get('/device').json()['connected'])
+            results = []
+            worker = threading.Thread(target=lambda: results.append(client.post('/arm?prepare=true', headers=HEADERS)))
+            worker.start()
+            setup = next_action(ws)
+            self.assertEqual(setup['action'], 'capture_start')
+            ws.send_json(dict(version=1, type='ack', id=setup['id'], ok=True, message='Preparing'))
+            self.assertEqual(client.post('/stop').status_code, 200)
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(results[0].status_code, 409)
+            self.assertFalse(app.state.armed)
+            self.assertIsNone(app.state.arm_request_token)
+
     def test_feedback_replay_disconnects_and_single_phone_owner(self):
         app = create_app(db_path=':memory:', car=RelayCar(KEY, fixture()))
         with TestClient(app) as client, client.websocket_connect('/device', headers=HEADERS) as ws:

@@ -244,3 +244,12 @@ samples remain excluded; displayed point clouds retain high-confidence sampling.
 The idle rover WebSocket tolerates up to three seconds of silence; active phone
 control retains its 500 ms server-heartbeat and 200 ms send deadlines. Backend
 feedback readiness remains 200 ms, independently of idle socket liveness.
+
+### One-click dashboard Arm
+
+With server-side dashboard pairing configured (see `dashboard/VIEWER.md`), a fresh
+browser needs no copied key or REST checkbox. Arm performs the existing capture,
+Bluetooth and laptop-control setup via `/device/action`, then checks current
+readiness and completes the normal arm barrier. This uses the installed phone
+protocol and does not require a new phone build. Stop cancels pending startup;
+setup never continues to arming after that cancellation.

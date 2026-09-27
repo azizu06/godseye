@@ -268,6 +268,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.pose_at = None
         app.state.tracking_lost_capture = -1.0  # frames captured at or before this are untrusted
         app.state.armed = False
+        app.state.arm_request_token = None
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
         app.state.motion = Motion(car, motion_check, stop, limits=motion_limits or MotionLimits())
@@ -795,6 +796,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/session')
     async def new_session():
+        app.state.arm_request_token = None
         # Revoke the old phone before changing map identity.
         app.state.phone = None
         set_session((str(uuid4()), 1))
@@ -802,6 +804,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/stop')
     async def operator_stop():
+        app.state.arm_request_token = None
         if device is not None:
             device.emergency_stop()
         stop('operator_stop')
@@ -809,7 +812,32 @@ def create_app(db_path: str | None = None, build_points=None,
         return health()
 
     @app.post('/arm')
-    async def arm():
+    async def arm(prepare: bool = False):
+        if prepare and relay is not None:
+            if app.state.arm_request_token is not None:
+                raise HTTPException(409, 'Rover startup is already in progress')
+            token = object()
+            app.state.arm_request_token = token
+            try:
+                if app.state.mode not in ('navigate', 'explore'):
+                    app.state.mode = 'explore'
+                if hazard() is not None:
+                    if not device.snapshot()['connected']:
+                        raise HTTPException(409, 'The iPhone app is offline; keep it open to connect')
+                    from backend.prepare_rover import prepare_rover
+                    deadline = time.monotonic() + 12.
+                    await prepare_rover(device, lambda: app.state.arm_request_token is not token)
+                    while hazard() is not None:
+                        if app.state.arm_request_token is not token:
+                            raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
+                        if time.monotonic() >= deadline:
+                            raise HTTPException(409, 'Rover startup: ' + ', '.join(autonomy_blockers()))
+                        await asyncio.sleep(.05)
+                if app.state.arm_request_token is not token:
+                    raise HTTPException(409, 'Rover startup cancelled')
+            finally:
+                if app.state.arm_request_token is token:
+                    app.state.arm_request_token = None
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
         if relay is not None and app.state.mode not in ('navigate', 'explore'):
@@ -834,6 +862,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/mode')
     async def mode(body: Mode):
+        app.state.arm_request_token = None
         stop('mode_change')
         app.state.mode = body.mode
         return health()

@@ -57,3 +57,19 @@ For the paired iPhone adapter, Arm sends an explicit request whenever commands
 are enabled and no command is pending. It does not duplicate backend readiness
 gates using delayed viewer telemetry; `/arm` checks current readiness and reports
 rejections. The logging-only adapter retains its existing disabled-state checks.
+
+### One-click rover startup from any dashboard browser
+
+Set server-only `GODSEYE_ROVER_KEY_FILE` alongside `GODSEYE_BACKEND_URL` in the
+ignored `.env.local`. Vite/preview injects pairing into same-origin JSON command
+requests; `/operator/status` exposes only whether pairing is configured. The key
+never enters the client bundle, browser storage or URLs. This grants operator
+controls to browsers accessing this configured dashboard, so host it only on the
+intended operator network. Cross-origin command requests are rejected.
+
+A fresh browser automatically recognizes this server pairing. **Arm rover** calls
+`/arm?prepare=true`: start capture, find/connect the single available Bluetooth
+rover if necessary, enable laptop control, select Explore if no autonomous mode
+was selected, wait for current readiness, then run the normal arm handshake.
+Stop cancels pending preparation. Multiple discovered rovers require an explicit
+selection. The iPhone must still have the app open and the rover must be powered.

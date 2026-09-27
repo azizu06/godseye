@@ -58,6 +58,39 @@ export function useMission() {
       return initial;
     }
   });
+  useEffect(() => {
+    if (
+      config.serverPaired &&
+      new URL(config.apiUrl).origin !== window.location.origin
+    ) {
+      setConfig((current) => ({
+        ...current,
+        commands: false,
+        serverPaired: false,
+      }));
+      return;
+    }
+    if (
+      config.serverPaired ||
+      new URL(config.apiUrl).origin !== window.location.origin
+    )
+      return;
+    let active = true;
+    void fetch(`${config.apiUrl}/operator/status`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((status) => {
+        if (active && status.paired === true)
+          setConfig((current) => ({
+            ...current,
+            commands: true,
+            serverPaired: true,
+          }));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [config.apiUrl, config.serverPaired]);
   const autonomy = useAutonomy(config.apiUrl);
   useEffect(() => {
     updateFeedUrl(config);
@@ -85,6 +118,7 @@ export function useMission() {
   const stopEpoch = useRef(0);
   const stopLatchRef = useRef(true);
   const controlEpoch = useRef(0);
+  const armSetupPending = useRef(false);
   const controlBusy = useRef<number | null>(null);
   const heldDirection = useRef<SteeringDirection | null>(null);
   const [steeringDirection, setSteeringDirection] =
@@ -339,9 +373,11 @@ export function useMission() {
       const requestedMap = activeMap.current;
       const result = await sendCommand(
         config.apiUrl,
-        path,
+        path === "/arm" && config.serverPaired ? "/arm?prepare=true" : path,
         body,
-        signal,
+        path === "/arm" && config.serverPaired
+          ? AbortSignal.timeout(18000)
+          : signal,
         config.roverKey,
       );
       if (gen !== generation.current) return result;
@@ -443,7 +479,7 @@ export function useMission() {
   };
   useEffect(() => {
     if (!healthy || unexpectedStop) {
-      stopEpoch.current++;
+      if (!armSetupPending.current) stopEpoch.current++;
       latchStop(true);
       cancelControl();
     }
@@ -458,6 +494,7 @@ export function useMission() {
     async (path: string, body?: Record<string, unknown>) => {
       cancelControl();
       controlBusy.current = null;
+      if (path === "/arm") armSetupPending.current = true;
       const gen = generation.current;
       if (["/stop", "/mode", "/session"].includes(path)) latchStop(true);
       if (["/stop", "/mode", "/session"].includes(path)) stopEpoch.current++;
@@ -526,6 +563,7 @@ export function useMission() {
         if (gen === generation.current) notify(message);
         return false;
       } finally {
+        if (path === "/arm") armSetupPending.current = false;
         if (gen === generation.current && path !== "/stop") setPending(null);
       }
     },

@@ -5,6 +5,7 @@ export interface ConnectionConfig {
   commands: boolean;
   /** Tab-session only. Never included in feed URLs or exports. */
   roverKey?: string;
+  serverPaired?: boolean;
 }
 export const defaultConfig: ConnectionConfig = {
   source: "external",
@@ -72,7 +73,7 @@ export async function sendCommand(
   const response = await fetch(`${base.replace(/\/$/, "")}${path}`, {
     method: "POST",
     headers: {
-      ...(body ? { "Content-Type": "application/json" } : {}),
+      "Content-Type": "application/json",
       ...(roverKey ? { Authorization: `Bearer ${roverKey}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,

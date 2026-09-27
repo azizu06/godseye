@@ -53,7 +53,11 @@ export function PhoneControls({
       abort.abort();
     };
   }, [config.apiUrl]);
-  const available = !!phone && config.commands && !!config.roverKey && !pending;
+  const available =
+    !!phone &&
+    config.commands &&
+    !!(config.roverKey || config.serverPaired) &&
+    !pending;
   const action = async (action: string, peer_id?: string) => {
     if (!available) return;
     setPending(true);
@@ -159,7 +163,7 @@ export function PhoneControls({
               STOP ROVER
             </button>
           </div>
-          {!config.commands || !config.roverKey ? (
+          {!config.commands || !(config.roverKey || config.serverPaired) ? (
             <p className="drawer-note">
               Enable REST commands and enter the rover pairing key in Connection
               settings.

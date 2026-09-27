@@ -671,7 +671,7 @@ export function OperatorControls({
           </div>
           <p>
             {physical
-              ? "Select Navigate, arm, then click a mapped destination. Manual driving stays on the phone."
+              ? "Arm starts capture and connects rover control automatically. Explore is the default; choose Navigate to drive to a mapped destination."
               : health?.mode === "explore"
                 ? "Exploration requires backend support"
                 : "Arrow keys to steer · click the map to navigate"}
@@ -703,7 +703,9 @@ export function OperatorControls({
               !canStop &&
               (!available ||
                 !!pending ||
-                (physical ? !config.roverKey : !allHealthy))
+                (physical
+                  ? !(config.roverKey || config.serverPaired)
+                  : !allHealthy))
             }
             onClick={() => void command(canStop ? "/stop" : "/arm")}
           >
@@ -718,7 +720,7 @@ export function OperatorControls({
             {!available
               ? "Telemetry-only source"
               : physical
-                ? !config.roverKey
+                ? !(config.roverKey || config.serverPaired)
                   ? "Enter the rover pairing key in Connection settings"
                   : "Click Arm to check current readiness and start"
                 : !allHealthy

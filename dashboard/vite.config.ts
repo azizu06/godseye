@@ -1,8 +1,13 @@
 import { loadEnv } from "vite";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { operatorProxy } from "./operatorProxy";
 export default defineConfig(({ mode }) => {
-  const { GODSEYE_BACKEND_URL } = loadEnv(mode, process.cwd(), "GODSEYE_");
+  const { GODSEYE_BACKEND_URL, GODSEYE_ROVER_KEY_FILE } = loadEnv(
+    mode,
+    process.cwd(),
+    "GODSEYE_",
+  );
   let target: string | undefined;
   if (GODSEYE_BACKEND_URL) {
     const backend = new URL(GODSEYE_BACKEND_URL);
@@ -26,13 +31,16 @@ export default defineConfig(({ mode }) => {
         "^/autonomy$": { target },
         "^/device(?:/action)?$": { target },
         // Motion endpoints still require explicit UI enable and backend pairing.
-        "^/(?:arm|stop|mode|manual|goal|session|rescan)$": { target },
+        "^/(?:arm|stop|mode|manual|goal|session|rescan)(?:\\?|$)": { target },
         // Read-only suggested walking route; it cannot set a goal or move the rover.
         "^/route$": { target },
       }
     : undefined;
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      operatorProxy(target ? GODSEYE_ROVER_KEY_FILE : undefined),
+    ],
     test: { include: ["src/**/*.test.ts"] },
     server: { proxy },
     preview: { proxy },

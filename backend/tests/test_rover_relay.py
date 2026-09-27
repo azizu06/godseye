@@ -297,7 +297,7 @@ class RelayHTTPTests(unittest.TestCase):
                     try:
                         wait_for(lambda: client.get('/autonomy').json()['ready'])
                         self.assertEqual(client.post('/mode', json={'mode': 'navigate'}, headers=headers).status_code, 200)
-                        response = client.post('/arm', headers=headers)
+                        response = client.post('/arm?prepare=true', headers=headers)
                         self.assertEqual(response.status_code, 200, response.text)
                         self.assertTrue(response.json()['armed'])
                         goal = client.post('/goal', json={'x': 0., 'z': .5}, headers=headers)
