@@ -688,6 +688,9 @@ def create_app(db_path: str | None = None, build_points=None,
                                                           image_size=frame.image.size)
                                if isinstance(calibration, PrototypeGeometry) else frame.mesh_points)
                 mesh_keys = frame_evidence(mesh_points).keys
+                grid = app.state.occupancy
+                if grid is not None:
+                    mesh_keys = grid.mesh_keys_consistent_with_depth(mesh_keys, view)
             samples = max(point_settings.samples, DENSE_MAX_POINTS) if dense else point_settings.samples
             prototype_depth = getattr(calibration, 'depth_confidence', 2) == 1
             try:

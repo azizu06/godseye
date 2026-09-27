@@ -327,6 +327,8 @@ and clearance envelope **behind** the forward-facing camera. It also excludes
 nearby mesh outside the current camera image: ARKit can retain a departed person's
 mesh anchor beside the rover after current depth sees open space. Current RGB-D,
 visible forward mesh, and farther room mesh remain in navigation occupancy.
+For a visible mesh voxel, two distinct confident depth views that see through
+its former location also remove it from the current navigation snapshot.
 Navigation acceptance is independent of display extraction: at least 16 valid
 medium-or-high-confidence depth samples can update prototype occupancy with an
 empty display cloud. Sparse accepted geometry still needs a valid floor and the

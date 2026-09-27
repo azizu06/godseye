@@ -321,6 +321,30 @@ class OccupancyGrid:
                                              first, current, cursor=cursor)
         return retired, cursor + 512
 
+    def mesh_keys_consistent_with_depth(self, mesh_keys, current: DepthView):
+        """Drop current ARKit mesh voxels seen through in two fresh depth views.
+
+        ARKit can retain a person's mesh anchor after they walk away. Uncertain
+        depth or one clear frame cannot erase a real thin obstacle.
+        """
+        keys = np.asarray(mesh_keys, dtype=np.int64)
+        if not len(keys):
+            return keys
+        with self._lock:
+            first = self._last_depth_view
+            floor_y = self._floor_y
+            cursor = self._retirement_cursor
+            stored = self._keys.copy() if floor_y is None else None
+        if first is None or (current.session_id, current.map_epoch) != self.session:
+            return keys
+        if floor_y is None and len(stored):
+            floor_y = estimate_floor(stored % _LEVELS)
+        contradicted = contradicted_obstacle_keys(
+            keys, np.full(len(keys), OCCUPIED_MIN_HITS, np.int32), floor_y,
+            self.obstacle_from_m, first, current, max_candidates=1024,
+            cursor=cursor)
+        return keys[~np.isin(keys, contradicted, assume_unique=True)]
+
     def commit(self, evidence: Evidence, now: float, *, retirement_keys=None,
                retirement_cursor=None, depth_view: DepthView | None = None,
                mesh_keys=None) -> None:

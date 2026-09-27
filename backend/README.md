@@ -251,6 +251,10 @@ current snapshot in v3 live frames so map-frame coalescing retains it. Each
 accepted v3 frame replaces the overlay in the same occupancy grid. A later
 empty snapshot removes its old voxels, and absent mesh updates expire after
 2.5 seconds of newer frames.
+For the explicitly selected uncalibrated prototype, rear self-mesh and nearby
+mesh outside the current camera image are excluded from navigation. Two distinct
+confident depth views that see through a visible mesh voxel also omit it from
+the current overlay, even if ARKit still repeats that anchor.
 Independent depth obstacles retain their normal two-frame retirement rule.
 Mesh reconstruction is an estimate and may omit thin objects, so a visible sign
 is not proof that navigation has sensed it.
