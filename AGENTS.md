@@ -14,7 +14,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Detection/parser integration and the hardware-free accuracy test command: `backend/DETECTION.md`.
 - Motion readiness needs a measured rover calibration (`GODSEYE_ROVER_CALIBRATION`); its navigation map handle is `app.state.map_snapshot()`. See `backend/README.md` (Rover calibration and the navigation map). Never add default rover dimensions.
 
-- Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay, incremental rendering and the 3D object-label evidence/declutter policy: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
+- Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay, incremental rendering, the 3D object-label evidence/declutter policy, retained last-measured people (removed only by fresh-depth proof) and floor-relative overlays: `dashboard/VIEWER.md`; browser regressions: `dashboard/tests/viewer.spec.ts`, `dashboard/tests/hallwayRender.spec.ts`.
 - Persistent colored surface map budgets, block-local capacity recovery and its saturation regression: `dashboard/PERSISTENT_SCAN.md` (Capacity recovery). Browser tests reuse an existing server on 5173; set `GODSEYE_DASHBOARD_TEST_PORT` to avoid a running demo.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
