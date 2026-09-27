@@ -34,6 +34,11 @@ export default defineConfig(({ mode }) => {
         "^/(?:arm|stop|mode|manual|goal|session|rescan)(?:\\?|$)": { target },
         // Read-only suggested walking route; it cannot set a goal or move the rover.
         "^/route$": { target },
+        // Existing dashboard actions only; never expose arbitrary backend routes.
+        "^/voice(?:/(?:ask|confirm))?(?:\\?|$)": { target },
+        "^/nav/(?:propose|confirm|cancel|move(?:/speak)?)(?:\\?|$)": { target },
+        "^/events(?:/[^/?]+/audio)?(?:\\?|$)": { target },
+        "^/audio/[a-f0-9]{64}\\.wav(?:\\?|$)": { target },
       }
     : undefined;
   return {
