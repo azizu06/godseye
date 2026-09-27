@@ -91,3 +91,7 @@ Offline validation (no sockets, camera, car, or weights):
 ```sh
 $HOME/.venvs/godseye/bin/python -m unittest discover -s tools/tests -v
 ```
+
+For an explicitly requested uncalibrated rover test, `run_rover_backend --prototype`
+requires `--estimated-length-m` and `--estimated-width-m` with no dimension defaults.
+See [prototype limits and setup](../docs/AUTONOMY.md#uncalibrated-prototype-option).

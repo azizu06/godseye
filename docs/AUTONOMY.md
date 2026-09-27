@@ -206,3 +206,41 @@ python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonom
 
 The probe's only autonomous velocity is idle zero. A successful probe proves transport,
 firmware gating and Uno feedback, not measured motor speed or stopping distance.
+
+## Uncalibrated prototype option
+
+At the operator's request, precision calibration can be deferred with a separate,
+explicit prototype profile. Normal mode and the default logging adapter are unchanged.
+No estimate is saved to the measured geometry or actuation files.
+
+```sh
+python -m tools.run_rover_backend --prototype \
+  --estimated-length-m 0.2286 --estimated-width-m 0.127 \
+  --weights /path/to/yolo11n.pt
+```
+
+Those dimensions are this operator's **9 × 5 inch estimate**, not project defaults.
+Both dimensions are required. The profile assumes a forward-facing rear camera and
+vendor left/right directions. Inflation covers a camera anywhere inside the estimated
+rectangle plus 30 cm; the obstacle threshold is 6.5 cm, not measured traversability.
+Actual motor speed, yaw sign and stopping distance remain unverified. This is only
+for supervised tests in open space, not a claim of accurate autonomous driving.
+
+The existing pose/map follower chooses forward or pivot direction, then the profile
+uses PWM 60, matching the existing phone manual-control default, never synthetic
+speed curves or reverse. Commands update continuously with no added pauses or run
+duration limit. Each command retains the firmware's renewable 200 ms lease. Stop, tracking/depth freshness, authenticated pairing, unique arm sessions,
+ESP permits, Uno feedback and link watchdogs remain enforced. No automatic arming.
+The dashboard labels this profile **Uncalibrated prototype**. Select Explore or Navigate,
+then explicitly Arm. Stop and reassess if the rover turns in the wrong direction.
+
+Validation: `python -m unittest backend.tests.test_prototype -v` checks estimate
+provenance, unchanged measured gates, API readiness, command bounds and continuous delivery without artificial pauses or run limits. No hardware motion is implied by those tests.
+
+Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
+with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
+samples remain excluded; displayed point clouds retain high-confidence sampling.
+
+The idle rover WebSocket tolerates up to three seconds of silence; active phone
+control retains its 500 ms server-heartbeat and 200 ms send deadlines. Backend
+feedback readiness remains 200 ms, independently of idle socket liveness.

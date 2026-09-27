@@ -138,3 +138,14 @@ class MessageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NavigationConfidenceTests(unittest.TestCase):
+    def test_medium_confidence_is_explicit_and_low_confidence_stays_excluded(self):
+        depth, confidence = grids(confidence=1)
+        confidence[0, :] = 0
+        data = bundle(depth, confidence)
+        with self.assertRaises(MappingError): build_point_chunk(data, 's', 1)
+        chunk = build_point_chunk(data, 's', 1, min_confidence=1)
+        self.assertEqual(len(chunk.positions), 14 * 20)
+        with self.assertRaises(ValueError): build_point_chunk(data, 's', 1, min_confidence=0)

@@ -188,7 +188,16 @@ class RelaySocketTests(unittest.IsolatedAsyncioTestCase):
             # Server heartbeats must not hide missing phone/rover feedback.
             feeding.cancel()
             await asyncio.gather(feeding, return_exceptions=True)
-            await asyncio.wait_for(serving, .7)
+            await asyncio.sleep(.8)
+            self.assertTrue(car.connected, 'Idle Wi-Fi jitter must not close the setup link')
+            self.assertEqual(car.health(), 'stale', 'Idle grace must not authorize motion')
+            seq = car.last_status_seq + 1
+            await ws.incoming.put(json.dumps(dict(version=1, type='status', seq=seq,
+                session_id='capture', map_epoch=1, permit=f'{seq:016X}', uno_age_ms=100., enabled=True)))
+            await asyncio.sleep(.02)
+            self.assertEqual(car.health(), 'ok')
+            self.assertIsNone(car.armed_session, 'Recovery cannot arm')
+            await asyncio.wait_for(serving, 3.5)
             self.assertFalse(car.connected)
             self.assertEqual(losses, ['rover_relay_lost'])
         finally:
@@ -197,7 +206,7 @@ class RelaySocketTests(unittest.IsolatedAsyncioTestCase):
             # Let the real receive deadline retire the connection. This also
             # cleans up on a heartbeat assertion failure, without cancelling
             # the sender at the same instant feedback wakes it.
-            await asyncio.wait_for(serving, 1.)
+            await asyncio.wait_for(serving, 3.5)
 
 
 class RelayHTTPTests(unittest.TestCase):
@@ -248,8 +257,15 @@ class RelayHTTPTests(unittest.TestCase):
         The real ESP parser/watchdog has separate host sanitizer tests. No
         measurements from this fixture describe the physical rover.
         """
-        car = RelayCar(KEY, fixture())
         geometry = RoverCalibration.model_validate(dict(TEST_CALIBRATION, clearance_margin_m=.15))
+        self.rehearse_rgbd(fixture(), geometry)
+
+    def test_prototype_profile_does_not_bypass_unobserved_clearance(self):
+        from backend.prototype import PrototypeActuation, prototype_geometry
+        self.rehearse_rgbd(PrototypeActuation(), prototype_geometry(.24, .14), expect_clearance_refusal=True)
+
+    def rehearse_rgbd(self, actuation, geometry, expect_clearance_refusal=False):
+        car = RelayCar(KEY, actuation)
         app = create_app(db_path=':memory:', car=car, calibration=geometry,
                          detector=EmptyDetector(), capture_directory='')
         headers = {'Authorization': 'Bearer ' + KEY}
@@ -279,6 +295,16 @@ class RelayHTTPTests(unittest.TestCase):
                     worker = threading.Thread(target=firmware, daemon=True)
                     worker.start()
                     try:
+                        if expect_clearance_refusal:
+                            # This fixture's camera does not freshly observe the
+                            # prototype profile's larger uncertainty envelope.
+                            wait_for(lambda: client.get('/health').json()['car'] == 'ok')
+                            readiness = client.get('/autonomy').json()
+                            self.assertIn('sensing_clearance_unknown', readiness['blockers'])
+                            self.assertFalse(readiness['ready'])
+                            self.assertEqual(client.post('/arm', headers=headers).status_code, 409)
+                            self.assertFalse(any(p['type'] == 'command' for p in packets))
+                            return
                         wait_for(lambda: client.get('/autonomy').json()['ready'])
                         self.assertEqual(client.post('/mode', json={'mode': 'navigate'}, headers=headers).status_code, 200)
                         response = client.post('/arm', headers=headers)
