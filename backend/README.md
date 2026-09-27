@@ -238,9 +238,11 @@ floor, the backend rasterizes the anchor polygon near the camera into free
 5 cm cells. This keeps floor mapping possible when a glossy surface gives
 low-confidence depth. LiDAR obstacle evidence still overrides those cells;
 the plane does not establish whether a sign or person has moved out of view.
-About once per second, a v3 frame can replace a bounded ARKit mesh voxel
-overlay in the same occupancy grid. A later empty snapshot removes its old
-voxels, and absent mesh updates expire after 2.5 seconds of newer frames.
+The phone resamples ARKit mesh voxels about once per second and repeats the
+current snapshot in v3 live frames so map-frame coalescing retains it. Each
+accepted v3 frame replaces the overlay in the same occupancy grid. A later
+empty snapshot removes its old voxels, and absent mesh updates expire after
+2.5 seconds of newer frames.
 Independent depth obstacles retain their normal two-frame retirement rule.
 Mesh reconstruction is an estimate and may omit thin objects, so a visible sign
 is not proof that navigation has sensed it.
