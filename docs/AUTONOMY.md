@@ -240,3 +240,7 @@ provenance, unchanged measured gates, API readiness, command bounds and continuo
 Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
+
+The idle rover WebSocket tolerates up to three seconds of silence; active phone
+control retains its 500 ms server-heartbeat and 200 ms send deadlines. Backend
+feedback readiness remains 200 ms, independently of idle socket liveness.

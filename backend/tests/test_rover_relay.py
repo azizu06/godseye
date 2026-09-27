@@ -188,7 +188,16 @@ class RelaySocketTests(unittest.IsolatedAsyncioTestCase):
             # Server heartbeats must not hide missing phone/rover feedback.
             feeding.cancel()
             await asyncio.gather(feeding, return_exceptions=True)
-            await asyncio.wait_for(serving, .7)
+            await asyncio.sleep(.8)
+            self.assertTrue(car.connected, 'Idle Wi-Fi jitter must not close the setup link')
+            self.assertEqual(car.health(), 'stale', 'Idle grace must not authorize motion')
+            seq = car.last_status_seq + 1
+            await ws.incoming.put(json.dumps(dict(version=1, type='status', seq=seq,
+                session_id='capture', map_epoch=1, permit=f'{seq:016X}', uno_age_ms=100., enabled=True)))
+            await asyncio.sleep(.02)
+            self.assertEqual(car.health(), 'ok')
+            self.assertIsNone(car.armed_session, 'Recovery cannot arm')
+            await asyncio.wait_for(serving, 3.5)
             self.assertFalse(car.connected)
             self.assertEqual(losses, ['rover_relay_lost'])
         finally:
@@ -197,7 +206,7 @@ class RelaySocketTests(unittest.IsolatedAsyncioTestCase):
             # Let the real receive deadline retire the connection. This also
             # cleans up on a heartbeat assertion failure, without cancelling
             # the sender at the same instant feedback wakes it.
-            await asyncio.wait_for(serving, 1.)
+            await asyncio.wait_for(serving, 3.5)
 
 
 class RelayHTTPTests(unittest.TestCase):
