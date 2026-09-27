@@ -584,11 +584,20 @@ while the default car reports down, so runs are exercised by tests with
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
   place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
-- **Replanning:** a full replan from the current pose about once per second; snapshot
-  checks run at most 4 Hz regardless of `/live` publication. Each reads accepted
-  sensing time, and a new revision checks the remaining path. An obstructed path
-  ends the run with `path_blocked`, zeroes and disarms. Current and next-tick pursuit
-  footprint positions must also remain clear, so pursuit cannot cut an unsafe corner.
+- **Replanning:** a full replan from the current pose every 4 seconds by default
+  (3 seconds for the explicit prototype); snapshot checks run at most 4 Hz regardless
+  of `/live` publication. Each reads accepted sensing time, and a new revision checks
+  the remaining path. Explore zeroes an obstructed path and immediately replans to
+  the same frontier. Only if that target is unreachable (`no_path`) does it select
+  another reachable implicit frontier, with one bounded retry on the same snapshot.
+  A search-budget limit does not prove unreachability. Selected goals retain their
+  existing terminal `path_blocked` behavior. Current and next-tick pursuit footprint
+  positions must also remain clear, so pursuit cannot cut an unsafe corner.
+  Stationary Explore continues checking authoritative map snapshots while waiting
+  for its next full plan. Fresh sensing must not be mistaken for loss merely because
+  an earlier cached snapshot aged out. No reachable frontier or blocked start keeps
+  Explore at zero while it checks again; genuine sensing/pose loss still stops.
+  This is continued exploration, not evidence that an unseen detour is safe.
   Reaching an explore frontier discards pending planning/check work before selecting
   the next frontier (the landed exploration race fix). `path` is published only when
   its points change, and new `/live` viewers get the current path.
@@ -847,3 +856,13 @@ Within an AR map, occupancy retains the last observed floor height when the
 height histogram temporarily loses its floor peak. Current obstacle/free evidence
 is reclassified at that height; sensing timestamps are not refreshed by this cache.
 A new valid estimate can update it, and a new map epoch starts without a cached floor.
+
+### Offline obstacle-replanning regression
+
+`python -m unittest backend.tests.test_obstacle_replanning backend.tests.test_corridor_navigation backend.tests.test_navigator -v`
+uses an actual `OccupancyGrid` and `Navigator` with a kinematic command sink. Its
+synthetic observed room is an ideal-visibility policy fixture, not a claim that a
+mounted phone observes the whole rover footprint. It covers a clear detour to the
+same frontier, a new wall disconnecting a still-free frontier, stationary fresh
+sensing versus real loss, current-mesh clearance recovery, and late plan rejection
+after Stop/reset/disconnect or an arm-generation change. It sends no hardware commands.

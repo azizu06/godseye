@@ -316,3 +316,21 @@ Bluetooth and laptop-control setup via `/device/action`, then checks current
 readiness and completes the normal arm barrier. This uses the installed phone
 protocol and does not require a new phone build. Stop cancels pending startup;
 setup never continues to arming after that cancellation.
+
+### Explore recovery when new geometry blocks a route
+
+Explore first zeroes and replans to its existing implicit frontier. If the newest
+map proves no path to that still-free target, it can select another reachable
+frontier on the same snapshot. It does not replace a target merely because a
+search limit was reached. While stationary with no usable route, authoritative
+map checks continue separately from the slower full-replan interval; a cached
+snapshot aging out cannot by itself establish that incoming sensing stopped.
+Actual sensing loss, invalid clearance, operator Stop and changed arm generations
+retain their existing authority. The explicit prototype may still preserve its
+requested Explore choice across recoverable input gaps under the rules above.
+No unknown-space, footprint, turn or motor limit is relaxed by this recovery.
+
+This policy is verified offline with real occupancy classification and a kinematic
+command sink (`backend/tests/test_obstacle_replanning.py`), not a physical obstacle
+avoidance demonstration. The active rover backend version and sensor/clearance
+conditions must still be checked before interpreting a physical stop.
