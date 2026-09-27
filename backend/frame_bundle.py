@@ -134,10 +134,13 @@ def parse_frame_bundle(payload: bytes, *, session_id: str, map_epoch: int,
                 raise FrameValidationError('mesh snapshot exceeds 4000 xyz voxels')
             mesh_points = np.frombuffer(raw_mesh, dtype='<i2').reshape(-1, 3).astype(np.float64) * .05
             distance = np.linalg.norm(mesh_points[:, (0, 2)] - transform[(0, 2), 3], axis=1)
-            if (np.any(distance > 5.5) or
-                    np.any((mesh_points[:, 1] - transform[1, 3] < -.8) |
-                           (mesh_points[:, 1] - transform[1, 3] > 1.6))):
-                raise FrameValidationError('mesh snapshot is outside the current camera view')
+            relative_y = mesh_points[:, 1] - transform[1, 3]
+            # The phone repeats a cached mesh for up to a second. Its world
+            # voxels can leave this frame's camera window during motion, and
+            # 5 cm quantization can move a boundary voxel just across it.
+            # Drop those voxels, not the current RGB-D/floor observation.
+            mesh_points = mesh_points[(distance <= 5.5) & (relative_y >= -.8) &
+                                      (relative_y <= 1.6)]
             mesh_points.setflags(write=False)
         elif 'mesh_voxels' in header:
             raise FrameValidationError('mesh snapshot requires a v3 frame')

@@ -84,7 +84,18 @@ class LiveMeshTests(unittest.TestCase):
                                    floor_y=frame.floor.y), 3.6)
         self.assertEqual(grid.map_snapshot().cell(1., 3.), FREE)
 
-    def test_rejects_oversize_or_distant_mesh(self):
-        for points in (np.zeros((4001, 3), np.int16), [[400, 42, 60]]):
-            with self.subTest(count=len(points)), self.assertRaises(FrameValidationError):
-                parse_frame_bundle(mesh_bundle(points), session_id='synthetic', map_epoch=2)
+    def test_cached_mesh_outside_current_view_is_filtered_without_losing_depth(self):
+        frame = parse_frame_bundle(mesh_bundle([[20, 42, 60], [20, 73, 60],
+                                                [400, 42, 60]]),
+                                   session_id='synthetic', map_epoch=2)
+        np.testing.assert_allclose(frame.mesh_points, [[1., 2.1, 3.]])
+        self.assertGreater(len(frame.depth), 0)
+        distant = parse_frame_bundle(mesh_bundle([[400, 42, 60]]),
+                                     session_id='synthetic', map_epoch=2)
+        self.assertEqual(distant.mesh_points.shape, (0, 3))
+        self.assertGreater(len(distant.depth), 0)
+
+    def test_rejects_oversize_mesh(self):
+        with self.assertRaises(FrameValidationError):
+            parse_frame_bundle(mesh_bundle(np.zeros((4001, 3), np.int16)),
+                               session_id='synthetic', map_epoch=2)
