@@ -17,6 +17,7 @@ import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
 import { VoiceAsk } from "./VoiceAsk";
 import { PhoneControls } from "./PhoneControls";
+import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
 import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
@@ -593,6 +594,7 @@ export default function App() {
           </div>
         )}
       </VoiceAsk>
+      <NavigationProposals controller={controller} />
       {notice && (
         <div className="toast" role="status">
           <span>{notice}</span>

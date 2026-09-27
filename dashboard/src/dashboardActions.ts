@@ -1,5 +1,6 @@
 import type { WorldObject } from "./protocol";
 import { className } from "./detections";
+import { navAction, type NavAction } from "./navProposals";
 
 /**
  * Typed dashboard view actions proposed by the voice backend (`/voice/ask`
@@ -25,7 +26,9 @@ export type VoiceAction =
       name:
         "frame_room" | "undo" | "download_view_snapshot" | "save_camera_frame";
       args: Record<string, never>;
-    };
+    }
+  /** A rover suggestion, only ever shown as a confirmation card (navProposals.ts). */
+  | NavAction;
 
 /** Viewer-only display state that voice actions may change and undo. */
 export interface ViewControls {
@@ -86,6 +89,10 @@ export function parseActions(raw: unknown): VoiceAction[] | null {
       case "focus_object":
       case "open_evidence":
         return keys(a, "object_id", "class") && name(a.object_id);
+      case "propose_navigation":
+      case "propose_exploration":
+      case "stop_navigation":
+        return raw.length === 1 && navAction(item) !== null;
       default:
         return false;
     }
