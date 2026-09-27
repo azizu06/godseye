@@ -49,6 +49,8 @@ export interface Occupancy {
   width: number;
   height: number;
   cells: string;
+  /** Additive: estimated floor in world Y meters. Validated where it is used. */
+  floor_y?: number | null;
 }
 export interface ChangeEvent {
   id?: string;

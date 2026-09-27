@@ -35,7 +35,9 @@ import {
 } from "./SceneLabels";
 import { displayedObjects, objectEvidence } from "./objectDisplay";
 import type { LiveMarker } from "./detections";
+import { displayedStoredObjects, type PersonTrack } from "./personMemory";
 import { LIDAR_RANGE_M, scopeArc, scopeTriangles } from "./sensorProfile";
+import { displayFloorY, overlayY } from "./floor";
 
 export const objectName = (o: WorldObject) =>
   o.class === "potted plant"
@@ -57,6 +59,8 @@ export interface SceneProps {
   onGoal: (x: number, z: number) => void;
   /** Fresh detections placed by their own frame's depth; empty when stale. */
   liveDetections: LiveMarker[];
+  /** Last measured people not currently LIVE; display only, never navigation input. */
+  retainedPeople: PersonTrack[];
   /** Suggested walking route; visualization only, never a rover goal. */
   approachRoute: ApproachDrawing | null;
   reconRoutes?: ApproachDrawing[];
@@ -217,7 +221,13 @@ function Controls({
     />
   );
 }
-function OccupancyMesh({ mission }: { mission: Mission }) {
+function OccupancyMesh({
+  mission,
+  floor,
+}: {
+  mission: Mission;
+  floor: number | null;
+}) {
   const grid = mission.occupancy;
   const texture = useMemo(() => {
     if (!grid) return null;
@@ -243,7 +253,7 @@ function OccupancyMesh({ mission }: { mission: Mission }) {
     <mesh
       position={[
         grid.origin[0] + (grid.width * grid.cell_m) / 2,
-        0.025,
+        overlayY(floor, "occupancy"),
         grid.origin[1] + (grid.height * grid.cell_m) / 2,
       ]}
       rotation={[-Math.PI / 2, 0, 0]}
@@ -255,14 +265,20 @@ function OccupancyMesh({ mission }: { mission: Mission }) {
     </mesh>
   );
 }
-function ViewScope({ mission }: { mission: Mission }) {
+function ViewScope({
+  mission,
+  floor,
+}: {
+  mission: Mission;
+  floor: number | null;
+}) {
   const pose = mission.pose;
   const fan = useMemo(() => scopeTriangles(), []);
   const arc = useMemo(() => scopeArc(), []);
   if (!pose) return null;
   return (
     <group
-      position={[pose.position[0], 0.045, pose.position[2]]}
+      position={[pose.position[0], overlayY(floor, "scope"), pose.position[2]]}
       rotation={[0, pose.yaw_rad, 0]}
     >
       <mesh>
@@ -317,7 +333,13 @@ function ViewScope({ mission }: { mission: Mission }) {
     </group>
   );
 }
-function Trajectory({ mission }: { mission: Mission }) {
+function Trajectory({
+  mission,
+  floor,
+}: {
+  mission: Mission;
+  floor: number | null;
+}) {
   const colors = useMemo(
     () =>
       mission.trajectory.map((_, i) =>
@@ -331,7 +353,11 @@ function Trajectory({ mission }: { mission: Mission }) {
   if (mission.trajectory.length < 2) return null;
   return (
     <Line
-      points={mission.trajectory.map((p) => [p[0], 0.055, p[2]])}
+      points={mission.trajectory.map((p) => [
+        p[0],
+        overlayY(floor, "trajectory"),
+        p[2],
+      ])}
       vertexColors={colors}
       lineWidth={1.5}
       transparent
@@ -367,6 +393,7 @@ function World({
   canGoal,
   onGoal,
   liveDetections,
+  retainedPeople,
   approachRoute,
   reconRoutes = [],
   pickingRouteStart,
@@ -381,6 +408,7 @@ function World({
   canGoal: boolean;
   onGoal: (x: number, z: number) => void;
   liveDetections: LiveMarker[];
+  retainedPeople: PersonTrack[];
   approachRoute: ApproachDrawing | null;
   reconRoutes?: ApproachDrawing[];
   /** Viewer clock (ms) for object last-seen wording. */
@@ -395,12 +423,23 @@ function World({
         (e.kind === "moved" || e.kind === "possible_move"),
     )
     .at(-1);
+  // Floor overlays share the confirmed map floor; measured geometry keeps world Y.
+  const floor = displayFloorY(mission.occupancy);
+  const pick = overlayY(floor, "pick"),
+    approachY = overlayY(floor, "approach");
+  // People linked to a retained marker are drawn once, by that marker.
+  const storedObjects = displayedStoredObjects(
+    mission.objects,
+    mission.people,
+    selected,
+  );
   return (
     <>
       {canGoal && (
         <mesh
+          name="goal-pick-plane"
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, -0.01, 0]}
+          position={[0, pick, 0]}
           onClick={(e) => {
             if (e.button === 0 && e.delta < 4) onGoal(e.point.x, e.point.z);
           }}
@@ -411,8 +450,9 @@ function World({
       )}
       {pickingRouteStart && (
         <mesh
+          name="route-start-pick-plane"
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, -0.01, 0]}
+          position={[0, pick, 0]}
           onClick={(e) => {
             if (e.button === 0 && e.delta < 4)
               onRouteStart(e.point.x, e.point.z);
@@ -424,9 +464,16 @@ function World({
       )}
       {[...(approachRoute ? [approachRoute] : []), ...reconRoutes].map(
         (approachRoute, index) => (
-          <group key={approachRoute.id ?? `manual-${index}`}>
+          <group
+            name="approach-route"
+            key={approachRoute.id ?? `manual-${index}`}
+          >
             <mesh
-              position={[approachRoute.start[0], 0.09, approachRoute.start[1]]}
+              position={[
+                approachRoute.start[0],
+                approachY,
+                approachRoute.start[1],
+              ]}
               rotation={[-Math.PI / 2, 0, 0]}
             >
               <ringGeometry args={[0.12, 0.16, 32]} />
@@ -434,7 +481,11 @@ function World({
             </mesh>
             {approachRoute.points && (
               <Line
-                points={approachRoute.points.map((p) => [p[0], 0.09, p[1]])}
+                points={approachRoute.points.map((p) => [
+                  p[0],
+                  approachY,
+                  p[1],
+                ])}
                 color="#ffb86b"
                 lineWidth={approachRoute.highlighted ? 5 : 3}
               />
@@ -443,7 +494,7 @@ function World({
               <mesh
                 position={[
                   approachRoute.approach[0],
-                  0.09,
+                  approachY,
                   approachRoute.approach[1],
                 ]}
                 rotation={[-Math.PI / 2, 0, 0]}
@@ -458,7 +509,8 @@ function World({
       <ambientLight intensity={1.5} />
       <directionalLight position={[4, 8, 3]} intensity={2} />
       <Grid
-        position={[0, -0.025, 0]}
+        name="floor-grid"
+        position={[0, overlayY(floor, "grid"), 0]}
         args={[26, 26]}
         cellSize={0.5}
         cellThickness={0.5}
@@ -479,11 +531,15 @@ function World({
         visible={layers.points}
         surfaceOcclusion={layers.surfaces}
       />
-      {layers.occupancy && <OccupancyMesh mission={mission} />}
-      {layers.trajectory && <Trajectory mission={mission} />}
+      {layers.occupancy && <OccupancyMesh mission={mission} floor={floor} />}
+      {layers.trajectory && <Trajectory mission={mission} floor={floor} />}
       {mission.path.length > 1 && (
         <Line
-          points={mission.path.map((p) => [p[0], 0.075, p[1]])}
+          points={mission.path.map((p) => [
+            p[0],
+            overlayY(floor, "path"),
+            p[1],
+          ])}
           color="#98b9ea"
           lineWidth={2.5}
           dashed
@@ -516,7 +572,7 @@ function World({
         </group>
       )}
       {layers.objects &&
-        displayedObjects(mission.objects, layers.weakObjects, selected).map(
+        displayedObjects(storedObjects, layers.weakObjects, selected).map(
           (o) => (
             <group key={o.id} position={o.position}>
               <mesh>
@@ -560,8 +616,44 @@ function World({
             </group>
           ),
         )}
+      {retainedPeople.map((person) => (
+        <group
+          key={person.id}
+          name="retained-person-marker"
+          position={person.position}
+        >
+          <mesh>
+            <sphereGeometry args={[0.07, 16, 12]} />
+            <meshBasicMaterial color="#ff7a66" transparent opacity={0.45} />
+          </mesh>
+          <mesh>
+            <sphereGeometry args={[0.14, 12, 8]} />
+            <meshBasicMaterial
+              color="#ff7a66"
+              wireframe
+              transparent
+              opacity={0.3}
+              depthWrite={false}
+            />
+          </mesh>
+          {floor !== null && person.position[1] > floor && (
+            <Line
+              points={[
+                [0, 0, 0],
+                [0, floor - person.position[1], 0],
+              ]}
+              color="#ff7a66"
+              dashed
+              dashSize={0.06}
+              gapSize={0.05}
+              transparent
+              opacity={0.45}
+            />
+          )}
+        </group>
+      ))}
       {liveDetections.map((d) => (
-        <group key={d.key} position={d.position}>
+        <group key={d.key} name="live-detection-marker" position={d.position}>
           <mesh>
             <sphereGeometry args={[0.07, 16, 12]} />
             <meshBasicMaterial
@@ -579,10 +671,15 @@ function World({
           </mesh>
         </group>
       ))}
-      <ViewScope mission={mission} />
+      <ViewScope mission={mission} floor={floor} />
       {mission.pose && (
         <group
-          position={[mission.pose.position[0], 0.1, mission.pose.position[2]]}
+          name="rover-phone-glyph"
+          position={[
+            mission.pose.position[0],
+            overlayY(floor, "rover"),
+            mission.pose.position[2],
+          ]}
           rotation={[0, mission.pose.yaw_rad, 0]}
         >
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
@@ -974,6 +1071,8 @@ export default function Scene(props: SceneProps) {
     Math.floor(props.now / 10_000) * 10_000,
     layers.weakObjects,
     props.personNumbers,
+    displayFloorY(props.mission.occupancy),
+    props.showLabels ? props.retainedPeople : [],
   );
   useEffect(() => {
     const handle = props.handle?.current;
@@ -1013,6 +1112,7 @@ export default function Scene(props: SceneProps) {
   const count = props.persistentSurface
     ? props.persistentSurface.positions.length / 3
     : props.cloud.count;
+  const floor = displayFloorY(props.mission.occupancy);
   return (
     <section className="scene-panel" ref={container} aria-label="Spatial view">
       <div
@@ -1071,6 +1171,11 @@ export default function Scene(props: SceneProps) {
           {layers.surfaces ? "surfaces visible" : "surfaces hidden"}
         </span>
         <span>{props.surfaceReason}</span>
+        <span data-testid="floor-status">
+          {floor === null
+            ? "Floor unknown · overlays at AR origin height"
+            : `Floor Y ${floor.toFixed(2)} m · overlays on floor`}
+        </span>
       </div>
       <div className="scene-canvas">
         {view === "3d" ? (
@@ -1319,7 +1424,7 @@ export default function Scene(props: SceneProps) {
                     ? "Color surfaces"
                     : "Point cloud"}
               </span>
-              <span>
+              <span title="Illustrative camera-position glyph on the floor; not a calibrated chassis pose">
                 <i className="legend-rover" /> Rover / phone
               </span>
               <span>

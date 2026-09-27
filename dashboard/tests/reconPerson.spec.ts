@@ -142,6 +142,8 @@ async function recon(page: Page, withEntry = true, delayed = false) {
   await expect(page.locator(".scene-label")).toContainText("Person");
   return {
     now,
+    send,
+    scope,
     unavailableIds,
     maximumActive: () => maximumActive,
     release,
@@ -370,3 +372,92 @@ for (const condition of ["map reset", "source change"] as const)
     expect(feed.bodies).toHaveLength(2);
     expect(feed.actions).toEqual([]);
   });
+
+test("retained display-only people never keep expired routes, and all route meshes use the confirmed floor", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const w = window as any;
+    w.__reconScenes = [];
+    const hook = new EventTarget();
+    hook.addEventListener("observe", (event) => {
+      const scene = (event as CustomEvent).detail;
+      if (scene.isScene) w.__reconScenes.push(scene);
+    });
+    w.__THREE_DEVTOOLS__ = hook;
+  });
+  const feed = await recon(page);
+  feed.objects([feed.person("person-1"), feed.person("person-2")]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  feed.send({
+    version: 1,
+    type: "occupancy",
+    ...feed.scope,
+    origin: [-2, -2],
+    cell_m: 0.1,
+    width: 50,
+    height: 50,
+    cells: Buffer.alloc(2500, 1).toString("base64"),
+    floor_y: -0.35,
+  });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const scene = (window as any).__reconScenes.find((s: any) =>
+          s.getObjectByName("floor-grid"),
+        );
+        const pins: number[] = [],
+          lineHeights: number[] = [];
+        scene?.traverse((o: any) => {
+          if (o.parent?.name !== "approach-route" || !o.isMesh) return;
+          const starts = o.geometry.attributes.instanceStart;
+          if (starts) {
+            const ends = o.geometry.attributes.instanceEnd;
+            for (let i = 0; i < starts.count; i++)
+              lineHeights.push(
+                starts.getY(i) + o.position.y,
+                ends.getY(i) + o.position.y,
+              );
+          } else pins.push(o.position.y);
+        });
+        return {
+          pins,
+          linesOnFloor:
+            lineHeights.length > 0 &&
+            lineHeights.every((y) => Math.abs(y + 0.26) < 1e-6),
+        };
+      }),
+    )
+    .toEqual({ pins: [-0.26, -0.26, -0.26, -0.26], linesOnFloor: true });
+  feed.send({
+    version: 1,
+    type: "detections",
+    ...feed.scope,
+    frame_id: 2,
+    t_capture: 2,
+    t_wall_ms: feed.now,
+    image: { width: 80, height: 60 },
+    source: "backend_detector",
+    classes: ["person"],
+    detections: [
+      {
+        class: "person",
+        confidence: 0.9,
+        box: [20, 10, 40, 50],
+        position: [1, 0.2, 1],
+        depth_m: 1,
+        object_id: "person-1",
+      },
+    ],
+  });
+  await expect(page.getByTestId("live-detection-label")).toHaveCount(1);
+  await page.clock.setFixedTime(new Date(feed.now + 31000));
+  await expect(page.getByTestId("retained-person-label")).toHaveCount(1);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
+  feed.objects([
+    { ...feed.person("person-1"), last_seen: (feed.now + 31000) / 1000 },
+    feed.person("person-2"),
+  ]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(1);
+  await expect(page.getByTestId("retained-person-label")).toHaveCount(1);
+});

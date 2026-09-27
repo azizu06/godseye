@@ -3352,6 +3352,16 @@ input[type="checkbox"] {
   background: #2e1511e8;
   color: #ffc2b7;
 }
+/* Last measured person: historical, never styled as live. */
+.retained-person-label {
+  white-space: nowrap;
+  padding: 4px 7px;
+  border: 1px dashed #ff7a66;
+  border-radius: 4px;
+  background: #1f1715e0;
+  color: #e9b3a9;
+  font: 600 9px/1 var(--mono);
+}
 @media (max-width: 760px) {
   .detection-panel {
     top: 74px; /* below the toolbar */

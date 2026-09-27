@@ -12,7 +12,10 @@ export interface SurfaceDelta {
   indices: Uint32Array;
 }
 
-/** Stable storage between worker appends; only coarsening replaces old topology. */
+/**
+ * Stable storage between worker appends. Coarsening replaces all storage; a
+ * face deletion replaces only the index tail it changed.
+ */
 export class SurfaceBuffer {
   private positions = new Float32Array(0);
   private colors = new Float32Array(0);
@@ -35,6 +38,13 @@ export class SurfaceBuffer {
       this.positions = new Float32Array(this.positions.length);
       this.colors = new Float32Array(this.colors.length);
       this.indices = new Uint32Array(this.indices.length);
+    } else if (this.patch && delta.indexStart < this.patch.indices.length) {
+      // Face deletion rewrites topology from its first removed face. Vertex
+      // storage is unchanged, so only indices are copied (same capacity, so the
+      // renderer can reuse its GPU buffers and upload just the rewritten range).
+      const indices = new Uint32Array(this.indices.length);
+      indices.set(this.indices.subarray(0, delta.indexStart));
+      this.indices = indices;
     }
     if (delta.vertexCount * 3 > this.positions.length) {
       const size = Math.min(
