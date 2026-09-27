@@ -854,9 +854,10 @@ spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
 ### Explicit uncalibrated prototype
 
 The operator may opt into `tools.run_rover_backend --prototype` with explicit
-estimated chassis dimensions. It maps nominal motion to PWM 60 for slow/pivot
-commands and PWM 180 for straight/arc cruise, without filling or certifying
-measured calibration files.
+estimated chassis dimensions. It maps nominal motion to bounded power preferences, PWM 60–180, with an optional
+`--prototype-max-pwm` ceiling applied to every direction. Nominal requests respond
+to clearance, unknown floor, accepted depth confidence and sensing age; these are
+not measured speeds and do not fill or certify calibration files.
 Live map/floor, tracking, feedback and authentication gates remain in effect.
 Explore restores the faster straight-line command on clear straight route legs
 after going around an obstacle, without waiting for the entire route to be straight.
@@ -869,6 +870,9 @@ In an open room, Explore favors reachable frontiers bordering larger unmapped
 areas; it keeps forward hallway priority only when both corridor walls are seen.
 If the rover drifts just inside the prototype's extra clearance beside a wall,
 it can follow a snapped route away while each step preserves obstacle clearance.
+Session-scoped visited/frontier-failure memory favors new reachable targets without
+blocking necessary return paths. Ordinary-obstruction yield/resume stays in the
+current generation; genuine faults and Stop cannot automatically rearm.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
 
 Within an AR map, occupancy retains the last observed floor height when the

@@ -60,7 +60,7 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(client.get('/autonomy').json()['auto_requested'])
 
-    def test_latched_explore_rearms_after_a_recoverable_disconnect(self):
+    def test_tracking_fault_and_stop_never_rearm_explore(self):
         from fastapi.testclient import TestClient
         from backend.app import create_app
         from backend.occupancy import OccupancySnapshot
@@ -74,6 +74,7 @@ class PrototypeTests(unittest.TestCase):
         async def prepare(session):
             car.armed_session = session.upper()
         car.prepare = prepare
+        car.send = lambda command: None  # fake transport; this test targets app fault transitions
         app = create_app(db_path=':memory:', car=car, detector=FakeDetector(),
                          calibration=prototype_geometry(.24, .14), capture_directory='')
         with TestClient(app) as client, client.websocket_connect('/phone') as phone:
@@ -93,7 +94,9 @@ class PrototypeTests(unittest.TestCase):
             wait_for(lambda: state.pose is not None)
             state.detected_at = time.monotonic()
             state.mode = 'explore'
-            state.auto_requested = True  # a previously armed Explore survived relay loss
+            state.motion.begin()  # synthetic accepted arm generation; no physical transport
+            state.armed = True
+            state.auto_requested = True
             self.assertEqual(client.get('/autonomy').json()['blockers'], [])
             wait_for(lambda: state.armed, timeout=1.)
             self.assertTrue(client.get('/autonomy').json()['auto_requested'])
@@ -102,19 +105,23 @@ class PrototypeTests(unittest.TestCase):
             self.assertTrue(state.armed, 'An old pose must not disarm persistent Explore')
             phone.send_json(pose(3, tracking='limited'))
             wait_for(lambda: state.pose.tracking == 'limited')
-            self.assertTrue(state.armed, 'Tracking loss pauses the motor without losing Explore')
+            wait_for(lambda: not state.armed)
+            self.assertEqual(state.stop_reason, 'tracking_lost')
+            self.assertFalse(state.auto_requested)
             phone.send_json(pose(4))
             wait_for(lambda: state.pose.tracking == 'normal')
+            time.sleep(.1)
+            self.assertFalse(state.armed, 'Fresh tracking cannot reopen a faulted drive session')
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(state.auto_requested)
 
-    def test_fixed_power_forward_arcs_and_no_reverse_or_rate_claims(self):
+    def test_bounded_power_forward_arcs_and_no_reverse_or_rate_claims(self):
         profile = PrototypeActuation()
         for v, w, direction in [(.05, 0., 3), (0., .2, 1), (0., -.2, 2)]:
             command = profile.command(v, w)
             self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 1500))
-        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 180))
-        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 180))
+        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 60))
+        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 60))
         self.assertIsNone(profile.command(0., 0.))
         self.assertIsNone(profile.stopping_distance_m)
         for v, w in [(-.01, 0.), (.21, 0.), (0., .51), (math.nan, 0.)]:

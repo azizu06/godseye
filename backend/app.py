@@ -74,6 +74,15 @@ class Manual(Input):
     yaw_rate_rps: float = Field(ge=-.5, le=.5)
 
 
+class ExploreYield(Input):
+    generation: int = Field(ge=0)
+    reason: Literal['person_path_crossing', 'person_clearance_unknown', 'obstacle_wait']
+
+
+class ExploreResume(Input):
+    generation: int = Field(ge=0)
+
+
 class Goal(Input):
     x: float
     z: float
@@ -246,6 +255,7 @@ def create_app(db_path: str | None = None, build_points=None,
     device = DeviceRelay(relay.authorized) if relay is not None else None
     if relay is not None and not relay.actuation.blockers:
         nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower(),
+                               adaptive_explore=getattr(relay.actuation, 'prototype', False),
                                replan_s=4. if getattr(relay.actuation, 'prototype', False)
                                else (nav_settings or NavSettings()).replan_s,
                                start_recovery_margin_m=.1524 if getattr(relay.actuation, 'prototype', False)
@@ -295,9 +305,9 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.pose_at = None
         app.state.tracking_lost_capture = -1.0  # frames captured at or before this are untrusted
         app.state.armed = False
-        app.state.auto_requested = False  # the operator's latched prototype Explore choice
-        app.state.auto_arm_task = None
-        app.state.auto_retry_at = 0.
+        app.state.auto_requested = False  # explicit active Explore; faults never auto-rearm
+        app.state.explore_yield = None
+        app.state.input_gap_since = None
         app.state.arm_request_token = None
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
@@ -375,7 +385,7 @@ def create_app(db_path: str | None = None, build_points=None,
     @app.middleware('http')
     async def authorize_rover_commands(request, call_next):
         # Reading the map and emergency Stop remain available without a key.
-        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/nav/confirm', '/device/action'}
+        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/nav/confirm', '/device/action', '/explore/yield', '/explore/resume'}
                 and request.method == 'POST' and not relay.authorized(request.headers.get('authorization'))):
             return Response('Rover pairing key required', status_code=401)
         return await call_next(request)
@@ -451,8 +461,13 @@ def create_app(db_path: str | None = None, build_points=None,
         return dict(version=1, adapter='iphone' if relay else 'logging',
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
+                    prototype_max_pwm=getattr(relay.actuation, 'max_pwm', None) if relay else None,
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
                     auto_requested=app.state.auto_requested,
+                    generation=app.state.motion.generation,
+                    exploration=app.state.nav.exploration.stats(),
+                    navigation_wait_reason=current['navigation_wait_reason'],
+                    explore_yield=app.state.explore_yield,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
 
@@ -460,8 +475,9 @@ def create_app(db_path: str | None = None, build_points=None,
         # Delayed pose bursts must not continually replace the pending Stop
         # acknowledgement. A new arm generation is active even while awaiting
         # its handshake, so the same hazard still cancels a new arm.
-        if reason in {'operator_stop', 'mode_change', 'shutdown'}:
-            app.state.auto_requested = False
+        app.state.auto_requested = False
+        app.state.explore_yield = None
+        app.state.input_gap_since = None
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
         app.state.armed = False
@@ -534,18 +550,23 @@ def create_app(db_path: str | None = None, build_points=None,
                 and app.state.armed and app.state.mode == 'explore')
 
     def prototype_pause_reason():
-        """Only explicit prototype Explore may wait for recoverable input gaps.
-
-        The ESP command-loss timer still expires after a sustained gap; this preserves the arm session,
-        not motion. Disconnect, capture mismatch and hard map obstacles still stop.
-        """
-        if not persistent_explore():
+        """Ordinary yield is in-session; critical input gaps are bounded, never rearmed."""
+        if not app.state.armed or app.state.mode != 'explore':
             return None
         reason = hazard()
-        if reason in {'phone_stale', 'detector_stale', 'sensing_stale', 'map_unknown', 'no_floor'}:
-            return reason
-        if reason == 'car_stale' and relay.blockers() == ['rover_feedback_stale']:
-            return reason
+        if reason is None:
+            app.state.input_gap_since = None
+            return app.state.explore_yield
+        if app.state.pose is not None and app.state.pose.tracking != 'normal':
+            return None  # invalid tracking is a fault, not an ordinary obstruction
+        recoverable = persistent_explore() and (
+            reason in {'phone_stale', 'detector_stale', 'sensing_stale'} or
+            (reason == 'car_stale' and relay.blockers() == ['rover_feedback_stale']))
+        if recoverable:
+            if app.state.input_gap_since is None:
+                app.state.input_gap_since = time.monotonic()
+            if time.monotonic() - app.state.input_gap_since <= 1.:
+                return reason
         return None
 
     def motion_check(command):
@@ -697,6 +718,11 @@ def create_app(db_path: str | None = None, build_points=None,
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')
+        if evidence is not None and view is not None:
+            accepted = ((view.confidence >= getattr(calibration, 'depth_confidence', 2))
+                        & (view.depth >= .05) & (view.depth <= 5.) & np.isfinite(view.depth))
+            confidence = float(np.mean(view.confidence[accepted]) / 2.) if np.any(accepted) else 0.
+            evidence = replace(evidence, sensing_confidence=confidence)
         retired = cursor = None
         if evidence is not None and view is not None:
             try:
@@ -823,7 +849,6 @@ def create_app(db_path: str | None = None, build_points=None,
 
     async def watchdog():
         ticks = 0
-        paused = False
         while True:
             await asyncio.sleep(.05)
             if (app.state.pose_at is not None
@@ -840,22 +865,13 @@ def create_app(db_path: str | None = None, build_points=None,
                 app.state.motion.desired = None
                 if relay is not None:
                     relay.command = None
-                if not paused and car_health() == 'ok' and not app.state.motion.zero():
+                if car_health() == 'ok' and not app.state.motion.zero():
                     stop('car_error')
-                paused = True
-            else:
-                paused = False
             # Explore runs whenever the rover is armed in explore mode, under the current generation.
             if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
                 app.state.nav.start_explore(app.state.motion.generation)
             if not pause_reason:
                 app.state.motion.tick()  # the 20 Hz dispatch pump
-            if (app.state.auto_requested and not app.state.armed and app.state.mode == 'explore'
-                    and app.state.arm_request_token is None and hazard() is None
-                    and time.monotonic() >= app.state.auto_retry_at
-                    and (app.state.auto_arm_task is None or app.state.auto_arm_task.done())):
-                app.state.auto_retry_at = time.monotonic() + 1.
-                app.state.auto_arm_task = asyncio.create_task(resume_explore())
             ticks += 1
             if ticks % 10 == 0:
                 view = app.state.approach_view
@@ -1042,15 +1058,32 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.auto_requested = True
         return health()
 
-    async def resume_explore():
-        if not app.state.auto_requested or app.state.mode != 'explore':
-            return
-        try:
-            await arm(prepare=False)
-        except HTTPException as error:
-            logger.info('Explore still requested; waiting to rearm: %s', error.detail)
-        except Exception:
-            logger.exception('Explore rearm failed; will retry while requested')
+    def check_explore_generation(generation):
+        if (not app.state.armed or app.state.mode != 'explore'
+                or generation != app.state.motion.generation):
+            raise HTTPException(409, 'Explore stopped or generation changed; resume cannot arm')
+
+    @app.post('/explore/yield')
+    async def yield_explore(body: ExploreYield):
+        check_explore_generation(body.generation)
+        app.state.explore_yield = body.reason
+        app.state.motion.desired = None
+        if relay is not None:
+            relay.command = None
+        if not app.state.motion.zero():
+            stop('car_error')
+            raise HTTPException(409, 'car_error')
+        publish(health())
+        return health()
+
+    @app.post('/explore/resume')
+    async def release_explore(body: ExploreResume):
+        check_explore_generation(body.generation)
+        if (reason := hazard()) is not None:
+            raise HTTPException(409, reason)
+        app.state.explore_yield = None
+        # The existing run replans from fresh pose/map under this same generation.
+        return health()
 
     @app.post('/mode')
     async def mode(body: Mode):
@@ -1319,7 +1352,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     last_capture = pose.t_capture
                     app.state.pose = pose
                     app.state.pose_at = time.monotonic()
-                    if pose.tracking != 'normal' and not persistent_explore():
+                    if pose.tracking != 'normal':
                         stop('tracking_lost')
                 app.state.db.execute(
                     'INSERT OR REPLACE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,tracking,intrinsics_json) VALUES(?,?,?,?,?,?,?,?)',

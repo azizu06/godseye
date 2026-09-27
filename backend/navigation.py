@@ -458,7 +458,19 @@ def is_frontier(grid: Grid, xz, config: PlannerConfig = PlannerConfig()) -> bool
     return cell is not None and bool((_safe_frontiers(grid, config) & traversable_mask(grid, config))[cell])
 
 
-def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig(), *, allow_unknown=False):
+def _fit_frontier_mask(grid, start, config, target_mask):
+    fitted = _fit(grid, [start], config)
+    if fitted is not None and target_mask is not None and fitted is not grid:
+        # Fitting expands unknown around an off-grid prototype pose. Preserve
+        # the world-coordinate exclusions; newly padded targets have no history.
+        mask = np.ones(fitted.cells.shape, bool)
+        row, col = fitted.cell_of(*grid.origin)
+        mask[row:row + grid.height, col:col + grid.width] = target_mask
+        target_mask = mask
+    return fitted, target_mask
+
+
+def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig(), *, allow_unknown=False, target_mask=None):
     """World (x, z) of the nearest reachable frontier, or None.
 
     A frontier is a free, traversable cell with an unknown 4-neighbor; space outside the
@@ -470,7 +482,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     """
     sx, sz = (float(v) for v in start_xz)
     if allow_unknown:
-        grid = _fit(grid, [(sx, sz)], config)
+        grid, target_mask = _fit_frontier_mask(grid, (sx, sz), config, target_mask)
         if grid is None:
             return None
     start_cell = grid.world_to_cell(sx, sz)
@@ -480,7 +492,8 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
     if start is None:
         return None
-    frontier = (mask & _safe_frontiers(grid, config)).ravel().tolist()
+    frontier = (mask & _safe_frontiers(grid, config)
+                & (target_mask if target_mask is not None else True)).ravel().tolist()
     h, w = mask.shape
     free = mask.ravel().tolist()
     seen = bytearray(h * w)
@@ -508,7 +521,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
 
 
 def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
-                               config: PlannerConfig, *, allow_unknown=False):
+                               config: PlannerConfig, *, allow_unknown=False, target_mask=None):
     """Reachable unexplored boundary with forward progress or open-room information gain.
 
     In an observed two-wall corridor, keep a forward route until it ends. In an
@@ -517,7 +530,7 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
     """
     sx, sz = (float(v) for v in start_xz)
     if allow_unknown:
-        grid = _fit(grid, [(sx, sz)], config)
+        grid, target_mask = _fit_frontier_mask(grid, (sx, sz), config, target_mask)
         if grid is None:
             return None
     start_cell = grid.world_to_cell(sx, sz)
@@ -528,6 +541,8 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
     if start is None:
         return None
     frontiers = mask & _safe_frontiers(grid, config)
+    if target_mask is not None:
+        frontiers &= target_mask
     h, w = mask.shape
     seen = np.zeros((h, w), bool)
     seen[start] = True

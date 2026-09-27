@@ -47,13 +47,14 @@ The phone remains the sole Bluetooth owner. Computer control is the default on
 foreground launch: remembered pairing starts setup, capture and the selected BLE rover,
 then enables the laptop link when sensing and Uno feedback are ready. It never arms.
 The operator can instead enable the link from the paired dashboard. In the explicitly
-armed uncalibrated prototype Explore mode, that choice stays latched until Stop,
-mode change, or a dashboard control-disable action. A sensing or permit gap clears
-pending movement and the ESP brakes after a full second without a new command; Explore waits for fresh data and
-replans. A real phone/rover disconnect retires the physical drive session, then
-foreground computer setup and the backend establish a fresh session when all live
-readiness checks recover. Backgrounding cannot capture or drive; foregrounding
-restarts setup. Measured navigation and manual control retain their stop behavior.
+armed uncalibrated prototype Explore mode, ordinary map blockage holds zero motion
+and replans in the same arm generation. A temporary sensing/permit gap clears
+pending movement immediately and may recover within one second; the ESP's
+independent command-loss brake remains unchanged. Invalid tracking, invalid floor,
+prolonged stale evidence, disconnection, actual faults and explicit Stop disarm.
+Fresh data cannot automatically rearm a stopped session. Foreground phone setup
+may reconnect sensing/Bluetooth, but a new explicit Arm is required for motion.
+Backgrounding cannot capture or drive.
 
 Before forwarding autonomous movement, the ESP must independently check a fresh
 permit it generated, the active drive session and strictly increasing sequence.
@@ -67,8 +68,7 @@ The existing timed Uno command and ESP watchdog remain independent final stops.
 An explicit stopped/armed handshake must precede each new drive session; latest-only
 command replacement cannot discard the session-opening handshake. A zero within a
 live session means idle; an explicit Stop or failed moving lease retires the session.
-Only a new arm handshake can start another; prototype Explore may repeat that
-handshake under the operator's still-active Explore choice. Legacy manual control remains available.
+Only a new explicit arm handshake can start another; yield/resume cannot open one. Legacy manual control remains available.
 
 Hardware-free integration covers synthetic RGB-D → calibrated occupancy → `/goal` →
 real adapter wire commands → stale-sensing Stop. The actual Swift relay also runs
@@ -179,7 +179,7 @@ A missing detector stays down; the setup controls still work, but driving stays 
    click **Enable laptop control** in this panel; recovery does not silently restore
    the link. Stop also cancels startup while it is waiting for tracking or Bluetooth.
    A fresh foreground launch may prepare control again; an active prototype Explore
-   choice can rearm only after the phone, rover, camera and map recover.
+   choice stops on a genuine fault and requires a new explicit Arm after readiness recovers.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
    Explore starts planning upon explicit arm. Manual PWM driving stays on the phone;
@@ -268,13 +268,14 @@ a pivot for turns above about 69°. In an open room, Explore favors reachable
 frontiers with more unmapped area nearby, then covers the remaining frontiers
 until the mapped room has none. When both hallway walls are observed, it first
 moves toward their center and follows the far end. A straight path with at least 1 m of
-clear route ahead requests the prototype's 0.2 m/s nominal command and PWM 180;
-an observed corridor must also be at least 1.2 m wide and centered. Off-center
-travel on a detour uses a differential forward arc at PWM 180; slow approaches
-and rare pivots retain PWM 60. The
-autonomous phone/ESP command path permits up to PWM 180; stock manual control
-remains capped at 80. This is three times the former prototype duty setting,
-not a measured threefold travel speed. The phone app and ESP firmware must both
+clear route ahead can request up to the prototype's 0.2 m/s nominal command.
+Nearby obstacles, unknown floor, lower accepted depth confidence and aging evidence
+reduce this request while preserving the nominal turn curvature. Forward and arc
+power varies from PWM 60 toward 180 as nominal speed rises from 0.15 to 0.2;
+pivots and slower requests use 60. `--prototype-max-pwm` (1–180, default 180) caps
+**every** direction, including arcs and pivots. This is a power preference, not a
+measured speed curve or stopping-distance model. Stock manual control remains
+capped at 80. The phone app and ESP firmware must both
 be updated before using it. The occupancy planning window follows the rover
 through consecutive hallways rather than ending at 10 m from the AR origin;
 Explore holds a reachable forward destination across minor map updates and
@@ -291,7 +292,7 @@ update continuously with no added pauses or run duration limit. Each command
 uses the firmware's 1 s command-loss brake; straight and pivot commands also
 have the Uno's 1.5 s timed fallback, while forward arcs do not. Stop, tracking/depth freshness,
 authenticated pairing, unique arm sessions, ESP permits, Uno feedback and link
-watchdogs remain enforced. A latched Explore request may rearm after transient loss.
+watchdogs remain enforced. Ordinary zero-motion waits may resume in-session; faults never auto-rearm.
 The dashboard labels this profile **Uncalibrated prototype**. Select Explore or Navigate,
 then explicitly Arm. Stop and reassess if the rover turns in the wrong direction.
 
@@ -323,3 +324,42 @@ Bluetooth and laptop-control setup via `/device/action`, then checks current
 readiness and completes the normal arm barrier. This uses the installed phone
 protocol and does not require a new phone build. Stop cancels pending startup;
 setup never continues to arming after that cancellation.
+
+## Exploration memory and ordinary-obstacle test integration
+
+Explore keeps bounded visited 25 cm world-grid cells within the AR session/epoch.
+Visited and failed targets are excluded from frontier selection, never from the
+collision map or return paths. Failures survive hit-count/revision updates and
+clear on changed geometry; visited history resets on a new map identity. A repeat
+closed lap with no new cells forces a new frontier search. This improves reachable
+frontier coverage; it does not guarantee visiting every floor cell or never
+returning through a required passage.
+
+`GET /autonomy` exposes `exploration` counters, `generation`, `navigation_wait_reason`,
+`explore_yield`, and the configured `prototype_max_pwm`. Ordinary depth obstacles
+already trigger path checks, detour replanning or an armed zero-motion wait. When
+an external test monitor needs to yield for a confirmed crossing person or cannot
+establish that person's clearance, use authenticated `POST /explore/yield` with
+`{"generation": <current>, "reason": "person_path_crossing"}` (also accepts
+`person_clearance_unknown` or `obstacle_wait`). It immediately drops pending
+movement and holds zero indefinitely in the current session. After fresh evidence
+establishes clearance, authenticated `POST /explore/resume` with that same generation
+releases the wait and replans. Resume checks readiness; it never arms or releases
+a fault/Stop, and stale generations return 409. Sensor/transport faults remain
+active during a yield.
+
+The runtime test monitor must adopt this interface. A person label anywhere in
+an image, including a probable poster, is not metric evidence of an imminent
+collision. Match fresh same-frame depth/localized evidence to the rover footprint,
+intended swept path and proximity; do not issue emergency Stop for every label.
+Off-path localized objects use normal occupancy; crossing objects get a detour or
+zero wait. A confirmed person whose clearance cannot be established stays yielded
+until clearance is proven. Keep emergency Stop for explicit operator intent,
+actual imminent danger, control failure or safety-critical sensor failure. No
+person-class collision thresholds or occupancy clearance protections are relaxed.
+
+Hardware-free checks: `python -m unittest backend.tests.test_exploration_coverage
+backend.tests.test_explore_yield backend.tests.test_prototype_power -v` (put the
+module arguments on one command line). The real runner uses a fake matched clock,
+pose, occupancy and nominal kinematic plant. It does not simulate physical PWM
+response, motor coast, camera/chassis calibration or pedestrian detection accuracy.

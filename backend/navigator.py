@@ -24,6 +24,7 @@ from typing import Callable
 
 import numpy as np
 
+from backend.exploration import ExplorationMemory
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
@@ -45,6 +46,7 @@ RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode i
 
 @dataclass(frozen=True)
 class NavSettings:
+    adaptive_explore: bool = False  # explicit prototype only; measured rate range stays intact
     rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
     start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
@@ -97,11 +99,11 @@ def planning_grid(snapshot, settings):
     return grid, config
 
 
-def obstacle_clearance_m(snapshot, x, z):
+def obstacle_clearance_m(snapshot, x, z, search_m=0.):
     """Distance from a camera-floor position to the nearest observed occupied cell."""
     if snapshot.cells is None or snapshot.origin is None:
         return 0.
-    radius = snapshot.inflation_m + snapshot.cell_m
+    radius = max(search_m, snapshot.inflation_m + snapshot.cell_m)
     row, col = snapshot._index(x, z)
     reach = math.ceil(radius / snapshot.cell_m) + 1
     r0, r1 = max(0, row - reach), min(snapshot.cells.shape[0], row + reach + 1)
@@ -114,6 +116,28 @@ def obstacle_clearance_m(snapshot, x, z):
     dx = np.maximum(np.maximum(left - x, x - left - snapshot.cell_m), 0.)
     dz = np.maximum(np.maximum(top - z, z - top - snapshot.cell_m), 0.)
     return float(np.min(np.hypot(dx, dz)))
+
+
+def exploration_command(snapshot, x, z, yaw, v, w, now, max_age_s):
+    """Reduce nominal speed near obstacles/unknown floor/aging sensing; preserve curvature.
+
+    This is an additional speed preference, never a substitute for swept-path
+    validation or a measured physical stopping-distance guarantee.
+    """
+    if v <= 0:
+        return v, w
+    clearance = obstacle_clearance_m(snapshot, x, z, search_m=1.)
+    room = max(0., min(1., (clearance - snapshot.inflation_m) / .4))
+    freshness = max(0., min(1., 1. - (now - snapshot.accepted_at) / max_age_s))
+    quality = max(0., min(1., snapshot.sensing_confidence))
+    cap = .1 + .1 * room * freshness * quality
+    # Unknown support is accepted only under the existing profile policy;
+    # fewer observed free cells cannot justify the highest nominal cruise power.
+    if any(snapshot.cell(x + d * math.sin(yaw), z + d * math.cos(yaw)) != 1
+           for d in (.2, .4, .8)):
+        cap = min(cap, .12)
+    scale = min(1., cap / v)
+    return v * scale, w * scale
 
 
 def recoverable_start(snapshot, x, z, extra_margin_m):
@@ -186,6 +210,7 @@ class Navigator:
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
         self.goal: tuple[float, float] | None = None
+        self.exploration = ExplorationMemory()
         self.waiting_reason: str | None = None  # active Explore at zero, not a terminal stop
 
     @property
@@ -232,12 +257,13 @@ class Navigator:
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         if explore:
             heading = yaw if explore_yaw is None else explore_yaw
+            target_mask = self.exploration.targets(snapshot, grid)
 
             def frontier():
                 preferred = preferred_explore_frontier(grid, start, heading, config,
-                                                       allow_unknown=snapshot.unknown_traversable)
+                                                       allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
                 return preferred if preferred is not None else nearest_frontier(
-                    grid, start, config, allow_unknown=snapshot.unknown_traversable)
+                    grid, start, config, allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
 
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
@@ -249,7 +275,7 @@ class Navigator:
                 # floor. A goal that was yesterday's frontier should advance
                 # before the rover reaches it and brakes for another search.
                 farther = preferred_explore_frontier(grid, start, heading, config,
-                                                    allow_unknown=snapshot.unknown_traversable)
+                                                    allow_unknown=snapshot.unknown_traversable, target_mask=target_mask)
                 if farther is not None:
                     fx, fz = math.sin(heading), math.cos(heading)
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
@@ -260,6 +286,7 @@ class Navigator:
             # A clear destination can be cut off by a new wall. Retain goals
             # while a detour exists, but replace a proven unreachable one with
             # a frontier reachable in this same accepted map snapshot.
+            self.exploration.reject(snapshot.session, goal)
             goal = frontier()
             if goal is None:
                 return 'explore_complete', snapshot
@@ -458,6 +485,17 @@ class Navigator:
                         job = asyncio.ensure_future(asyncio.to_thread(
                             self._check, occupancy, points, segment, snapshot.revision))
 
+                if explore and snapshot is not None:
+                    loop = self.exploration.observe(snapshot.session, x, z, yaw)
+                    if loop and goal is not None:
+                        self.exploration.reject(snapshot.session, goal)
+                        if job is not None:
+                            job.cancel()
+                            job = None
+                        follower, goal, progress, last_plan = None, None, None, -math.inf
+                        self.waiting_reason = 'explore_loop_replan'
+                        self._show([])
+
                 v = w = 0.
                 if follower is not None and snapshot is not None:
                     if not (snapshot.traversable(x, z) or
@@ -532,6 +570,7 @@ class Navigator:
                         if not feasible:
                             if explore:
                                 rejected = (snapshot.session, snapshot.revision, list(follower.path), x, z, yaw)
+                                last_plan = now
                                 progress = None  # deliberate zero wait is not commanded-motion stall
                                 self.waiting_reason = 'no_feasible_step'
                                 logger.info('Explore waiting: no feasible pursuit step')
@@ -540,6 +579,9 @@ class Navigator:
                                 await asyncio.sleep(period)
                                 continue
                             return self._finish('path_blocked')
+
+                if explore and s.adaptive_explore and snapshot is not None:
+                    v, w = exploration_command(snapshot, x, z, yaw, v, w, now, s.map_max_age_s)
 
                 if v or w:
                     if progress is None or (math.hypot(x - progress[0], z - progress[1]) >= s.progress_m

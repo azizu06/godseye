@@ -1,6 +1,6 @@
 """Explicit, uncalibrated prototype profile. Never used by the default backend.
 
-The planner's nominal rate requests select direction and a two-step prototype
+The planner's nominal rate requests select direction and a bounded prototype
 power choice, NOT a measured physical speed. Forward arcs use the bridge's
 restricted differential-motor command; the measured adapter remains unchanged.
 Dimensions must be supplied by the operator; measured calibration stays intact.
@@ -44,8 +44,13 @@ class PrototypeActuation:
     warnings = (
         'Uncalibrated prototype: estimated chassis, forward-facing camera assumed.',
         'Flat-terrain exploration may cross unseen floor; detected obstacles retain footprint clearance.',
-        'PWM 180 for clear straight and forward-arc travel; speed and stopping distance are unverified.',
+        'Environment-responsive nominal power, capped at the configured PWM ceiling; physical speed and stopping distance are unverified.',
     )
+
+    def __init__(self, max_pwm=180):
+        if type(max_pwm) is not int or not 1 <= max_pwm <= 180:
+            raise ValueError('prototype max PWM must be an integer in [1, 180]')
+        self.max_pwm = max_pwm
 
     def follower(self):
         return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
@@ -59,7 +64,9 @@ class PrototypeActuation:
             return None
         if not 0 <= v_mps <= .2 or abs(yaw_rate_rps) > .5:
             raise ValueError('prototype drive request outside motion limits')
+        # Nominal request is a power preference, not a linear motor speed model.
+        power = min(self.max_pwm, round(60 + 120 * max(0., (v_mps - .15) / .05)))
         if v_mps and abs(yaw_rate_rps) >= .15:
-            return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, 180)
+            return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, power)
         return TimedMotorCommand(3 if v_mps else (1 if yaw_rate_rps > 0 else 2),
-                                 180 if v_mps >= .18 else 60)
+                                 power)

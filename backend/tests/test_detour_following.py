@@ -75,7 +75,7 @@ async def exploring(cells=None, *, start=(2.5, .8, 0.), moves=True):
     occupancy = FreshOccupancy(hallway() if cells is None else cells, clock)
     rover = Rover(*start, moves=moves, sim_dt=.1)
     h = Harness(rover, occupancy, mode='explore', follower=PrototypeActuation().follower(),
-                rate_hz=10., replan_s=4., blocked_check_s=.25, no_progress_s=5.,
+                rate_hz=10., replan_s=4., blocked_check_s=.25, no_progress_s=5., adaptive_explore=True,
                 start_recovery_margin_m=.1524)
     with patch.object(navigator, 'time', SimpleNamespace(monotonic=clock.now)), \
             patch.object(navigator, 'asyncio', TickLoop(clock)):

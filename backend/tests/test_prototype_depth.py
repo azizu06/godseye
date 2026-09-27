@@ -68,6 +68,7 @@ class PrototypeDepthTests(unittest.TestCase):
             self.assertEqual(snapshot.blockers, ())
             self.assertAlmostEqual(snapshot.floor_y, -1.2, delta=.03)
             self.assertIsNotNone(snapshot.accepted_at)
+            self.assertEqual(snapshot.sensing_confidence, .5)
             self.assertEqual(state.chunk_id, 0)
             self.assertEqual(state.map_stats['no_new_points'], 3)
             self.assertFalse(client.get('/health').json()['armed'])
@@ -85,6 +86,7 @@ class PrototypeDepthTests(unittest.TestCase):
                 snapshot = state.occupancy.map_snapshot()
                 if accepted:
                     self.assertEqual(snapshot.blockers, ())
+                    self.assertEqual(snapshot.sensing_confidence, 1.)
                 else:
                     self.assertIsNone(snapshot.accepted_at)
                     self.assertIn('no_floor', snapshot.blockers)

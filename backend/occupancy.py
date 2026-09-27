@@ -79,6 +79,7 @@ class Evidence:
     camera_y: float | None = None  # same-frame ARKit camera height, when available
     camera_xz: tuple[float, float] | None = None
     floor_y: float | None = None  # Classified floor from the accepted same-frame anchor.
+    sensing_confidence: float = 1.  # accepted raw depth confidence, normalized [0, 1]
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,7 @@ class OccupancySnapshot:
     cells: np.ndarray | None
     floor_y: float | None
     unknown_traversable: bool = False  # Explicit flat-terrain prototype only.
+    sensing_confidence: float = 1.
 
     @property
     def ready(self) -> bool:
@@ -278,6 +280,7 @@ class OccupancyGrid:
         self.dropped = 0  # points outside the bounds plus new voxels refused by the cap
         self.evicted = 0  # distant world evidence replaced by nearby new voxels
         self.accepted_at = None
+        self.sensing_confidence = 1.
         self.last_message = None
         self.revision = 0  # bumps whenever evidence changes; navigation replans on it
         self._keys = np.empty(0, np.int64)  # sorted (ix * SIDE + iz) * LEVELS + iy
@@ -362,6 +365,7 @@ class OccupancyGrid:
                 self._camera_xz = evidence.camera_xz
             self.dropped += evidence.outside
             self.accepted_at = now
+            self.sensing_confidence = evidence.sensing_confidence
             if not len(keys):
                 if removed:
                     self._dirty = True
@@ -477,6 +481,7 @@ class OccupancyGrid:
         """Classified picture of all accepted evidence, with readiness; blocking like `snapshot`."""
         with self._lock:
             revision, accepted_at = self.revision, self.accepted_at
+            sensing_confidence = self.sensing_confidence
             keys, hits = self._keys.copy(), self._hits.copy()
         picture = self._classify(keys, hits)
         origin = cells = floor_y = None
@@ -491,7 +496,7 @@ class OccupancyGrid:
         return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
                                  origin, CELL_M, cells, floor_y,
-                                 getattr(calibration, 'unknown_traversable', False))
+                                 getattr(calibration, 'unknown_traversable', False), sensing_confidence)
 
 
 def estimate_floor(levels: np.ndarray):
