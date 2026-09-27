@@ -128,3 +128,37 @@ covered separately by `backend.tests.test_scout_navigation`,
 introduces a hallway obstacle after driving starts and checks early steering,
 continued translation and nominal cruise through the pass. This benchmark does not emulate network timing
 or raw sensor reconstruction.
+
+## Offline nav-log replay (no rover needed)
+
+```sh
+$HOME/.venvs/godseye/bin/python -m tools.replay_nav_log /path/to/backend/captures/nav-logs/<run> --goal X Z
+$HOME/.venvs/godseye/bin/python -m tools.replay_nav_log /path/to/<run> --json /tmp/replay.json --trace-jsonl /tmp/trace.jsonl
+$HOME/.venvs/godseye/bin/python -m unittest tools.tests.test_replay_nav_log -v
+```
+
+`tools/replay_nav_log.py` replays whatever pose/occupancy a recorded nav-log run
+captured (gitignored `backend/captures/nav-logs/<run>/{manifest.json,events.jsonl,
+live.jsonl,summary.json}`) through the real `backend.navigation`/`backend.navigator`
+planning code (`Navigator._plan`, `Navigator._check`, `PurePursuit`), so a teammate
+without rover access can see what the planner would have decided at each recorded
+moment. Point it at a run directory copied from whoever captured it; the run does
+not need to live inside this checkout. Omit `--goal X Z` for an explore replay
+(frontier-seeking); pass it for a goal replay to that point. `--inflation-m` and
+`--unknown-traversable` set the assumed planner geometry when the log doesn't carry
+real calibration (defaults match `backend.navigation.PlannerConfig`).
+
+Hardware refusal by construction: it never imports `backend.app`, never opens a
+socket/websocket/BLE/serial connection, reads no pairing key, and issues no live
+command — it only calls pure planning functions with data already in the log.
+
+It is a planner-decision replay, not a sensor or motion replay: the rover position
+fed to the planner each tick is the log's own recorded ground-truth pose, never a
+position integrated from planned commands (no motor-physics simulation), and raw
+depth/camera/audio/GPS/motor-command/ESP-feedback data — never in the nav-log — is
+never reconstructed. It also omits Navigator's pursuit feasibility downgrade, the
+Explore person-yield/resume gate, and `ScanPacer` pacing; see the module docstring
+and each report's `limitations` field. The CLI prints manifest/schema compatibility
+notes before replaying and reports `end_of_recorded_log`/`pose_stale`/etc. distinctly
+from a genuine planner stop, so a mismatched or partial log is never silently
+misread as a full run.
