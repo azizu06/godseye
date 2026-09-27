@@ -1,6 +1,7 @@
 #include "AutonomyGuard.h"
 #include <assert.h>
 #include <stdio.h>
+#include <initializer_list>
 
 constexpr auto A = "0123456789ABCDEF0123456789ABCDEF";
 constexpr auto B = "1123456789ABCDEF0123456789ABCDEF";
@@ -14,6 +15,21 @@ void arm(AutonomyGuard& guard, uint32_t now = 0) {
 }
 
 int main() {
+  for (uint32_t start : {uint32_t(0), UINT32_MAX - 250}) {
+    AutonomyGuard g; arm(g, start);
+    assert(g.accept(A, 1, 2, start + 2));
+    // Continuous 20 Hz issuance must not evict a still-valid permit. Include
+    // the token issued exactly at the old token's 500 ms validity boundary.
+    for (uint32_t elapsed = 50; elapsed <= 500; elapsed += 50)
+      assert(g.issue(2 + elapsed / 50, start + 1 + elapsed));
+    assert(g.canForward(A, 1, 2, start + 501));
+    assert(g.accept(A, 2, 2, start + 501));
+    assert(g.canForward(A, 2, 2, start + 501));
+    assert(!g.canForward(A, 2, 2, start + 502));
+    assert(!g.accept(A, 3, 2, start + 502));
+    assert(g.active());
+    assert(g.accept(A, 4, 12, start + 503));
+  }
   {
     AutonomyGuard g;
     assert(!g.issue(1, 0));

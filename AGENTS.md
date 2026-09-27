@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Backend run/test commands and safety limitations: `backend/README.md`.
 - The default car adapter is logging-only and reports the car down; never imply this backend can arm or drive hardware. Adapter seam, command generation/lease rules, per-arm session/seq Command/Stop envelopes and the navigation `submit` hook: `backend/README.md` (Drive commands).
 
-- Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke` (see Car-ready smoke there).
+- Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke`; deterministic real-packet driving comparison/replay: `python -m tools.scout_benchmark` (see tools/README.md).
 
 - Live `points`, `objects`, `detections` and `event` payloads, limits, object memory, the same-frame detection image and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Live detection overlay, Suggested approach route, Rescan and change events).
 - Opt-in Gemini crop labels, persisted identity statuses and saved-object `/ask` search: `backend/README.md` (Gemini crop labels and saved-object search); fake-only acceptance: `python -m unittest backend.tests.test_labels -v`.

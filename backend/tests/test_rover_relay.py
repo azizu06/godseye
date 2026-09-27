@@ -380,8 +380,8 @@ class RelayHTTPTests(unittest.TestCase):
                             self.assertEqual((move['status'], move['reason']), ('completed', 'move_complete'), move)
                             self.assertGreaterEqual(move['achieved'], .1 - .02)  # measured stopping distance allowance
                             commands = [p for p in packets if p['type'] == 'command' and p['power']]
-                            # The slowest measured forward power (the prototype's fixed PWM 60, whose speed is
-                            # unknown), straight only, each on the longer lease. Distance comes from the pose.
+                            # The slowest measured forward power or the prototype's PWM 60 at its nominal
+                            # .05 request, straight only. Prototype speed is unknown; distance comes from pose.
                             power = 60 if getattr(actuation, 'prototype', False) else 20
                             self.assertTrue(commands and all((p['direction'], p['power'], p['lease_ms']) == (3, power, 1500)
                                                              for p in commands))
@@ -434,7 +434,8 @@ class RelayHTTPTests(unittest.TestCase):
                         self.assertEqual(goal.status_code, 200, goal.text)
                         wait_for(lambda: any(p['type'] == 'command' and p['power'] > 0 for p in packets))
                         commands = [p for p in packets if p['type'] == 'command']
-                        self.assertTrue(all(p['lease_ms'] == 1500 and 0 <= p['power'] <= 80 for p in commands))
+                        max_power = 180 if getattr(actuation, 'prototype', False) else 80
+                        self.assertTrue(all(p['lease_ms'] == 1500 and 0 <= p['power'] <= max_power for p in commands))
                         source.frames = False  # poses and firmware feedback stay healthy
                         wait_for(lambda: not app.state.armed)
                         self.assertEqual(app.state.stop_reason, 'sensing_stale')

@@ -48,7 +48,7 @@ def main():
         from backend.prototype import PrototypeActuation, prototype_geometry
         actuation = PrototypeActuation()
         geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
-        print('UNCALIBRATED PROTOTYPE: PWM 180 straight/forward-arc cruise, PWM 60 slow/pivot; actual speed unmeasured.', flush=True)
+        print('UNCALIBRATED PROTOTYPE: PWM 60–180 proportional forward/arc power, PWM 60 pivot; actual speed unmeasured.', flush=True)
     else:
         actuation = load_actuation(folder / 'actuation.json')
         geometry = load_calibration(folder / 'geometry.json')

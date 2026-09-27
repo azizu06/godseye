@@ -1,7 +1,7 @@
 """Explicit, uncalibrated prototype profile. Never used by the default backend.
 
-The planner's nominal rate requests select direction and a two-step prototype
-power choice, NOT a measured physical speed. Forward arcs use the bridge's
+The planner's nominal rate requests select direction and a bounded prototype
+power scale, NOT a measured physical speed. Forward arcs use the bridge's
 restricted differential-motor command; the measured adapter remains unchanged.
 Dimensions must be supplied by the operator; measured calibration stays intact.
 """
@@ -44,12 +44,12 @@ class PrototypeActuation:
     warnings = (
         'Uncalibrated prototype: estimated chassis, forward-facing camera assumed.',
         'Flat-terrain exploration may cross unseen floor; detected obstacles retain footprint clearance.',
-        'PWM 180 for clear straight and forward-arc travel; speed and stopping distance are unverified.',
+        'PWM 60–180 for forward travel and arcs, PWM 60 for pivots; speed and stopping distance are unverified.',
     )
 
     def follower(self):
         return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
-                              lookahead_m=.6, cruise_mps=.15, min_mps=.05,
+                              lookahead_m=.6, cruise_mps=.2, min_mps=.05,
                               max_yaw_rate_rps=.5)
 
     def command(self, v_mps, yaw_rate_rps):
@@ -59,7 +59,11 @@ class PrototypeActuation:
             return None
         if not 0 <= v_mps <= .2 or abs(yaw_rate_rps) > .5:
             raise ValueError('prototype drive request outside motion limits')
-        if v_mps and abs(yaw_rate_rps) >= .15:
-            return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, 180)
-        return TimedMotorCommand(3 if v_mps else (1 if yaw_rate_rps > 0 else 2),
-                                 180 if v_mps >= .18 else 60)
+        if not v_mps:
+            return TimedMotorCommand(1 if yaw_rate_rps > 0 else 2, 60)
+        # Smooth the requested duty from approach to cruise without boosting
+        # power when steering crosses the straight/arc threshold. This is an
+        # uncalibrated PWM policy, not an estimate of actual motor response.
+        power = round(60 + 120 * max(0., min(1., (v_mps - .05) / .15)))
+        direction = (5 if yaw_rate_rps > 0 else 6) if abs(yaw_rate_rps) >= .15 else 3
+        return TimedMotorCommand(direction, power)

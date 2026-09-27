@@ -61,6 +61,7 @@ final class CaptureController {
                 }
                 try await until { ble.packets.contains { $0["N"] as? Int == 202 } }
                 let heartbeatLoss = CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "heartbeat-loss"
+                let captureStop = CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "capture-stop"
                 if heartbeatLoss {
                     // A silent laptop eventually retires the transport.
                     try await until { !relay.enabled && !rover.autonomyEnabled }
@@ -73,8 +74,21 @@ final class CaptureController {
                     try await Task.sleep(nanoseconds: 200_000_000)
                     precondition(relay.enabled && rover.autonomyEnabled && capture.controlPriority)
                     precondition(ble.packets.filter { $0["N"] as? Int == 202 }.count == paused)
-                    capture.ready = true
-                    try await until { ble.packets.filter { $0["N"] as? Int == 202 }.count > paused }
+                    if captureStop {
+                        let stop = try AutonomyCommand.decode(Data(#"{"version":1,"type":"stop","id":"CAPTUREGAPSTOP"}"#.utf8))
+                        precondition(rover.acceptAutonomy(stop))
+                        try await until { ble.packets.contains {
+                            $0["N"] as? Int == 100 && $0["H"] as? String == "CAPTUREGAPSTOP"
+                        } }
+                        // The server sends this second Stop only after receiving
+                        // the first acknowledgement, so no socket timing guess is needed.
+                        try await until { ble.packets.contains {
+                            $0["N"] as? Int == 100 && $0["H"] as? String == "CAPTUREACKCHECK"
+                        } }
+                    } else {
+                        capture.ready = true
+                        try await until { ble.packets.filter { $0["N"] as? Int == 202 }.count > paused }
+                    }
                     relay.disconnect()
                     try await until { !relay.enabled && !rover.autonomyEnabled }
                 }
@@ -96,7 +110,8 @@ final class CaptureController {
 '''
 
 
-async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, idle_delay=0.):
+async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, idle_delay=0.,
+                capture_stop=False):
     completed = asyncio.Event()
     failures = []
     async def phone(ws):
@@ -111,14 +126,18 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, 
             stop_id = 'TESTAUTONOMYSTOP'
             await ws.send(json.dumps(dict(version=1, type='stop', id=stop_id)))
             idle_until = asyncio.get_running_loop().time() + idle_delay
-            phase, stop_ack, arm_ack = 'stopping', False, False
+            phase, stop_ack, arm_ack, capture_stop_ack = 'stopping', False, False, False
             previous, commands = 0, 0
             async for raw in ws:
                 message = json.loads(raw)
                 if message['type'] == 'ack':
                     stop_ack |= message['id'] == 'Z' + stop_id
                     arm_ack |= message['id'] == 'A' + SESSION
+                    capture_stop_ack |= message['id'] == 'ZCAPTUREGAPSTOP'
+                    if capture_stop and message['id'] == 'ZCAPTUREGAPSTOP':
+                        await ws.send(json.dumps(dict(version=1, type='stop', id='CAPTUREACKCHECK')))
                 elif message['type'] == 'status':
+                    assert not capture_stop_ack, 'Capture gap must still suppress movement permits'
                     assert message['session_id'] == 'relay-capture' and message['map_epoch'] == 1
                     assert message['seq'] > previous and message['enabled'] is True
                     assert 0 <= message['uno_age_ms'] < 1500
@@ -136,6 +155,8 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, 
                     elif phase != 'silent' and asyncio.get_running_loop().time() >= idle_until:
                         await ws.send(json.dumps(dict(version=1, type='heartbeat')))
             assert stop_ack and arm_ack and commands > 0
+            if capture_stop:
+                assert capture_stop_ack, 'Capture gap lost a valid Stop acknowledgement'
         except Exception as error:
             failures.append(error)
         finally:
@@ -146,11 +167,13 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, 
         await asyncio.to_thread(run_check, SWIFT,
             extra_sources=(str(ROOT / 'ios/App/RoverAutonomyLink.swift'),),
             args=(f'ws://127.0.0.1:{port}/phone', KEY,
-                  'handshake-loss' if handshake_loss else 'heartbeat-loss' if heartbeat_loss else 'capture-loss'))
+                  'handshake-loss' if handshake_loss else 'heartbeat-loss' if heartbeat_loss else
+                  'capture-stop' if capture_stop else 'capture-loss'))
         await asyncio.wait_for(completed.wait(), 2)
         if failures:
             raise failures[0]
-    print(f'Relay verified: startup delay={handshake_delay}s, heartbeat loss={heartbeat_loss}, handshake loss={handshake_loss}')
+    print(f'Relay verified: startup delay={handshake_delay}s, heartbeat loss={heartbeat_loss}, '
+          f'handshake loss={handshake_loss}, capture Stop={capture_stop}')
 
 
 if __name__ == '__main__':
@@ -158,3 +181,4 @@ if __name__ == '__main__':
     asyncio.run(check(handshake_delay=.8, heartbeat_loss=True))
     asyncio.run(check(idle_delay=1.2))
     asyncio.run(check(handshake_loss=True))
+    asyncio.run(check(capture_stop=True))

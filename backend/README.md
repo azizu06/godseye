@@ -563,21 +563,31 @@ while the default car reports down, so runs are exercised by tests with
   Clearance counts entire occupied/unknown cell squares and off-grid space, not
   just cell centers; this deliberately rejects some tight passages that fit at a
   single point. No start/goal snapping or unknown padding can escape a blocker.
-  The pure planner's legacy simulation defaults are overridden at the snapshot seam.
+  Live routes also price three soft clearance bands over the next 0.30 m beyond
+  the hard footprint; A* and shortcutting use the same costs. Narrow passages
+  remain available. The pure planner's defaults are overridden at the snapshot seam.
   Explore selects the nearest reachable boundary of footprint-clear known floor,
   inset from unknown space so its footprint stays observed; it completes when none remains.
 - **Following:** pure pursuit (0.35 m lookahead) at 10 Hz, one `submit` per
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
-  place (`v_mps` 0). It never reverses; arrival is within 0.15 m.
-- **Replanning:** a full replan from the current pose about once per second; snapshot
-  checks run at most 4 Hz regardless of `/live` publication. Each reads accepted
-  sensing time, and a new revision checks the remaining path. An obstructed path
-  ends the run with `path_blocked`, zeroes and disarms. Current and next-tick pursuit
-  footprint positions must also remain clear, so pursuit cannot cut an unsafe corner.
-  Reaching an explore frontier discards pending planning/check work before selecting
-  the next frontier (the landed exploration race fix). `path` is published only when
-  its points change, and new `/live` viewers get the current path.
+  place (`v_mps` 0), finishing alignment to within 0.20 rad before moving again;
+  replans preserve an unfinished pivot. If the usual carrot cuts an inside corner,
+  the follower switches to a nearby route point (at most 0.15 m lookahead) and
+  aligns before advancing. A repeatedly rejected command still counts toward
+  the no-progress timeout. It never reverses; arrival is within 0.15 m.
+- **Replanning:** a full replan from the current pose every four seconds, or sooner
+  for a new obstacle or approaching Explore goal. An independent worker refreshes
+  sensing and checks the remaining route every 0.20 seconds; a slow route search
+  cannot make live sensing appear stale. A new obstacle requests a detour in both
+  Navigate and Explore. The follower keeps moving along its clear prefix while
+  that route is computed; current and next-tick footprint checks still apply.
+  Older planning snapshots cannot replace newer accepted sensing, and each new
+  route is checked on the latest map revision. Reaching an Explore frontier
+  cancels its outstanding route search and remembers a half-meter region around
+  the reached frontier (last 64 per run), avoiding repeated trips to the same seam.
+  Check results for a replaced route cannot invalidate its successor.
+  `path` is published only when its points change, and new `/live` viewers get it.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the
   reason. Map blockers (`calibration_missing`, `calibration_unverified`, unmeasured
@@ -812,9 +822,11 @@ spend/privacy/credential gate. No live ElevenLabs coverage is claimed.
 ### Explicit uncalibrated prototype
 
 The operator may opt into `tools.run_rover_backend --prototype` with explicit
-estimated chassis dimensions. It maps nominal motion to PWM 60 for slow/pivot
-commands and PWM 180 for straight/arc cruise, without filling or certifying
-measured calibration files.
+estimated chassis dimensions. Forward and arc power interpolate from PWM 60
+at a nominal 0.05 m/s to PWM 180 at 0.20 m/s (140 at 0.15); steering no longer
+causes an abrupt power jump. Pivots remain PWM 60. The follower requests 0.20
+nominal cruise and slows near arrival, without filling or certifying measured
+calibration files. These are power choices, not measured motor speeds.
 Live map/floor, tracking, feedback and authentication gates remain in effect.
 Explore restores the faster straight-line command on clear straight route legs
 after going around an obstacle, without waiting for the entire route to be straight.

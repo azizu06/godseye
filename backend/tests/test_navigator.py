@@ -182,7 +182,7 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.rover.commands[moved:], [(0., 0.)])  # only the stop's zero
         self.assertEqual(h.modes, {'navigate'})
 
-    async def test_wall_seen_mid_run_stops_and_zeroes_the_blocked_path(self):
+    async def test_wall_seen_mid_run_replans_a_detour_and_arrives(self):
         occupancy = FakeOccupancy(cells())
         start, goal = (.5, .5), (2.5, .5)
         initial = initial_plan(occupancy.cells, start, goal)
@@ -192,8 +192,11 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         h = Harness(Rover(*start, math.pi / 2, on_move=reveal_wall), occupancy, replan_s=100.)
         h.nav.start_goal(goal, initial, h.generation)
         await h.finished()
-        self.assert_stopped(h, 'path_blocked')
+        self.assert_stopped(h, 'arrived')
         self.assertEqual(occupancy.revision, 2)
+        for x, z in h.rover.trace:
+            if 1.3 < x < 1.7:
+                self.assertGreater(z, 2.2)
 
     async def test_map_update_that_seals_the_goal_stops_with_no_path(self):
         occupancy = FakeOccupancy(cells())

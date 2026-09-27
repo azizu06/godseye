@@ -113,6 +113,8 @@ class PlannerConfig:
     frontier_min_distance_m: float = .30
     pad_margin_m: float = 1.  # unknown border added around an out-of-map start or goal
     max_grid_cells: int = 1_000_000  # padding never grows the search grid beyond this
+    preferred_clearance_m: float = .3  # soft space beyond the hard footprint
+    clearance_weight: float = 0.  # opt-in route cost; never makes a narrow passage impassable
 
 
 @dataclass(frozen=True)
@@ -252,8 +254,21 @@ def _segment_cells(grid: Grid, a, b):
         yield r, c
 
 
+def _travel_cost(grid: Grid, mask: np.ndarray, config: PlannerConfig) -> np.ndarray:
+    costs = np.where(grid.cells == UNKNOWN, max(config.unknown_cost, 1.), 1.)
+    if config.clearance_weight <= 0 or config.preferred_clearance_m <= 0:
+        return costs
+    # Three soft bands outside the footprint. Route cost and shortcutting use
+    # the same field, so smoothing cannot pull a detour back against a wall.
+    for fraction in (1., 2 / 3, 1 / 3):
+        wider = dataclasses.replace(config, unknown_traversable=True,
+                                    margin_m=config.margin_m + fraction * config.preferred_clearance_m)
+        costs += (~traversable_mask(grid, wider)) * config.clearance_weight / 3
+    return costs
+
+
 def _astar(mask: np.ndarray, unknown: np.ndarray, start: tuple[int, int], goal: tuple[int, int],
-           config: PlannerConfig):
+           config: PlannerConfig, travel_cost=None):
     """8-connected A* with an octile heuristic, unknown cost and no corner cutting.
 
     Returns (cells, costs, expansions, hit_limit); cells is None when no path was found.
@@ -264,7 +279,8 @@ def _astar(mask: np.ndarray, unknown: np.ndarray, start: tuple[int, int], goal: 
     width = w + 2
     padded = np.zeros((h + 2, w + 2))
     unknown_cost = max(config.unknown_cost, 1.)
-    padded[1:-1, 1:-1] = np.where(mask, np.where(unknown, unknown_cost, 1.), 0.)
+    padded[1:-1, 1:-1] = np.where(mask, np.where(unknown, unknown_cost, 1.)
+                                 if travel_cost is None else travel_cost, 0.)
     mult = padded.ravel().tolist()
     # Scale the octile heuristic by the cheapest traversable cell so it stays admissible
     # but does not collapse into a full flood on an all-unknown map.
@@ -314,7 +330,8 @@ def _astar(mask: np.ndarray, unknown: np.ndarray, start: tuple[int, int], goal: 
     return None, None, expansions, False
 
 
-def _shortcut(grid: Grid, mask: np.ndarray, unknown: np.ndarray, cells, costs, config: PlannerConfig):
+def _shortcut(grid: Grid, mask: np.ndarray, unknown: np.ndarray, cells, costs, config: PlannerConfig,
+              travel_cost=None):
     """Greedy line-of-sight shortcutting between the A* path's turning cells.
 
     A shortcut must stay on traversable cells and must not cost more than the A* stretch
@@ -329,13 +346,14 @@ def _shortcut(grid: Grid, mask: np.ndarray, unknown: np.ndarray, cells, costs, c
 
     def clear(i, j):
         (ar, ac), (br, bc) = cells[i], cells[j]
-        touched = unknown_touched = 0
+        touched = total_cost = 0
         for r, c in _segment_cells(grid, grid.cell_center(ar, ac), grid.cell_center(br, bc)):
             if not (0 <= r < grid.height and 0 <= c < grid.width) or not mask[r, c]:
                 return False
             touched += 1
-            unknown_touched += bool(unknown[r, c])
-        price = 1. + (unknown_cost - 1.) * unknown_touched / touched
+            total_cost += (travel_cost[r, c] if travel_cost is not None
+                           else unknown_cost if unknown[r, c] else 1.)
+        price = total_cost / touched
         return math.hypot(br - ar, bc - ac) * price <= costs[j] - costs[i] + 1e-9
 
     kept, k = [turns[0]], 0
@@ -379,10 +397,12 @@ def plan_path(grid: Grid, start_xz, goal_xz, config: PlannerConfig = PlannerConf
     if start is None:
         return PlanResult([], 'start_blocked')
     unknown = grid.cells == UNKNOWN
-    cells, costs, expansions, hit_limit = _astar(mask, unknown, start, goal, config)
+    travel_cost = _travel_cost(grid, mask, config)
+    cells, costs, expansions, hit_limit = _astar(mask, unknown, start, goal, config, travel_cost)
     if cells is None:
         return PlanResult([], 'search_limit' if hit_limit else 'no_path', expansions)
-    corners = [grid.cell_center(*cell) for cell in _shortcut(grid, mask, unknown, cells, costs, config)]
+    corners = [grid.cell_center(*cell) for cell in _shortcut(grid, mask, unknown, cells, costs, config,
+                                                           travel_cost)]
     if len(corners) == 1:
         corners.append(corners[0])
     # Keep the exact clicked goal and rover position when their cells and first/last legs are clear.
@@ -458,7 +478,8 @@ def is_frontier(grid: Grid, xz, config: PlannerConfig = PlannerConfig()) -> bool
     return cell is not None and bool((_safe_frontiers(grid, config) & traversable_mask(grid, config))[cell])
 
 
-def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig(), *, allow_unknown=False):
+def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig(), *,
+                     allow_unknown=False, excluded=()):
     """World (x, z) of the nearest reachable frontier, or None.
 
     A frontier is a free, traversable cell with an unknown 4-neighbor; space outside the
@@ -467,6 +488,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     blocked unless the flat-terrain caller explicitly passes allow_unknown), bounded by
     ``config.max_expansions``; frontiers closer than ``config.frontier_min_distance_m``
     to the start are skipped so the rover does not chase the unmapped floor under itself.
+    Reached regions in ``excluded`` are skipped within at least half a meter.
     """
     sx, sz = (float(v) for v in start_xz)
     if allow_unknown:
@@ -488,6 +510,7 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
     seen[s] = 1
     queue, head = [s], 0
     min_d2 = config.frontier_min_distance_m ** 2
+    excluded_d2 = max(config.frontier_min_distance_m, .5) ** 2 + 1e-12
     moves = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
     while head < len(queue) and head < config.max_expansions:
         cur = queue[head]
@@ -495,7 +518,8 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
         r, c = divmod(cur, w)
         if frontier[cur]:
             x, z = grid.cell_center(r, c)
-            if (x - sx) ** 2 + (z - sz) ** 2 >= min_d2:
+            if ((x - sx) ** 2 + (z - sz) ** 2 >= min_d2
+                    and all((x - ex) ** 2 + (z - ez) ** 2 > excluded_d2 for ex, ez in excluded)):
                 return x, z
         for dr, dc in moves:
             nr, nc = r + dr, c + dc
@@ -508,12 +532,13 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
 
 
 def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
-                               config: PlannerConfig, *, allow_unknown=False):
+                               config: PlannerConfig, *, allow_unknown=False, excluded=()):
     """Reachable unexplored boundary with forward progress or open-room information gain.
 
     In an observed two-wall corridor, keep a forward route until it ends. In an
     open room, prefer a large unmapped region that a nearby frontier can reveal;
-    a tiny gap ahead must not starve the rest of the room.
+    a tiny gap ahead must not starve the rest of the room. Reached regions in
+    ``excluded`` are skipped within at least half a meter.
     """
     sx, sz = (float(v) for v in start_xz)
     if allow_unknown:
@@ -527,11 +552,25 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
     start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
     if start is None:
         return None
-    frontiers = mask & _safe_frontiers(grid, config)
+    frontier_cells = (mask & _safe_frontiers(grid, config)).ravel()
+    frontiers = frontier_cells.tolist()
     h, w = mask.shape
-    seen = np.zeros((h, w), bool)
-    seen[start] = True
-    queue, head = [start], 0
+    min_d2 = config.frontier_min_distance_m ** 2
+    excluded_d2 = max(config.frontier_min_distance_m, .5) ** 2 + 1e-12
+    for candidate in np.flatnonzero(frontier_cells):
+        r, c = divmod(int(candidate), w)
+        x, z = grid.cell_center(r, c)
+        if ((x - sx) ** 2 + (z - sz) ** 2 < min_d2
+                or any((x - ex) ** 2 + (z - ez) ** 2 <= excluded_d2 for ex, ez in excluded)):
+            frontiers[candidate] = False
+    remaining_frontiers = sum(frontiers)
+    if not remaining_frontiers:
+        return None
+    free = mask.ravel().tolist()
+    seen = bytearray(h * w)
+    s = start[0] * w + start[1]
+    seen[s] = 1
+    queue, head = [s], 0
     forward = (math.sin(yaw), math.cos(yaw))
     side = (forward[1], -forward[0])
     corridor = corridor_alignment(
@@ -539,46 +578,52 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
     unknown = np.pad((grid.cells == UNKNOWN).astype(np.int32), ((1, 0), (1, 0)))
     unknown = unknown.cumsum(axis=0).cumsum(axis=1)
     gain_radius = max(1, math.ceil(1.5 / grid.cell_m))
-    steps = np.zeros((h, w), np.int32)
+    steps = [0] * (h * w)
     best = None
     best_score = -math.inf
     radius = max(1, math.ceil(1. / grid.cell_m))
     moves = ((-1, 0), (1, 0), (0, -1), (0, 1),
              (-1, -1), (-1, 1), (1, -1), (1, 1))
     while head < len(queue) and head < config.max_expansions:
-        r, c = queue[head]
+        cur = queue[head]
         head += 1
-        if frontiers[r, c]:
+        r, c = divmod(cur, w)
+        if frontiers[cur]:
+            remaining_frontiers -= 1
             x, z = grid.cell_center(r, c)
             dx, dz = x - sx, z - sz
-            if dx * dx + dz * dz >= config.frontier_min_distance_m ** 2:
-                r0, r1 = max(0, r - radius), min(h, r + radius + 1)
-                c0, c1 = max(0, c - radius), min(w, c + radius + 1)
-                obstacle_r, obstacle_c = np.nonzero(grid.cells[r0:r1, c0:c1] == OCCUPIED)
-                clearance = (min(1., float(np.hypot(obstacle_r + r0 - r,
-                                                   obstacle_c + c0 - c).min()) * grid.cell_m)
-                             if len(obstacle_r) else 1.)
-                progress = dx * forward[0] + dz * forward[1]
-                lateral = abs(dx * side[0] + dz * side[1])
-                if corridor:
-                    score = 4. * progress - .5 * lateral + 2. * clearance
-                else:
-                    gr0, gr1 = max(0, r - gain_radius), min(h, r + gain_radius + 1)
-                    gc0, gc1 = max(0, c - gain_radius), min(w, c + gain_radius + 1)
-                    unseen = (unknown[gr1, gc1] - unknown[gr0, gc1]
-                              - unknown[gr1, gc0] + unknown[gr0, gc0])
-                    information_m = math.sqrt(max(0, int(unseen))) * grid.cell_m
-                    travel_m = steps[r, c] * grid.cell_m
-                    score = 5. * information_m - .7 * travel_m + .35 * progress + clearance
-                if score > best_score:
-                    best, best_score = (x, z), score
+            r0, r1 = max(0, r - radius), min(h, r + radius + 1)
+            c0, c1 = max(0, c - radius), min(w, c + radius + 1)
+            obstacle_r, obstacle_c = np.nonzero(grid.cells[r0:r1, c0:c1] == OCCUPIED)
+            clearance = (min(1., float(np.hypot(obstacle_r + r0 - r,
+                                               obstacle_c + c0 - c).min()) * grid.cell_m)
+                         if len(obstacle_r) else 1.)
+            progress = dx * forward[0] + dz * forward[1]
+            lateral = abs(dx * side[0] + dz * side[1])
+            if corridor:
+                score = 4. * progress - .5 * lateral + 2. * clearance
+            else:
+                gr0, gr1 = max(0, r - gain_radius), min(h, r + gain_radius + 1)
+                gc0, gc1 = max(0, c - gain_radius), min(w, c + gain_radius + 1)
+                unseen = (unknown[gr1, gc1] - unknown[gr0, gc1]
+                          - unknown[gr1, gc0] + unknown[gr0, gc0])
+                information_m = math.sqrt(max(0, int(unseen))) * grid.cell_m
+                travel_m = steps[cur] * grid.cell_m
+                score = 5. * information_m - .7 * travel_m + .35 * progress + clearance
+            if score > best_score:
+                best, best_score = (x, z), score
+            # Once every candidate has been evaluated, flooding the rest of
+            # unknown floor cannot change the score or its BFS tie order.
+            if not remaining_frontiers:
+                break
         for dr, dc in moves:
             nr, nc = r + dr, c + dc
-            if (0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not seen[nr, nc]
-                    and (not dr or not dc or (mask[r, nc] and mask[nr, c]))):
-                seen[nr, nc] = True
-                steps[nr, nc] = steps[r, c] + 1
-                queue.append((nr, nc))
+            if 0 <= nr < h and 0 <= nc < w:
+                n = nr * w + nc
+                if free[n] and not seen[n] and (not dr or not dc or (free[r * w + nc] and free[nr * w + c])):
+                    seen[n] = 1
+                    steps[n] = steps[cur] + 1
+                    queue.append(n)
     return best
 
 
@@ -634,6 +679,7 @@ class FollowerConfig:
     arrive_tolerance_m: float = .15
     rotate_in_place_rad: float = .6  # beyond this heading error, turn on the spot
     rotate_gain: float = 2.
+    rotate_exit_rad: float = .2  # finish a pivot before moving; avoids threshold chatter
     slow_radius_m: float = .40
     # Stock ELEGOO N=2 has straight/turn directions, not independent wheel speeds.
     # A measured hardware profile opts into pivoting first, then driving straight.
@@ -672,13 +718,15 @@ class PurePursuit:
     segment: int = 0
     _scanned_rad: float = 0.
     _last_yaw: float | None = None
+    _rotating: bool = False
 
     def __post_init__(self):
         self.path = [(float(x), float(z)) for x, z in self.path]
 
     def replaced(self, path) -> PurePursuit:
         """A follower for a replanned path that keeps any scan-turn progress."""
-        return PurePursuit(path, self.config, _scanned_rad=self._scanned_rad, _last_yaw=self._last_yaw)
+        return PurePursuit(path, self.config, _scanned_rad=self._scanned_rad,
+                           _last_yaw=self._last_yaw, _rotating=self._rotating)
 
     def _limits(self) -> tuple[float, float]:
         cfg = self.config
@@ -732,7 +780,9 @@ class PurePursuit:
             target = self._lookahead(self.segment, t, cfg.lookahead_m)
         dx, dz = target[0] - x, target[1] - z
         alpha = _wrap(math.atan2(dx, dz) - yaw_rad)  # + means target is to the left
-        if abs(alpha) > cfg.rotate_in_place_rad:
+        threshold = min(cfg.rotate_exit_rad, cfg.rotate_in_place_rad) if self._rotating else cfg.rotate_in_place_rad
+        self._rotating = abs(alpha) > threshold
+        if self._rotating:
             turn = math.copysign(max_w, alpha) if cfg.pivot_only else _clamp(cfg.rotate_gain * alpha, -max_w, max_w)
             return Command(0., turn, 'rotate', target)
         distance = max(math.hypot(dx, dz), 1e-6)

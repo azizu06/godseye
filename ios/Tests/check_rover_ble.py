@@ -157,6 +157,19 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
                 try await Task.sleep(nanoseconds: 600_000_000)
                 precondition(rover.autonomyEnabled && !rover.enabled,
                              "A permit gap must retain laptop ownership after Stop")
+                try await until { second.pendingWrites == 0 }
+                let gapStop = try AutonomyCommand.decode(Data(#"{"version":1,"type":"stop","id":"PERMITGAPSTOP"}"#.utf8))
+                precondition(rover.acceptAutonomy(gapStop))
+                precondition(second.pendingWrites == 1, "Stop must send immediately without a permit")
+                let queuedStop = try AutonomyCommand.decode(Data(#"{"version":1,"type":"stop","id":"QUEUEDGAPSTOP"}"#.utf8))
+                precondition(rover.acceptAutonomy(queuedStop))
+                try await Task.sleep(nanoseconds: 80_000_000)
+                precondition(second.packets.contains {
+                    $0["N"] as? Int == 100 && $0["H"] as? String == "PERMITGAPSTOP"
+                }, "An explicit Stop must reach BLE even without a fresh ESP permit")
+                precondition(second.packets.contains {
+                    $0["N"] as? Int == 100 && $0["H"] as? String == "QUEUEDGAPSTOP"
+                }, "A Stop queued behind another BLE write must survive the permit gap")
                 second.onFailure?("Bluetooth lost")
                 precondition(!rover.connected && !rover.enabled)
                 print("BLE controller manual regression, autonomous ownership, arm/permit gates, latest-only movement, priority Stop and lost-feedback checks passed.")

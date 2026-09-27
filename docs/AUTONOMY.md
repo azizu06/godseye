@@ -264,14 +264,18 @@ Actual motor speed, yaw sign and stopping distance remain unverified. This is on
 for supervised tests in open space, not a claim of accurate autonomous driving.
 
 The prototype pose/map follower chooses forward or moving left/right arcs, reserving
-a pivot for turns above about 69°. In an open room, Explore favors reachable
-frontiers with more unmapped area nearby, then covers the remaining frontiers
-until the mapped room has none. When both hallway walls are observed, it first
-moves toward their center and follows the far end. A straight path with at least 1 m of
-clear route ahead requests the prototype's 0.2 m/s nominal command and PWM 180;
-an observed corridor must also be at least 1.2 m wide and centered. Off-center
-travel on a detour uses a differential forward arc at PWM 180; slow approaches
-and rare pivots retain PWM 60. The
+an initial pivot for turns above about 69°. Once pivoting it finishes alignment to
+within about 11° before moving; replanning preserves that state. At a tight
+inside corner, a rejected pursuit step switches to a nearer route point and
+aligns before advancing, instead of repeatedly recomputing the same unusable arc. In an open room,
+Explore favors reachable frontiers with more unmapped area nearby and remembers
+reached regions, then covers remaining frontiers. When both hallway walls are
+observed, it first moves toward their center and follows the far end.
+The follower cruises at a **nominal** 0.20 m/s. Forward and arc PWM interpolate
+continuously from 60 at 0.05 m/s to 180 at 0.20 m/s, with 140 at 0.15 m/s;
+steering at the same requested speed no longer jumps from 60 to 180. The bridge
+still uses half/full wheel power for arcs; actual turning radius is unmeasured.
+Approaches slow with distance and pivots retain PWM 60. The
 autonomous phone/ESP command path permits up to PWM 180; stock manual control
 remains capped at 80. This is three times the former prototype duty setting,
 not a measured threefold travel speed. The phone app and ESP firmware must both
@@ -280,7 +284,11 @@ through consecutive hallways rather than ending at 10 m from the AR origin;
 Explore holds a reachable forward destination across minor map updates and
 extends that destination as fresh depth reveals more hallway, avoiding a stop at
 each old frontier. It checks its route for new obstacles between full replans
-every four seconds, or sooner when the destination is near or blocked. Medium-or-high-confidence depth can clear a departed
+every four seconds, or sooner when the destination is near or blocked. An
+independent map-check worker continues during planning, and a new obstacle
+requests a detour without discarding the clear part of the current route.
+Routes prefer additional clearance where space permits, including through
+shortcutting, to leave room for steering around obstacle corners. Medium-or-high-confidence depth can clear a departed
 obstacle after two distinct views see through its former footprint.
 If a wall newly overlaps only the prototype's extra six-inch clearance around
 the camera point, Explore may snap a route toward nearby clear space and continue
@@ -316,3 +324,29 @@ Bluetooth and laptop-control setup via `/device/action`, then checks current
 readiness and completes the normal arm barrier. This uses the installed phone
 protocol and does not require a new phone build. Stop cancels pending startup;
 setup never continues to arming after that cancellation.
+
+## Reproducible driving benchmark
+
+`python -m tools.scout_benchmark --output-dir /tmp/scout-after` closes the loop
+through the real planner, follower and prototype motor-packet mapping.
+`--revision 94d64f9` reproduces the pre-overhaul stack against identical synthetic
+wheel response. JSON metrics include completion, collisions, time, distance and
+steering switches; `replay.html` shows route and motion with playback/scrubbing.
+See [tools/README.md](../tools/README.md#scout-driving-benchmark). These fixtures
+are invented, explicitly labeled simulation, and never loaded as rover calibration.
+
+The nominal comparison completed corridor/corner/approach in 17.3/22.0/2.2
+simulated seconds, versus 46.9/55.9/5.6 before; the obstacle detour completed
+in 18.2 seconds where the previous follower entered an inflated obstacle margin
+and failed its next plan. All four scenarios completed without synthetic chassis
+collision for nine response combinations (wheel speeds 0.15/0.30/0.45 m/s at
+PWM 180 and track widths 0.18/0.28/0.38 m). This validates software behavior
+in those models, not physical sustained navigation or a recorded rover demo.
+
+The accompanying transport fixes retain every 20 Hz ESP permit for its full
+existing 500 ms validity (the former six-entry ring evicted it after about
+300 ms). A pending phone-side Stop survives permit gaps, and a Stop acknowledgement
+can reach the laptop during a capture gap. These changes keep the existing packet
+format. **Deployment:** restart the backend for navigation/power changes; build
+and install the phone app and flash the ESP bridge for the transport fixes.
+The tests/builds in this change do not establish that either device was updated.

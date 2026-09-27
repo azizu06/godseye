@@ -48,13 +48,13 @@ class NavSettings:
     rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
     start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
-    blocked_check_s: float = .25  # at most this often, a grid change triggers a path_blocked check
+    blocked_check_s: float = .20  # at most this often, a grid change triggers a path_blocked check
     map_max_age_s: float = 1.  # accepted sensing, independent of poses and /live publication
     pose_max_age_s: float = .25  # matches the health/watchdog freshness rule
     no_progress_s: float = 5.  # commanded motion without pose change for this long stops the run
     progress_m: float = .05
     progress_rad: float = .15
-    planner: PlannerConfig = field(default_factory=PlannerConfig)
+    planner: PlannerConfig = field(default_factory=lambda: PlannerConfig(clearance_weight=4.))
     follower: FollowerConfig = field(default_factory=FollowerConfig)
 
 
@@ -182,7 +182,7 @@ class Navigator:
 
     # Planning runs in worker threads -------------------------------------------------
 
-    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None):
+    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None, excluded=()):
         """Read the authoritative snapshot in this worker, then plan only known-clear floor."""
         def straight_ahead(points):
             fx, fz = math.sin(yaw), math.cos(yaw)
@@ -211,9 +211,9 @@ class Navigator:
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
                 goal = preferred_explore_frontier(grid, start, heading, config,
-                                                  allow_unknown=snapshot.unknown_traversable)
+                                                  allow_unknown=snapshot.unknown_traversable, excluded=excluded)
                 if goal is None:
-                    goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
+                    goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable, excluded=excluded)
                 if goal is None:
                     return 'explore_complete', snapshot
             else:
@@ -221,7 +221,7 @@ class Navigator:
                 # floor. A goal that was yesterday's frontier should advance
                 # before the rover reaches it and brakes for another search.
                 farther = preferred_explore_frontier(grid, start, heading, config,
-                                                    allow_unknown=snapshot.unknown_traversable)
+                                                    allow_unknown=snapshot.unknown_traversable, excluded=excluded)
                 if farther is not None:
                     fx, fz = math.sin(heading), math.cos(heading)
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
@@ -316,7 +316,10 @@ class Navigator:
             follower = PurePursuit(initial.points, s.follower)
             last_plan = time.monotonic()
             self._show(initial.points)
-        job = None
+        job = check_job = None
+        checking_follower = None
+        checked_revision = None
+        visited = []
         progress = None  # (x, z, yaw, since) while motion is commanded
         fast_corridor = False
         explore_heading = None
@@ -331,7 +334,11 @@ class Navigator:
                         if job is not None:
                             job.cancel()
                             job = None
+                        if check_job is not None:
+                            check_job.cancel()
+                            check_job = None
                         snapshot = follower = progress = None
+                        checked_revision = None
                         fast_corridor = False
                         goal, last_plan = None, -math.inf
                         self._show([])
@@ -348,52 +355,88 @@ class Navigator:
                 if explore and explore_heading is None:
                     explore_heading = yaw
 
+                # Reading current sensing never waits behind a route search. A
+                # route job owns geometry; the independent check owns freshness.
+                outcomes = []
+                if check_job is not None and check_job.done():
+                    try:
+                        checked = check_job.result()
+                    except Exception:
+                        logger.exception('navigation map check failed')
+                        return self._finish('nav_error')
+                    check_job = None
+                    if checking_follower is not follower and checked[2] == 'path_blocked':
+                        checked = ('check', checked[1], None)
+                    elif checking_follower is follower and checked[1] is not None:
+                        checked_revision = checked[1].revision
+                    outcomes.append(checked)
                 if job is not None and job.done():
                     try:
-                        outcome = job.result()
+                        outcomes.append(job.result())
                     except Exception:
                         logger.exception('navigation planning failed')
                         return self._finish('nav_error')
                     job = None
-                    outcome_kind, snapshot = outcome[0], outcome[1]
+                for outcome in outcomes:
+                    outcome_kind, observed = outcome[0], outcome[1]
+                    # A failed search (or exhausted frontier set) describes the
+                    # map it searched. Do not disarm or blacklist a goal after
+                    # newer geometry has already cleared that obstruction.
+                    failed_plan = (outcome_kind == 'explore_complete' or
+                                   (outcome_kind == 'plan' and not outcome[3].ok))
+                    if (outcome_kind == 'plan' and not outcome[3].ok
+                            and outcome[3].reason in {'sensing_stale', 'map_unknown'}
+                            and map_problem(snapshot, s.map_max_age_s) is None):
+                        last_plan = -math.inf
+                        continue
+                    if (failed_plan and snapshot is not None and observed is not None
+                            and (snapshot.accepted_at or 0.) > (observed.accepted_at or 0.)
+                            and (snapshot.session != observed.session
+                                 or snapshot.origin != observed.origin
+                                 or snapshot.inflation_m != observed.inflation_m
+                                 or snapshot.unknown_traversable != observed.unknown_traversable
+                                 or snapshot.blockers != observed.blockers
+                                 or not np.array_equal(snapshot.cells, observed.cells))):
+                        last_plan = -math.inf
+                        continue
+                    if (snapshot is None or observed is None or observed.session != snapshot.session
+                            or (observed.accepted_at or 0.) >= (snapshot.accepted_at or 0.)):
+                        snapshot = observed
                     if outcome_kind == 'explore_complete':
-                        # A mapped area can have no frontier until more camera
-                        # evidence arrives. Stay in Explore at zero and check again.
                         goal, follower, progress, last_plan = None, None, None, now
                         fast_corridor = False
                         self._show([])
-                        if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                            return self._finish('command_stale')
-                        await asyncio.sleep(period)
                         continue
                     if outcome_kind == 'check' and outcome[2]:
-                        if explore and outcome[2] == 'path_blocked':
-                            follower, progress, last_plan = None, None, -math.inf
-                            fast_corridor = False
-                            self._show([])
-                            if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                return self._finish('command_stale')
-                            await asyncio.sleep(period)
-                            continue
-                        return self._finish(outcome[2])
+                        if outcome[2] == 'path_blocked':
+                            # Keep travelling on the still-clear prefix while a
+                            # replacement route is computed. The command rollout
+                            # below prevents continuing into the obstruction.
+                            last_plan = -math.inf
+                        else:
+                            return self._finish(outcome[2])
                     if outcome_kind == 'plan':
-                        _, _, goal, result = outcome
+                        _, _, next_goal, result = outcome
                         if not result.ok:
                             if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
-                                follower, progress, last_plan = None, None, now
+                                if next_goal is not None and result.reason == 'no_path':
+                                    visited.append(next_goal)
+                                    visited = visited[-64:]
+                                goal = follower = progress = None
+                                last_plan = now - s.replan_s + .5
                                 fast_corridor = False
                                 self._show([])
-                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                    return self._finish('command_stale')
-                                await asyncio.sleep(period)
                                 continue
                             return self._finish(PLAN_STOP_REASONS.get(result.reason, result.reason))
-                        self.goal = goal
+                        goal = self.goal = next_goal
                         if explore and leg_origin is None:
                             leg_origin = (x, z)
                         fast_corridor = result.fast_corridor
                         follower = (follower.replaced(result.points) if follower is not None
                                     else PurePursuit(result.points, s.follower))
+                        last_plan = now
+                        last_check = -math.inf
+                        checked_revision = None  # this new route has not been checked on the newest map
                         self._show(result.points)
 
                 if snapshot is not None:
@@ -407,13 +450,18 @@ class Navigator:
                     if snapshot is None or now - last_plan >= s.replan_s or goal_near:
                         last_plan = now
                         job = asyncio.ensure_future(asyncio.to_thread(
-                            self._plan, occupancy, (x, z), goal, explore, yaw, explore_heading))
-                    elif follower is not None and now - last_check >= s.blocked_check_s:
-                        last_check = now
-                        job = asyncio.ensure_future(asyncio.to_thread(
-                            self._check, occupancy, list(follower.path), follower.segment, snapshot.revision))
+                            self._plan, occupancy, (x, z), goal, explore, yaw, explore_heading, tuple(visited)))
+                if check_job is None and now - last_check >= s.blocked_check_s:
+                    last_check = now
+                    checking_follower = follower
+                    remaining = ([[x, z]] + list(follower.path[follower.segment + 1:])
+                                 if follower is not None else [])
+                    check_job = asyncio.ensure_future(asyncio.to_thread(
+                        self._check, self._occupancy, remaining, 0,
+                        checked_revision))
 
                 v = w = 0.
+                command_blocked = False
                 if follower is not None and snapshot is not None:
                     if not (snapshot.traversable(x, z) or
                             recoverable_start(snapshot, x, z, s.start_recovery_margin_m)):
@@ -436,6 +484,9 @@ class Navigator:
                         if leg_origin is not None and math.hypot(x - leg_origin[0], z - leg_origin[1]) >= 1.2:
                             explore_heading = math.atan2(x - leg_origin[0], z - leg_origin[1])
                         leg_origin = (x, z)
+                        if goal is not None:
+                            visited.append(goal)
+                            visited = visited[-64:]
                         # A replan/check belongs to the frontier just reached. Its
                         # late result must not restore that goal on the next tick.
                         if job is not None:
@@ -449,22 +500,30 @@ class Navigator:
                                 (fast_corridor or straight_runway_m(
                                     follower.path, follower.segment, x, z, yaw) >= .8)):
                             v = .2  # regain cruise on clear straight legs after an obstacle
-                        # Reject a pursuit arc cutting a corner of the footprint-clear path.
-                        heading = yaw + w * period / 2
-                        if not recovery_step_allowed(
+                        def step_allowed(v, w):
+                            heading = yaw + w * period / 2
+                            return recovery_step_allowed(
                                 snapshot, x, z, x + v * math.sin(heading) * period,
-                                z + v * math.cos(heading) * period, s.start_recovery_margin_m):
-                            if explore:
-                                follower, progress, last_plan = None, None, -math.inf
-                                fast_corridor = False
-                                self._show([])
-                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
-                                    return self._finish('command_stale')
-                                await asyncio.sleep(period)
-                                continue
-                            return self._finish('path_blocked')
+                                z + v * math.cos(heading) * period, s.start_recovery_margin_m)
 
-                if v or w:
+                        if not step_allowed(v, w):
+                            # A long carrot may lie beyond an inside corner even
+                            # though the grid route is clear. Track the nearby
+                            # route and align before translating through it.
+                            corner_config = replace(follower.config,
+                                lookahead_m=min(.15, follower.config.lookahead_m),
+                                rotate_in_place_rad=min(.35, follower.config.rotate_in_place_rad),
+                                rotate_exit_rad=min(.1, follower.config.rotate_exit_rad))
+                            follower = replace(follower, config=corner_config)
+                            command = follower.step(x, z, yaw)
+                            v, w = command.v_mps, command.yaw_rate_rps
+                            fast_corridor = False
+                            if not step_allowed(v, w):
+                                v = w = 0.
+                                command_blocked = True
+                                last_plan = -math.inf
+
+                if v or w or command_blocked:
                     if progress is None or (math.hypot(x - progress[0], z - progress[1]) >= s.progress_m
                                             or abs(math.remainder(yaw - progress[2], math.tau)) >= s.progress_rad):
                         progress = (x, z, yaw, now)
@@ -481,3 +540,5 @@ class Navigator:
         finally:
             if job is not None:
                 job.cancel()
+            if check_job is not None:
+                check_job.cancel()

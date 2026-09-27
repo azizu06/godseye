@@ -108,24 +108,42 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(state.auto_requested)
 
-    def test_fixed_power_forward_arcs_and_no_reverse_or_rate_claims(self):
+    def test_bounded_forward_arcs_and_no_reverse_or_rate_claims(self):
         profile = PrototypeActuation()
         for v, w, direction in [(.05, 0., 3), (0., .2, 1), (0., -.2, 2)]:
             command = profile.command(v, w)
             self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 1500))
-        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 180))
-        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 180))
+        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 140))
+        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 140))
         self.assertIsNone(profile.command(0., 0.))
         self.assertIsNone(profile.stopping_distance_m)
         for v, w in [(-.01, 0.), (.21, 0.), (0., .51), (math.nan, 0.)]:
             with self.assertRaises(ValueError): profile.command(v, w)
 
-    def test_open_straight_cruise_has_more_power_than_slow_approach_or_pivot(self):
+    def test_forward_power_changes_gradually_across_the_requested_speed_range(self):
         profile = PrototypeActuation()
-        self.assertEqual(profile.command(.05, 0.).pwm, 60)
+        powers = [profile.command(speed / 1000, 0.).pwm for speed in range(50, 201)]
+        self.assertEqual((powers[0], powers[100], powers[-1]), (60, 140, 180))
+        self.assertTrue(all(0 <= after - before <= 1 for before, after in zip(powers, powers[1:])))
+        self.assertEqual(profile.command(.001, 0.).pwm, 60)
+
+    def test_steering_threshold_does_not_raise_power_during_slow_approach(self):
+        profile = PrototypeActuation()
+        for speed in (.05, .075, .1, .15, .18, .2):
+            straight = profile.command(speed, 0.)
+            for yaw in (-.5, -.15, -.149, .149, .15, .5):
+                with self.subTest(speed=speed, yaw=yaw):
+                    self.assertEqual(profile.command(speed, yaw).pwm, straight.pwm)
         self.assertEqual(profile.command(0., .5).pwm, 60)
-        self.assertEqual(profile.command(.15, 0.).pwm, 60)
-        self.assertEqual(profile.command(.2, 0.).pwm, 180)
+        self.assertEqual(profile.command(0., -.5).pwm, 60)
+
+    def test_open_path_follower_requests_full_cruise_without_slowing_for_heading_noise(self):
+        profile = PrototypeActuation()
+        for yaw in (-.05, 0., .05):
+            follower = PurePursuit([(0., 0.), (0., 3.)], profile.follower())
+            command = follower.step(0., .5, yaw)
+            self.assertEqual(command.v_mps, .2)
+            self.assertEqual(profile.command(command.v_mps, command.yaw_rate_rps).pwm, 180)
 
     def test_small_heading_noise_follows_with_a_moving_turn(self):
         path = [(0., 0.), (0., 3.)]
@@ -152,5 +170,5 @@ class PrototypeTests(unittest.TestCase):
             car.send(DriveCommand(session_id=session, seq=seq, v_mps=.15, yaw_rate_rps=0.,
                                   issued_at_ms=round(now[0]*1000), valid_for_ms=250))
             packet = car.next_message()
-            self.assertEqual((packet['power'], packet['lease_ms']), (60, 1500))
+            self.assertEqual((packet['power'], packet['lease_ms']), (140, 1500))
             self.assertEqual(car.armed_session, session.upper())
