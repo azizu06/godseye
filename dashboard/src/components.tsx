@@ -1,3 +1,4 @@
+import { explorationPresentation } from "./exploration";
 import { serializeSurface } from "./surfaceColor";
 import type { SurfacePatch } from "./surfaceTypes";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -548,6 +549,7 @@ export function OperatorControls({
   const armed = !!health?.armed;
   const canStop = controller.requiresStop;
   const physical = autonomy?.adapter === "iphone";
+  const exploration = explorationPresentation(health, stale, mission.mapKey);
   const allHealthy =
     !stale &&
     health?.phone === "ok" &&
@@ -629,6 +631,22 @@ export function OperatorControls({
           )}
         </div>
       )}
+      {exploration && (
+        <div
+          className={`exploration-status ${exploration.tone}`}
+          role="status"
+          aria-label="Explore scan status"
+          title={exploration.detail}
+        >
+          <span>{exploration.title}</span>
+          {!compact && (
+            <>
+              <p>{exploration.detail}</p>
+              {exploration.progress && <small>{exploration.progress}</small>}
+            </>
+          )}
+        </div>
+      )}
       <div className="operator-content">
         <div className="mode-control">
           <span className="eyebrow">CONTROL MODE</span>
@@ -670,10 +688,14 @@ export function OperatorControls({
             ))}
           </div>
           <p>
-            {physical
-              ? "Select Navigate, arm, then click a mapped destination. Manual driving stays on the phone."
-              : health?.mode === "explore"
-                ? "Exploration requires backend support"
+            {health?.mode === "explore"
+              ? health.exploration
+                ? config.commands
+                  ? "Exploration follows backend scan planning. Stop remains available."
+                  : "Enable REST commands to control exploration."
+                : "Exploration requires backend support"
+              : physical
+                ? "Select Navigate, arm, then click a mapped destination. Manual driving stays on the phone."
                 : "Arrow keys to steer · click the map to navigate"}
           </p>
         </div>

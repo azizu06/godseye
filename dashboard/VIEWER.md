@@ -57,3 +57,7 @@ For the paired iPhone adapter, Arm sends an explicit request whenever commands
 are enabled and no command is pending. It does not duplicate backend readiness
 gates using delayed viewer telemetry; `/arm` checks current readiness and reports
 rejections. The logging-only adapter retains its existing disabled-state checks.
+
+## Experimental Explore status
+
+An optional `health.exploration` extension reports the backend scan phase beside the existing Explore controls in the Rover controls drawer, with the stop reason and actual stable-view/surface-voxel counts. The minimal spatial canvas is unchanged. Counts are observations, not room coverage or a completion percentage. `scan_diminishing_returns` displays “Scan settled” and explains that recent reachable views added little new detail; this is a heuristic stopping point, not exhaustive coverage. Only `scan_accessible_exhausted` displays “Accessible scan done”; blocked or budget-limited scans remain partial, and unseen areas may remain even after accessible viewpoints are exhausted. Stale health, mismatched map identity, missing extensions and disarmed active phases never claim current motion. This presentation does not arm, dispatch or resume a scan.
