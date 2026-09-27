@@ -240,7 +240,10 @@ class RelayCar:
 
         async def receiver():
             while True:
-                text = await asyncio.wait_for(ws.receive_text(), .4)
+                # Idle transport may survive Wi-Fi jitter. Motion still requires
+                # <200 ms feedback, fresh permits, and the existing arm barrier.
+                timeout = .4 if self.armed_session is not None else 3.
+                text = await asyncio.wait_for(ws.receive_text(), timeout)
                 if len(text) > 2048:
                     raise ValueError('Rover message too large')
                 import json

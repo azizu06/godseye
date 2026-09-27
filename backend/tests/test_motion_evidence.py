@@ -198,3 +198,17 @@ class ReceiptAgeTests(unittest.TestCase):
                     phone.send_bytes(fresh(packet))
                     wait_for(lambda: client.app.state.map_stats['discarded_order'] >= 1)
                     self.assertEqual(float(np.max(grid.map_snapshot().free_at)), stamped)
+
+class RetainedFloorTests(unittest.TestCase):
+    def test_cached_floor_height_does_not_refresh_clearance_or_remove_motion_hazard(self):
+        from unittest.mock import patch
+        grid = OccupancyGrid(('TEST',1), calibration=RoverCalibration.model_validate(TEST_CALIBRATION))
+        for _ in range(3):
+            grid.add(plane(-1,1,-1,1,-1.2),time.monotonic()-3)
+        self.assertTrue(grid.map_snapshot().ready)  # remembers actually observed height
+        with patch('backend.occupancy.estimate_floor',return_value=None):
+            grid.add(np.array([[.025,-.95,.025]]),time.monotonic())
+            snapshot=grid.map_snapshot()
+            self.assertTrue(snapshot.ready)
+            self.assertEqual(snapshot.cell(.025,.025),2)
+            self.assertFalse(snapshot.fresh_clearance(-.5,-.5,time.monotonic(),1.))

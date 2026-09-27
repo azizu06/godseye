@@ -21,6 +21,7 @@ final class RoverAutonomyLink: ObservableObject {
     private var busySince = 0.0
     private var sending = false
     private var serverReady = false
+    private var armed = false
     private var acknowledgements: [[String: Any]] = []
     private var pendingStatus: [String: Any]?
     private var now: Double { ProcessInfo.processInfo.systemUptime }
@@ -43,7 +44,7 @@ final class RoverAutonomyLink: ObservableObject {
             return
         }
         self.rover = rover; self.capture = capture; identity = snapshot.identity
-        enabled = true; sequence = 0; lastServer = now; serverReady = false
+        enabled = true; sequence = 0; lastServer = now; serverReady = false; armed = false
         status = "Connecting laptop control…"
         let token = generation
         rover.onAutonomyReply = { [weak self] reply in self?.feedback(reply) }
@@ -72,7 +73,7 @@ final class RoverAutonomyLink: ObservableObject {
         rover?.onAutonomyReply = nil; rover?.onAutonomyLoss = nil
         rover?.stop()
         rover = nil; capture = nil; identity = nil
-        acknowledgements.removeAll(); pendingStatus = nil; sending = false; serverReady = false
+        acknowledgements.removeAll(); pendingStatus = nil; sending = false; serverReady = false; armed = false
         status = reason
     }
 
@@ -92,9 +93,9 @@ final class RoverAutonomyLink: ObservableObject {
         // before sending feedback or applying the active transport deadlines.
         if !serverReady {
             if now - lastServer > 3 { disconnect(reason: "Stopped · laptop handshake timed out") }
-        } else if sending && now - busySince > 0.2 {
+        } else if sending && now - busySince > (armed ? 0.2 : 1.5) {
             disconnect(reason: "Stopped · laptop send timed out")
-        } else if now - lastServer > 0.5 {
+        } else if now - lastServer > (armed ? 0.5 : 3.0) {
             disconnect(reason: "Stopped · laptop heartbeat timed out")
         }
     }
@@ -126,6 +127,8 @@ final class RoverAutonomyLink: ObservableObject {
                               self.rover?.acceptAutonomy(command) == true else {
                             throw AutonomyCommand.Error.invalidCommand
                         }
+                        if command.type == .arm { self.armed = true }
+                        if command.type == .stop { self.armed = false }
                         self.lastServer = self.now
                         self.status = command.type == .arm ? "Arming rover…" :
                             command.type == .stop ? "Stopped · arm from laptop when ready" : "Laptop controlling rover"
@@ -155,6 +158,7 @@ final class RoverAutonomyLink: ObservableObject {
             pendingStatus = nil
             acknowledgements.append(["version": 1, "type": "ack", "id": "Z" + id])
         case .retired:
+            armed = false
             acknowledgements.append(["version": 1, "type": "retired"])
             status = "Stopped · rover session retired"
         default: return

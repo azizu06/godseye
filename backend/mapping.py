@@ -27,10 +27,11 @@ class PointChunk:
 
 
 def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: int = 16,
-                    min_depth_m: float = .05, max_depth_m: float = 5.) -> PointChunk:
+                    min_depth_m: float = .05, max_depth_m: float = 5., min_confidence: int = 2) -> PointChunk:
     """Back-project high-confidence depth pixels to ARKit world meters.
 
-    Keeps finite depth in [min_depth_m, max_depth_m] whose confidence is 2, then
+    Keeps finite depth in [min_depth_m, max_depth_m] at the requested confidence
+    (high by default; medium is opt-in for temporally accumulated evidence), then
     takes at most max_points evenly spaced samples (deterministic, bounded output).
     Depth pixel centers map to JPEG coordinates with independent width/height
     scales; intrinsics are already JPEG-scaled. Geometry matches
@@ -41,10 +42,12 @@ def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: i
         raise ValueError('invalid point limits')
     if not 0 < min_depth_m < max_depth_m:
         raise ValueError('invalid depth range')
+    if type(min_confidence) is not int or min_confidence not in (1, 2):
+        raise ValueError('depth confidence must be medium or high')
     depth, confidence = frame.depth, frame.confidence
     dh, dw = depth.shape
     with np.errstate(invalid='ignore'):  # NaN compares false, which is the point
-        valid = (confidence == 2) & (depth >= min_depth_m) & (depth <= max_depth_m)
+        valid = (confidence >= min_confidence) & (depth >= min_depth_m) & (depth <= max_depth_m)
     indices = np.flatnonzero(valid)
     if indices.size < min_points:
         raise MappingError('insufficient valid high-confidence depth')

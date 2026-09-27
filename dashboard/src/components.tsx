@@ -608,6 +608,15 @@ export function OperatorControls({
               ? "iPhone · Bluetooth rover"
               : "Rover motion is not connected"}
           </strong>
+          {autonomy.profile === "prototype" && (
+            <p>
+              <strong>Uncalibrated prototype</strong>
+              <br />
+              Estimated geometry; motor power matches the phone manual default.
+              Keep the rover in an open area and use Stop if it turns the wrong
+              way.
+            </p>
+          )}
           <p>
             {autonomy.ready ? "Ready for explicit arming." : "Before driving:"}
           </p>
@@ -690,7 +699,12 @@ export function OperatorControls({
             className={`button ${canStop ? "stop-button" : "primary"}`}
             aria-label={canStop ? "STOP ROVER" : "Arm rover"}
             title={canStop ? "Stop rover" : "Arm rover"}
-            disabled={!canStop && (!available || !!pending || !allHealthy)}
+            disabled={
+              !canStop &&
+              (!available ||
+                !!pending ||
+                (physical ? !config.roverKey : !allHealthy))
+            }
             onClick={() => void command(canStop ? "/stop" : "/arm")}
           >
             {canStop ? (
@@ -703,9 +717,13 @@ export function OperatorControls({
           <span>
             {!available
               ? "Telemetry-only source"
-              : !allHealthy
-                ? "Waiting for healthy components"
-                : "Explicit arming required"}
+              : physical
+                ? !config.roverKey
+                  ? "Enter the rover pairing key in Connection settings"
+                  : "Click Arm to check current readiness and start"
+                : !allHealthy
+                  ? "Waiting for healthy components"
+                  : "Explicit arming required"}
           </span>
         </div>
       </div>

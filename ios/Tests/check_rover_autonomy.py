@@ -83,7 +83,7 @@ final class CaptureController {
 '''
 
 
-async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
+async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False, idle_delay=0.):
     completed = asyncio.Event()
     failures = []
     async def phone(ws):
@@ -97,6 +97,7 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
             await asyncio.sleep(handshake_delay)
             stop_id = 'TESTAUTONOMYSTOP'
             await ws.send(json.dumps(dict(version=1, type='stop', id=stop_id)))
+            idle_until = asyncio.get_running_loop().time() + idle_delay
             phase, stop_ack, arm_ack = 'stopping', False, False
             previous, commands = 0, 0
             async for raw in ws:
@@ -109,7 +110,7 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
                     assert message['seq'] > previous and message['enabled'] is True
                     assert 0 <= message['uno_age_ms'] < 1500
                     previous = message['seq']
-                    if phase == 'stopping' and stop_ack:
+                    if phase == 'stopping' and stop_ack and asyncio.get_running_loop().time() >= idle_until:
                         await ws.send(json.dumps(dict(version=1, type='arm', session=SESSION,
                                                      permit=message['permit'])))
                         phase = 'arming'
@@ -119,7 +120,7 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
                             permit=message['permit'], seq=commands, direction=3, power=40, lease_ms=200)))
                         if heartbeat_loss:
                             phase = 'silent'
-                    elif phase != 'silent':
+                    elif phase != 'silent' and asyncio.get_running_loop().time() >= idle_until:
                         await ws.send(json.dumps(dict(version=1, type='heartbeat')))
             assert stop_ack and arm_ack and commands > 0
         except Exception as error:
@@ -142,4 +143,5 @@ async def check(handshake_delay=0., heartbeat_loss=False, handshake_loss=False):
 if __name__ == '__main__':
     asyncio.run(check())
     asyncio.run(check(handshake_delay=.8, heartbeat_loss=True))
+    asyncio.run(check(idle_delay=1.2))
     asyncio.run(check(handshake_loss=True))

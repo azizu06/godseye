@@ -52,3 +52,8 @@ Disconnect preserves geometry, clears current pose/health/path and pauses captur
 Unit coverage includes native depth holes, planar/color preservation, incremental mesh buffers, two-million-point bounds and coverage restoration. Browser suites cover early preview, delayed captures, source/reset races, reconnects, retained color and mission lifecycle. `backend.tests.test_surface_preview` and `test_map_transport` cover exact preview bytes, freshness, binary negotiation and v1 compatibility. Swift core and backend contract tests cover capture/upload scheduling. These synthetic checks do not establish sustained physical-phone FPS or wireless throughput. The default hardware adapter remains logging-only and cannot arm.
 
 Run `node dashboard/tools/benchmark-retained-map.mjs` from the repository root after installing dashboard dependencies to compare against main at `ed940f8` (or pass another baseline ref). The fixture accumulates 100 batches of 1,200 disconnected triangles, below capacity, and requires identical final geometry and colors. On the development Mac, median integration/update preparation was 197.5 ms before and 12.5 ms after; p95 was 473.7 ms before and 32.7 ms after. Worker payloads totaled 509.0 MB before and 10.1 MB after. These are synthetic CPU and transfer measurements, not end-to-end FPS.
+
+For the paired iPhone adapter, Arm sends an explicit request whenever commands
+are enabled and no command is pending. It does not duplicate backend readiness
+gates using delayed viewer telemetry; `/arm` checks current readiness and reports
+rejections. The logging-only adapter retains its existing disabled-state checks.
