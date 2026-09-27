@@ -115,19 +115,28 @@ export function explorationPresentation(
       tone: "neutral",
     };
   const progress = `${scan.observed_views.toLocaleString()} stable views · ${scan.gained_surface_voxels.toLocaleString()} new surface voxels`;
-  if (scan.phase === "complete")
-    return scan.reason === "scan_accessible_exhausted"
-      ? {
-          title: "Accessible scan done",
-          detail: "Accessible viewpoints exhausted. Unseen areas may remain.",
-          progress,
-          tone: "neutral",
-        }
-      : {
-          title: "Scan status unavailable",
-          detail: reasonText(scan.reason),
-          tone: "warning",
-        };
+  if (scan.phase === "complete") {
+    if (scan.reason === "scan_accessible_exhausted")
+      return {
+        title: "Accessible scan done",
+        detail: "Accessible viewpoints exhausted. Unseen areas may remain.",
+        progress,
+        tone: "neutral",
+      };
+    if (scan.reason === "scan_diminishing_returns")
+      return {
+        title: "Scan settled",
+        detail:
+          "Recent reachable views added little new detail. Unseen areas may remain.",
+        progress,
+        tone: "neutral",
+      };
+    return {
+      title: "Scan status unavailable",
+      detail: reasonText(scan.reason),
+      tone: "warning",
+    };
+  }
   if (scan.phase === "blocked")
     return {
       title: "Partial scan · blocked",

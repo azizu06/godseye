@@ -80,6 +80,15 @@ test("Explore shows scoped backend phases and honest partial completion without 
   );
   await expect(detail).toContainText("Accessible scan done");
   await expect(detail).toContainText("Unseen areas may remain");
+  send(
+    { phase: "complete", reason: "scan_diminishing_returns" },
+    { armed: false },
+  );
+  await expect(detail).toContainText("Scan settled");
+  await expect(detail).toContainText(
+    "Recent reachable views added little new detail. Unseen areas may remain.",
+  );
+  await expect(detail).not.toContainText("exhausted");
   send({ phase: "blocked", reason: "scan_search_limit" }, { armed: false });
   await expect(detail).toContainText("Partial scan · blocked");
   send({}, { exploration: undefined });

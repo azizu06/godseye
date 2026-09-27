@@ -113,6 +113,32 @@ describe("truthful scan presentation", () => {
       })?.title,
     ).not.toBe("Accessible scan done");
   });
+  it("distinguishes diminishing returns from exhaustive or complete room coverage", () => {
+    const settled = present({
+      armed: false,
+      exploration: scan({
+        phase: "complete",
+        reason: "scan_diminishing_returns",
+      }),
+    });
+    expect(settled?.title).toBe("Scan settled");
+    expect(settled?.detail).toBe(
+      "Recent reachable views added little new detail. Unseen areas may remain.",
+    );
+    expect(settled?.progress).toBe("4 stable views · 98 new surface voxels");
+    expect(JSON.stringify(settled)).not.toMatch(/exhausted|room complete|%/i);
+    expect(
+      present(
+        {
+          exploration: scan({
+            phase: "complete",
+            reason: "scan_diminishing_returns",
+          }),
+        },
+        true,
+      )?.title,
+    ).toBe("Explore status stale");
+  });
   it("never reports movement or completion from stale or another map's status", () => {
     expect(present({}, true)?.title).toBe("Explore status stale");
     expect(present({}, false, '["room",2]')?.title).toBe(
