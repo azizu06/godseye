@@ -525,6 +525,25 @@ export function EventList({
     </div>
   );
 }
+const navigationWaitMessages: Record<string, string> = {
+  sensing_stale: "Waiting for fresh depth observations from the phone.",
+  detector_stale: "Waiting for fresh detections from the camera.",
+  phone_stale: "Waiting for fresh phone tracking and observations.",
+  car_stale: "Waiting for fresh rover feedback.",
+  map_unknown: "Waiting for usable map evidence.",
+  no_floor: "Waiting for floor evidence in the map.",
+  start_blocked:
+    "An obstacle is within the rover’s starting clearance. Waiting for updated map evidence.",
+  no_feasible_step:
+    "No safe next move on the current route. Waiting for changed map or pose evidence.",
+  explore_complete:
+    "No reachable frontiers in the current map. Waiting for new map evidence.",
+  no_path:
+    "No clear route to the current frontier. Retrying exploration planning.",
+  search_limit:
+    "The planning limit was reached. Retrying exploration planning.",
+};
+
 export function OperatorControls({
   controller,
   compact = false,
@@ -546,6 +565,12 @@ export function OperatorControls({
   const health = mission.health,
     available = config.commands;
   const armed = !!health?.armed;
+  const waitReason =
+    armed && health?.mode === "explore" ? health.navigation_wait_reason : null;
+  const waitMessage = waitReason
+    ? (navigationWaitMessages[waitReason] ??
+      `Waiting: ${waitReason.replaceAll("_", " ")}.`)
+    : null;
   const canStop = controller.requiresStop;
   const physical = autonomy?.adapter === "iphone";
   const allHealthy =
@@ -600,13 +625,20 @@ export function OperatorControls({
           <i />
           {!health
             ? "Waiting for status"
-            : armed
-              ? "Armed"
-              : autonomy?.auto_requested
-                ? "Explore resuming"
-                : "Disarmed"}
+            : waitReason
+              ? "Explore waiting · armed"
+              : armed
+                ? "Armed"
+                : autonomy?.auto_requested
+                  ? "Explore resuming"
+                  : "Disarmed"}
         </span>
       </div>
+      {waitMessage && (
+        <p className="drawer-note navigation-wait" role="status">
+          {waitMessage} Explore remains armed; use Stop to cancel.
+        </p>
+      )}
       {!armed && health?.stop_reason && !autonomy?.auto_requested && (
         <p className="drawer-note" role="status">
           Last stop:{" "}
@@ -632,11 +664,13 @@ export function OperatorControls({
             </p>
           )}
           <p>
-            {autonomy.auto_requested && !armed
-              ? "Explore is still on. Motors are stopped while the phone, rover, and map recover."
-              : autonomy.ready
-                ? "Ready for explicit arming."
-                : "Before driving:"}
+            {waitReason
+              ? "Exploration is waiting."
+              : autonomy.auto_requested && !armed
+                ? "Explore is still on. Motors are stopped while the phone, rover, and map recover."
+                : autonomy.ready
+                  ? "Ready for explicit arming."
+                  : "Before driving:"}
           </p>
           {!autonomy.ready && (
             <ul>
@@ -737,13 +771,15 @@ export function OperatorControls({
           <span>
             {!available
               ? "Telemetry-only source"
-              : physical
-                ? !(config.roverKey || config.serverPaired)
-                  ? "Enter the rover pairing key in Connection settings"
-                  : "Click Arm to check current readiness and start"
-                : !allHealthy
-                  ? "Waiting for healthy components"
-                  : "Explicit arming required"}
+              : waitReason
+                ? "Explore remains armed while waiting"
+                : physical
+                  ? !(config.roverKey || config.serverPaired)
+                    ? "Enter the rover pairing key in Connection settings"
+                    : "Click Arm to check current readiness and start"
+                  : !allHealthy
+                    ? "Waiting for healthy components"
+                    : "Explicit arming required"}
           </span>
         </div>
       </div>
