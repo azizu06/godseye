@@ -218,12 +218,17 @@ export default function App() {
     "start" in approach.route
       ? {
           start: approach.route.start,
+          startKind: approach.route.automatic
+            ? ("mission" as const)
+            : ("operator" as const),
           points: routeResult?.status === "ok" ? routeResult.points : null,
           approach: routeResult?.status === "ok" ? routeResult.approach : null,
         }
       : null;
-  const pickingRouteStart = approach.route.phase === "picking";
+  const pickingRouteStart =
+    approach.route.phase === "picking" && !approach.route.automatic;
   const select = (id: string) => {
+    approach.selectPerson(id);
     setSelected(id);
     setPanel("intelligence");
   };
@@ -350,12 +355,6 @@ export default function App() {
         showBoxes={controls.boxes}
         showLabels={controls.labels}
         handle={sceneHandle}
-      />
-      <ApproachRouteCard
-        state={approach.route}
-        personLastSeen={approach.person?.last_seen ?? null}
-        now={now}
-        onClear={approach.clear}
       />
       <DetectionOverlay
         detections={mission.detections}
@@ -570,34 +569,44 @@ export default function App() {
           )}
         </aside>
       )}
-      <VoiceAsk config={config} onActions={actions.run}>
-        {(controls.classes || !controls.boxes || !controls.labels) && (
-          <div className="view-filter" data-testid="view-filter">
-            <span>
-              {controls.classes
-                ? `Showing ${controls.classes.map(className).join(", ")}`
-                : "Showing all classes"}
-              {!controls.boxes && " · boxes hidden"}
-              {!controls.labels && " · labels hidden"}
-              {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
-              {hidden.people > 0 &&
-                `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
-            </span>
-            <button
-              onClick={() =>
-                actions.setControls((c) => ({
-                  ...c,
-                  classes: null,
-                  boxes: true,
-                  labels: true,
-                }))
-              }
-            >
-              Show all
-            </button>
-          </div>
-        )}
-      </VoiceAsk>
+      <div className="mission-overlays">
+        <ApproachRouteCard
+          state={approach.route}
+          personLastSeen={approach.person?.last_seen ?? null}
+          now={now}
+          onClear={approach.clear}
+          personFound={approach.personFound}
+          peopleCount={approach.peopleCount}
+        />
+        <VoiceAsk config={config} onActions={actions.run}>
+          {(controls.classes || !controls.boxes || !controls.labels) && (
+            <div className="view-filter" data-testid="view-filter">
+              <span>
+                {controls.classes
+                  ? `Showing ${controls.classes.map(className).join(", ")}`
+                  : "Showing all classes"}
+                {!controls.boxes && " · boxes hidden"}
+                {!controls.labels && " · labels hidden"}
+                {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
+                {hidden.people > 0 &&
+                  `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
+              </span>
+              <button
+                onClick={() =>
+                  actions.setControls((c) => ({
+                    ...c,
+                    classes: null,
+                    boxes: true,
+                    labels: true,
+                  }))
+                }
+              >
+                Show all
+              </button>
+            </div>
+          )}
+        </VoiceAsk>
+      </div>
       <NavigationProposals controller={controller} />
       {notice && (
         <div className="toast" role="status">

@@ -98,6 +98,20 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 
+`health` optionally includes `mission_entry` (also in `GET /health` and arm responses):
+`null`, or `{ session_id, map_epoch, start: [x,z], frame_id, t_capture, started_at_ms,
+basis: "explore_start" }`. It is the measured camera-floor projection at the first
+successful Explore arm, fixed before Explore can move. `frame_id` and `t_capture`
+identify that accepted phone pose; `started_at_ms` is backend wall time in milliseconds.
+The nested session/epoch must match the viewer's active source/map before use.
+Missing, null, malformed or mismatched entries are unavailable, never a fallback to
+current position or the AR origin. The entry persists across Stop/rearm and same-map
+reconnect/restart; a new session/epoch has none until its first successful Explore.
+Legacy/restarted sessions without a recorded entry are not backfilled: start a new
+session at the intended entry point. This metadata changes no motion authority or
+walking-clearance assumptions; `/route` remains the existing visualization-only API.
+
+
 ## 3. Dashboard → Mac: REST on `http://<mac>:8765`
 
 | Method | Path | Body | Does |

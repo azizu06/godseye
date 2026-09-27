@@ -613,6 +613,9 @@ export function Map2D({
   onSelect,
   canGoal,
   onGoal,
+  approachRoute,
+  pickingRouteStart,
+  onRouteStart,
 }: SceneProps) {
   const grid = mission.occupancy;
   const cells = useMemo(
@@ -622,6 +625,9 @@ export function Map2D({
   const all = [
     ...mission.objects.map((o) => [o.position[0], o.position[2]]),
     ...mission.path,
+    ...(approachRoute
+      ? [approachRoute.start, ...(approachRoute.points ?? [])]
+      : []),
     ...(mission.pose
       ? scopeArc().map(([x, , z]) => {
           const p = mission.pose!;
@@ -661,11 +667,11 @@ export function Map2D({
     .at(-1);
   return (
     <svg
-      className={`map2d ${canGoal ? "goal-cursor" : ""}`}
+      className={`map2d ${canGoal || pickingRouteStart ? "goal-cursor" : ""}`}
       aria-label="Top-down occupancy map"
       viewBox={`${minX} ${minZ} ${maxX - minX} ${maxZ - minZ}`}
       onClick={(e) => {
-        if (!canGoal) return;
+        if (!canGoal && !pickingRouteStart) return;
         const svg = e.currentTarget,
           point = svg.createSVGPoint();
         point.x = e.clientX;
@@ -673,7 +679,8 @@ export function Map2D({
         const matrix = svg.getScreenCTM();
         if (matrix) {
           const p = point.matrixTransform(matrix.inverse());
-          onGoal(p.x, p.y);
+          if (pickingRouteStart) onRouteStart(p.x, p.y);
+          else onGoal(p.x, p.y);
         }
       }}
     >
@@ -734,6 +741,53 @@ export function Map2D({
           strokeWidth=".04"
           strokeDasharray=".12 .08"
         />
+      )}
+      {approachRoute && (
+        <g pointerEvents="none" fill="#ffcf91">
+          <rect
+            x={approachRoute.start[0] - 0.08}
+            y={approachRoute.start[1] - 0.08}
+            width=".16"
+            height=".16"
+          />
+          <text
+            data-testid="route-start-label"
+            x={approachRoute.start[0] + 0.13}
+            y={approachRoute.start[1] - 0.12}
+            fontSize=".14"
+          >
+            {approachRoute.startKind === "mission"
+              ? "MISSION ENTRY · fixed"
+              : "START · operator-selected"}
+          </text>
+          {approachRoute.points && (
+            <polyline
+              data-testid="approach-route-2d"
+              points={approachRoute.points.map((p) => p.join(",")).join(" ")}
+              fill="none"
+              stroke="#ffb866"
+              strokeWidth=".065"
+            />
+          )}
+          {approachRoute.approach && (
+            <>
+              <circle
+                cx={approachRoute.approach[0]}
+                cy={approachRoute.approach[1]}
+                r=".1"
+                fill="#ffb866"
+              />
+              <text
+                data-testid="route-approach-label"
+                x={approachRoute.approach[0] + 0.14}
+                y={approachRoute.approach[1] - 0.12}
+                fontSize=".14"
+              >
+                APPROACH POINT · suggested
+              </text>
+            </>
+          )}
+        </g>
       )}
       {last?.old_position && last.new_position && (
         <line

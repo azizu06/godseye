@@ -420,6 +420,62 @@ class RouteEvidenceTests(unittest.TestCase):
             self.assertIsNone(client.app.state.approach_view)
             self.assertEqual(self.request(client, session, person).json()['reason'], 'person_unconfirmed')
 
+    def test_identical_concurrent_viewers_share_valid_result_but_not_changed_evidence(self):
+        for change in ('none', 'blocked', 'disconnect', 'reset'):
+            with self.subTest(change=change), TestClient(create_app(':memory:', capture_directory='')) as client, \
+                    client.websocket_connect('/phone') as phone:
+                phone.send_json(hello('shared-route'))
+                wait_for(lambda: client.app.state.session == ('shared-route', 1))
+                session = ('shared-route', 1)
+                grid = Grid2D(session, room())
+                client.portal.call(lambda: setattr(client.app.state, 'occupancy', grid))
+                person = person_at(client, session, (3., .4, 3.))
+                started, release = threading.Event(), threading.Event()
+                first = True
+
+                def delayed_first(*args):
+                    nonlocal first
+                    delay = first
+                    first = False
+                    result = approach_route(*args)
+                    if delay:
+                        started.set()
+                        self.assertTrue(release.wait(5))
+                    return result
+
+                responses = []
+                with mock.patch('backend.app.approach_route', delayed_first):
+                    worker = threading.Thread(target=lambda: responses.append(self.request(client, session, person)))
+                    worker.start()
+                    self.assertTrue(started.wait(5))
+                    try:
+                        newer = self.request(client, session, person).json()
+                        self.assertEqual(newer['status'], 'ok')
+                        cached = client.app.state.approach_view
+                        if change == 'blocked':
+                            grid.cells = grid.cells.copy()
+                            grid.cells[25:45, 25:45] = OCCUPIED
+                            grid.revision += 1
+                        elif change == 'disconnect':
+                            phone.close()
+                            wait_for(lambda: client.app.state.phone is None)
+                        elif change == 'reset':
+                            client.post('/session')
+                    finally:
+                        release.set()
+                        worker.join(5)
+                self.assertFalse(worker.is_alive())
+                if change == 'none':
+                    self.assertEqual(responses[0].json()['status'], 'ok')
+                    self.assertIs(client.app.state.approach_view, cached)
+                elif change == 'reset':
+                    self.assertEqual(responses[0].status_code, 409)
+                else:
+                    old = responses[0].json()
+                    self.assertEqual(old['status'], 'unavailable')
+                    self.assertEqual(old['reason'], 'map_changed' if change == 'blocked' else 'route_evidence_changed')
+                    self.assertNotIn('points', old)
+
 
 if __name__ == '__main__':
     unittest.main()

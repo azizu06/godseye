@@ -34,6 +34,7 @@ from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_
                              points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
 from backend.moves import MoveRunner, MoveSettings, register_move_routes
+from backend.mission_entry import load_entry, record_entry
 from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
@@ -252,6 +253,10 @@ def create_app(db_path: str | None = None, build_points=None,
         db.executescript(Path(__file__).with_name('schema.sql').read_text())
         app.state.db = db
         app.state.objects = ObjectMemory(db)
+        app.state.mission_entry = load_entry(db, app.state.objects.latest_session())
+        # A pre-existing scan without metadata may already have moved. Never
+        # manufacture its entry on a later arm after a restart/storage failure.
+        app.state.mission_entry_attempted = app.state.objects.latest_session() is not None
         app.state.changes = ChangeTracker(db, app.state.objects)
         if detector is None and weights:
             from backend.detector import MPSDetector
@@ -268,6 +273,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.approach_view = None
         app.state.approach_basis = None  # fingerprint of the occupancy cells it was planned on
         app.state.route_requests = 0
+        app.state.route_selection = None
         app.state.route_lifecycle = 0
         app.state.session = None
         app.state.phone = None
@@ -480,7 +486,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 detector = 'ok'
         return dict(version=1, type='health', phone=phone, car=car_health(), detector=detector,
                     pose_age_ms=age, mode=app.state.mode, armed=app.state.armed,
-                    stop_reason=app.state.stop_reason)
+                    stop_reason=app.state.stop_reason, mission_entry=app.state.mission_entry)
 
     def car_health():
         try:
@@ -809,6 +815,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 publish(health())
 
     def set_session(session):
+        previous_session = app.state.session
         stop('session_reset')
         app.state.autonomy_map = None
         if app.state.session != session:
@@ -829,9 +836,13 @@ def create_app(db_path: str | None = None, build_points=None,
             # viewer receive a previous map's queued state beside new points.
             while not listener.queue.empty():
                 listener.queue.get_nowait()
-        app.state.db.execute('INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
-                             (*session, int(time.time()*1000)))
+        inserted = app.state.db.execute(
+            'INSERT OR IGNORE INTO sessions(session_id,map_epoch,created_at_ms) VALUES(?,?,?)',
+            (*session, int(time.time()*1000))).rowcount
         app.state.db.commit()
+        app.state.mission_entry = load_entry(app.state.db, session)
+        if previous_session != session:
+            app.state.mission_entry_attempted = not inserted
         app.state.changes.activate(session)
         publish(health())
         publish(objects_message(session))
@@ -943,6 +954,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     app.state.arm_request_token = None
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
+        entry_pose = app.state.pose  # the exact pose accepted by this readiness check
         app.state.armed = False
         app.state.nav.halt()  # a run from before this arm must not continue under it
         generation = app.state.motion.begin()
@@ -953,10 +965,27 @@ def create_app(db_path: str | None = None, build_points=None,
                 await relay.prepare(app.state.motion.session_id)
                 if generation != app.state.motion.generation or hazard() is not None:
                     raise ValueError('Stopped or lost readiness while arming')
+                entry_pose = app.state.pose  # readiness was rechecked after the await
             except (ValueError, asyncio.TimeoutError) as error:
                 if generation == app.state.motion.generation:
                     stop('rover_arm_failed')
                 raise HTTPException(409, str(error)) from error
+        # All arm awaits and generation/readiness checks have succeeded. Capture
+        # the actual camera-floor projection before the watchdog can start Explore.
+        # This does not add readiness or motion authority: absent metadata remains
+        # unavailable, and Stop/rearm never substitutes a later entry point.
+        if app.state.mode == 'explore' and not app.state.mission_entry_attempted:
+            app.state.mission_entry_attempted = True
+            entry = None
+            if entry_pose is not None and entry_pose.tracking == 'normal':
+                entry = dict(session_id=app.state.session[0], map_epoch=app.state.session[1],
+                             start=[entry_pose.transform[12], entry_pose.transform[14]],
+                             frame_id=entry_pose.frame_id, t_capture=entry_pose.t_capture,
+                             started_at_ms=int(time.time() * 1000), basis='explore_start')
+            try:
+                app.state.mission_entry = record_entry(app.state.db, app.state.session, entry)
+            except sqlite3.Error:
+                logger.warning('Explore entry metadata could not be persisted')
         app.state.armed = True
         app.state.stop_reason = None
         if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
@@ -1073,7 +1102,9 @@ def create_app(db_path: str | None = None, build_points=None,
         if session != app.state.session:
             raise HTTPException(409, 'Route requested for a map that is no longer active')
         app.state.route_requests += 1
-        request = app.state.route_requests  # a newer selection supersedes this one
+        request = app.state.route_requests  # only the latest request may replace the shared cache
+        selection = (*session, body.object_id, tuple(body.start))
+        app.state.route_selection = selection
         person = next((o for o in app.state.objects.snapshot(session, limit=None)
                        if o['id'] == body.object_id and o['class'] == 'person'), None)
         if person is None:
@@ -1111,7 +1142,7 @@ def create_app(db_path: str | None = None, build_points=None,
             raise HTTPException(409, 'The map changed while planning')
         current_person = next((o for o in app.state.objects.snapshot(session, limit=None)
                                if o['id'] == body.object_id and o['class'] == 'person'), None)
-        if request != app.state.route_requests:
+        if request != app.state.route_requests and selection != app.state.route_selection:
             planned = unavailable('route_superseded')
         elif lifecycle != app.state.route_lifecycle:
             planned = unavailable('route_evidence_changed')

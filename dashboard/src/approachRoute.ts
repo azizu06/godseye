@@ -21,6 +21,8 @@ export type RouteResult =
   | { status: "unavailable"; reason: string; assumptions?: RouteAssumptions };
 
 export const reasonText: Record<string, string> = {
+  mission_entry_unavailable:
+    "mission entry was not recorded for this session; no starting position is assumed",
   route_feed_unavailable:
     "live observations are unavailable; waiting for a confirmed current map",
   person_unconfirmed: "the person is not currently confirmed by observations",

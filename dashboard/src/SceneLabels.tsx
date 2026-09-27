@@ -18,6 +18,7 @@ import {
 /** An operator-started approach route to draw: start always, path once planned. */
 export interface ApproachDrawing {
   start: Vec2;
+  startKind?: "mission" | "operator";
   points: Vec2[] | null;
   approach: Vec2 | null;
 }
@@ -97,7 +98,9 @@ export function useSceneLabels(
         position: [route.start[0], 0.1, route.start[1]],
         content: (
           <span className="route-label" data-testid="route-start-label">
-            START · operator-selected
+            {route.startKind === "mission"
+              ? "MISSION ENTRY · fixed"
+              : "START · operator-selected"}
           </span>
         ),
       });
