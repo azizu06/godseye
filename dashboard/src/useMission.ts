@@ -176,6 +176,7 @@ export function useMission() {
           pose: null,
           path: [],
           pointIds: [],
+          detections: null,
         }));
         setConnection("connected");
       };

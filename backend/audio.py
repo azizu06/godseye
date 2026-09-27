@@ -37,8 +37,8 @@ def event_text(event, class_name):
     raise ValueError('Invalid event kind')
 
 
-def wav_audio(pcm):
-    if not isinstance(pcm, bytes) or not pcm or len(pcm) > MAX_PCM or len(pcm) % 2:
+def wav_audio(pcm, limit=MAX_PCM):
+    if not isinstance(pcm, bytes) or not pcm or len(pcm) > limit or len(pcm) % 2:
         raise ValueError('Invalid PCM audio')
     output = io.BytesIO()
     with wave.open(output, 'wb') as audio:
@@ -56,18 +56,18 @@ class ElevenLabsProvider:
     No automatic retries. `client` is the httpx-compatible test transport seam.
     """
     def __init__(self, api_key, voice_id, *, spend_approved=False, privacy_approved=False,
-                 model_id='eleven_flash_v2_5', client=None):
+                 model_id='eleven_flash_v2_5', stt_model_id='scribe_v2', client=None):
         if not spend_approved or not privacy_approved:
             raise ValueError('ElevenLabs requires spend and privacy approval')
         if not api_key or not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', voice_id):
             raise ValueError('ElevenLabs configuration unavailable')
-        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', model_id):
+        if not all(re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', m) for m in (model_id, stt_model_id)):
             raise ValueError('Invalid model')
         self._key, self._voice, self._model, self._client = api_key, voice_id, model_id, client
+        self._stt_model = stt_model_id
         self.identity = f'elevenlabs:{voice_id}:{model_id}:pcm16000:v1'
 
-    async def synthesize(self, text):
-        import httpx
+    async def synthesize(self, text, limit=MAX_PCM):
         async def convert(client):
             # Stream and cap the response before allocation; redirects cannot carry the key elsewhere.
             async with client.stream('POST', f'https://api.elevenlabs.io/v1/text-to-speech/{self._voice}',
@@ -78,14 +78,35 @@ class ElevenLabsProvider:
                     raise ValueError('Audio provider failed')
                 data = bytearray()
                 async for chunk in response.aiter_bytes():
-                    if len(data) + len(chunk) > MAX_PCM:
+                    if len(data) + len(chunk) > limit:
                         raise ValueError('Audio exceeds limit')
                     data.extend(chunk)
                 return bytes(data)
+        return await self._with_client(convert)
+
+    async def transcribe(self, audio, mime):
+        """Scribe speech-to-text of one push-to-talk clip; returns text or raises a sanitized error."""
+        async def convert(client):
+            try:
+                response = await client.post('https://api.elevenlabs.io/v1/speech-to-text',
+                    headers={'xi-api-key': self._key}, data={'model_id': self._stt_model},
+                    files={'file': ('question', audio, mime)}, timeout=TIMEOUT_S, follow_redirects=False)
+                if response.status_code != 200 or len(response.content) > 262144:
+                    raise ValueError
+                text = response.json()['text']
+                if not isinstance(text, str):
+                    raise ValueError
+                return text.strip()
+            except Exception:
+                raise ValueError('Speech provider failed') from None
+        return await self._with_client(convert)
+
+    async def _with_client(self, call):
+        import httpx
         if self._client is not None:
-            return await convert(self._client)
+            return await call(self._client)
         async with httpx.AsyncClient(trust_env=False) as client:
-            return await convert(client)
+            return await call(client)
 
 
 def register_audio_routes(app, provider):

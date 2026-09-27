@@ -313,7 +313,8 @@ before any session exists.
 
 Detection is off unless `GODSEYE_YOLO_WEIGHTS` names existing local weights
 (`create_app(weights=...)`, or `detector=` with any object that has
-`localize(frame)`). Missing weights fail startup; nothing is downloaded, and
+`localize(frame)`, or `detect(frame)` plus `confidence` to also report boxes
+that lack depth). Missing weights fail startup; nothing is downloaded, and
 `YOLO_OFFLINE=1` is set so Ultralytics skips its online checks. Health
 `detector` is `down` without a detector, `ok` within 2 s of a used result, else
 `stale`; map reset and phone loss clear it. `/arm` still refuses because the car is down.
@@ -334,6 +335,64 @@ checks the pipeline, not recognition or localization accuracy. Neither a real
 phone scene nor the dashboard has been exercised against these objects yet.
 Fake-detector behavior tests (no GPU or weights):
 `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_objects -v`.
+
+### Live detection overlay
+
+Each accepted detection result (same 2 Hz worker, same reset/disconnect/age
+checks as objects) also publishes one additive `detections` message, even when
+the frame contains nothing, so the dashboard can show what the detector saw:
+
+```json
+{ "version": 1, "type": "detections", "session_id": "uuid", "map_epoch": 1,
+  "frame_id": 812, "t_capture": 1234.56, "t_wall_ms": 1790380851600,
+  "image": { "width": 1280, "height": 960 }, "source": "backend_detector",
+  "classes": ["person", "backpack", "chair", "bottle"],
+  "detections": [{ "class": "person", "confidence": 0.87, "box": [x1, y1, x2, y2],
+                   "position": [x, y, z], "depth_m": 2.1, "object_id": "uuid" }] }
+```
+
+- `box` is xyxy in that frame's own JPEG pixels. Every 2D box is listed, highest
+  confidence first (at most 32), whether or not it could be placed.
+- `position`/`depth_m`/`object_id` are non-null only when the same capture's depth
+  localized the box (the rules above) and it was stored as an observation;
+  otherwise the box stays 2D evidence and nothing is placed in 3D.
+- Only `classes` are listed: `GODSEYE_OVERLAY_CLASSES` (comma separated), default
+  the staged demo set `person, backpack, chair, bottle`, reduced at startup to
+  the classes the loaded weights can emit (all four are COCO/YOLO11 classes).
+  Object memory is unchanged and still stores every localized class.
+- `GET /capture/detections.jpg?session_id=&map_epoch=&frame_id=` returns that
+  frame's exact JPEG only while it is the newest accepted detection frame of the
+  active map; any other frame or map, or after a map reset or phone loss, is
+  `409` (never a substitute image). The backend keeps just this one JPEG in memory.
+
+Tests (no weights): `$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_detections -v`.
+
+### Suggested approach route (visualization only)
+
+`POST /route` `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` returns
+a suggested walking route from an operator-selected entrance/start to a
+remembered `person` in the active map (`backend/approach.py`). It reuses the
+navigation grid A* on the current occupancy classification, with these demo
+clearance assumptions instead of the car footprint: a 0.5 m wide walker
+(0.25 m radius) plus 0.05 m margin, observed-free cells only (unknown space is
+blocked, never filled in; doors are not inferred), and a 0.3 m keep-out around
+the person. The route ends at the nearest observed-free point within 1.5 m of the
+person, never on the person's cells. The response echoes the map, object, start and
+occupancy revision. It has `status: "ok"` with `points`, `approach` and `length_m`,
+or `status: "unavailable"` with a `reason` (`no_observed_map`,
+`start_not_observed_free`, `no_observed_free_approach`, `no_observed_free_route`,
+`start_or_person_off_map`), always with `assumptions` and `verified: false`.
+A wrong map returns `409` and an unknown or non-person object returns `404`. It never sets a goal,
+publishes `path`, arms or commands motion. The dashboard re-requests it on new
+occupancy or a moved person and drops it on a map reset.
+
+`app.state.approach_view` is the current selected route for read-only consumers
+(voice answers): the newest `/route` response dict plus `t_wall_ms`, or `None`.
+An unavailable result replaces an earlier success. A `404` selection, a map reset,
+a newly published occupancy picture that differs from the cells it was planned on,
+and a sighting that moves, merges or removes the person all set it to `None`.
+A slower, older request never overwrites a newer selection. Tests:
+`$HOME/.venvs/godseye/bin/python -m unittest backend.tests.test_approach -v`.
 
 ## Rescan and change events
 
@@ -492,6 +551,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |
+| GET `/voice`, POST `/voice/ask` | Push-to-talk Q&A: availability, then clip -> transcript -> grounded answer -> speech (see [VOICE.md](VOICE.md); off by default) |
 | GET `/objects` | Versioned object snapshot (see Live objects) |
 | GET `/events` | Versioned change events of the shown map (see Rescan and change events) |
 | GET `/health` | Phone freshness, car adapter health, detector status, mode, armed, stop_reason |
@@ -645,8 +705,8 @@ position in ARKit meters, state, phone-wall-clock `last_seen`, detector score
 and identity status. Search is conservative lexical matching: all non-filler
 question words must occur in the saved class/label, ignoring case and a trailing
 plural `s`. It does not support semantic synonyms, arbitrary questions, scene
-narration or claims that a last-seen object is still there. Questions are never
-sent to Gemini. Empty and unmatched queries report no saved evidence.
+narration or claims that a last-seen object is still there. `/ask` questions are
+never sent to Gemini (voice questions are; see [VOICE.md](VOICE.md)). Empty and unmatched queries report no saved evidence.
 
 ### Live provider opt-in (separate approval required)
 

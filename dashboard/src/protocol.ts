@@ -51,6 +51,24 @@ export interface ChangeEvent {
   displacement_m?: number | null;
   t: number;
 }
+/** One detector box in its frame's JPEG pixels; `position` only with same-frame depth. */
+export interface DetectionBox {
+  class: string;
+  confidence: number;
+  box: [number, number, number, number];
+  position: Vec3 | null;
+  depth_m: number | null;
+  object_id: string | null;
+}
+export interface DetectionFrame {
+  frame_id: number;
+  t_capture: number;
+  t_wall_ms: number;
+  image: { width: number; height: number };
+  source: "backend_detector";
+  classes: string[];
+  detections: DetectionBox[];
+}
 export interface MapScope {
   session_id?: string | null;
   map_epoch?: number | null;
@@ -69,7 +87,8 @@ export type Message =
   | Wire<"occupancy", Occupancy>
   | Wire<"path", { points: Vec2[] }>
   | Wire<"objects", { objects: WorldObject[] }>
-  | Wire<"event", ChangeEvent>;
+  | Wire<"event", ChangeEvent>
+  | Wire<"detections", DetectionFrame>;
 export const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
 const vector = (v: unknown, size: number) =>
@@ -200,6 +219,54 @@ export function parseMessage(raw: unknown): Message | null {
               ]),
           );
         break;
+      case "detections": {
+        const image = m.image as Record<string, unknown> | null;
+        if (
+          typeof m.session_id !== "string" ||
+          m.source !== "backend_detector" ||
+          !Number.isSafeInteger(m.frame_id) ||
+          !isFiniteNumber(m.t_capture) ||
+          !isFiniteNumber(m.t_wall_ms) ||
+          !image ||
+          typeof image !== "object" ||
+          !Number.isSafeInteger(image.width) ||
+          !Number.isSafeInteger(image.height) ||
+          Number(image.width) <= 0 ||
+          Number(image.height) <= 0 ||
+          !Array.isArray(m.classes) ||
+          m.classes.length > 64 ||
+          !m.classes.every((c) => typeof c === "string" && c.length <= 128) ||
+          !Array.isArray(m.detections) ||
+          m.detections.length > 64
+        )
+          break;
+        const width = Number(image.width),
+          height = Number(image.height);
+        valid = m.detections.every((d) => {
+          if (!d || typeof d !== "object") return false;
+          const [x1, y1, x2, y2] = vector(d.box, 4) ? d.box : [];
+          return (
+            typeof d.class === "string" &&
+            d.class.length <= 128 &&
+            isFiniteNumber(d.confidence) &&
+            d.confidence >= 0 &&
+            d.confidence <= 1 &&
+            x1 !== undefined &&
+            0 <= x1 &&
+            x1 < x2 &&
+            x2 <= width &&
+            0 <= y1 &&
+            y1 < y2 &&
+            y2 <= height &&
+            (d.position === null || vector(d.position, 3)) &&
+            (d.depth_m === null ||
+              (isFiniteNumber(d.depth_m) && d.depth_m > 0)) &&
+            (d.object_id === null ||
+              (typeof d.object_id === "string" && d.object_id.length <= 256))
+          );
+        });
+        break;
+      }
       case "event":
         valid =
           [m.id, m.rescan_id].every(

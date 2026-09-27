@@ -94,6 +94,7 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 | `path` | on change | `{ points: [[x,z], ...] }` |
 | `objects` | on change | `{ objects: [{ id, class, position: [x,y,z], confidence, first_seen, last_seen, observations, state }] }` |
 | `event` | on change | `{ kind: "new"/"moved"/"possible_move"/"not_found", object_id, old_position, new_position, displacement_m, t }` |
+| `detections` | 2 Hz | `{ frame_id, t_capture, t_wall_ms, image: {width, height}, source: "backend_detector", classes, detections: [{ class, confidence, box: [x1,y1,x2,y2], position: [x,y,z] or null, depth_m, object_id }] }`, additive; box in that frame's JPEG pixels, `position` only with same-frame depth. Frame JPEG: `GET /capture/detections.jpg` (see `backend/README.md`) |
 
 `state` is one of `present`, `last_seen`, `moved`, `not_found_on_rescan`.
 
@@ -108,6 +109,7 @@ JSON text messages, each with a `type`. The dashboard ignores types it doesn't k
 | POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
 | POST | `/rescan` | none | Save a baseline and start the revisit |
+| POST | `/route` | `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` | Suggested walking approach to a remembered person; visualization only, never a goal or motion (additive, see `backend/README.md`) |
 | POST | `/ask` | `{ "question": "where's my backpack?" }` | Answer from saved objects (P2) |
 | GET | `/objects`, `/events`, `/health` | none | Current state |
 

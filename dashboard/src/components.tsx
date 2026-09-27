@@ -282,11 +282,14 @@ export function Inspector({
   events,
   onFocus,
   now,
+  onApproach,
 }: {
   object: WorldObject | undefined;
   events: ChangeEvent[];
   onFocus: () => void;
   now: number;
+  /** Suggest a walking approach to this person; visualization only. */
+  onApproach?: () => void;
 }) {
   if (!object)
     return (
@@ -371,6 +374,11 @@ export function Inspector({
           ))}
         </div>
       </div>
+      {object.class === "person" && onApproach && (
+        <button className="button subtle" onClick={onApproach}>
+          Suggest approach route <ArrowRight size={14} />
+        </button>
+      )}
       {move?.old_position && move.new_position && (
         <div className="movement-card">
           <div>

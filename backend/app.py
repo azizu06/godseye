@@ -1,5 +1,6 @@
 """God's Eye v1 transport skeleton; the default car adapter only logs motion."""
 import asyncio
+import base64
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from backend.approach import approach_route
 from backend.audio import register_audio_routes
 from backend.calibration import calibration_from_env
 from backend.changes import ChangeTracker
@@ -31,10 +33,13 @@ from backend.frame_bundle import FrameValidationError, validate_rigid_transform
 from backend.mapping import (MappingError, PointChunk, build_point_chunk, points_message,
                              points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
+from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
-from backend.occupancy import PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
-from backend.navigation import path_message
+from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env, register_voice_routes, scene_extras,
+                           scout_position)
+from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
+from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
@@ -69,6 +74,13 @@ class Goal(Input):
 
 class Ask(Input):
     question: str = Field(min_length=1, max_length=2000)
+
+
+class Route(Input):
+    session_id: str = Field(min_length=1, max_length=256)
+    map_epoch: int = Field(ge=1)
+    object_id: str = Field(min_length=1, max_length=256)
+    start: list[float] = Field(min_length=2, max_length=2)  # operator-selected entrance/start, world (x, z)
 
 
 class Hello(Input):
@@ -190,7 +202,8 @@ def create_app(db_path: str | None = None, build_points=None,
                point_settings: PointSettings | None = None, nav_settings: NavSettings | None = None,
                car: CarAdapter | None = None, motion_limits: MotionLimits | None = None,
                audio_provider=None, calibration=None, label_provider=None,
-               label_timeout_s: float = 6.) -> FastAPI:
+               label_timeout_s: float = 6., overlay: tuple[str, ...] | None = None,
+               voice_providers=None, voice_budget: int = DEFAULT_BUDGET) -> FastAPI:
     """`build_points(payload, session_id, map_epoch)` runs in a worker thread.
 
     Its candidate points pass through a per-map voxel memory (`point_settings`,
@@ -199,6 +212,10 @@ def create_app(db_path: str | None = None, build_points=None,
     `detector.localize(frame)` also runs in a worker thread, one call at a time.
     Without a detector, `weights` names existing local YOLO weights to load at
     startup; with neither, object detection is off and health reports it down.
+
+    `overlay` names the classes shown as live detection boxes (default
+    `GODSEYE_OVERLAY_CLASSES` or the staged demo set), limited to those the
+    detector reports it can emit.
 
     `calibration` (backend.calibration.RoverCalibration) is the measured rover
     geometry; without a complete, verified one the map is never motion-ready.
@@ -227,6 +244,14 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.detector = detector
         app.state.detected_at = None
         app.state.detect_stats = Counter()
+        app.state.overlay_classes = overlay_classes(overlay or classes_from_env(),
+                                                    getattr(app.state.detector, 'class_names', None))
+        app.state.detection_view = None  # (message, jpeg) of the newest accepted detection frame
+        # The current selected-person /route response plus t_wall_ms, for read-only
+        # consumers such as voice answers; None when absent or invalidated.
+        app.state.approach_view = None
+        app.state.approach_basis = None  # fingerprint of the occupancy cells it was planned on
+        app.state.route_requests = 0
         app.state.session = None
         app.state.phone = None
         app.state.pose = None
@@ -273,6 +298,14 @@ def create_app(db_path: str | None = None, build_points=None,
     app = FastAPI(title="God's Eye backend skeleton", version='1', lifespan=lifespan)
     register_capture_routes(app)
     register_audio_routes(app, audio_provider)
+    # Live extras come from app.state.detection_view (newest detection frame) and
+    # app.state.approach_view (last /route response); each is absent until its producer sets it.
+    register_voice_routes(app, voice_providers, voice_budget, lambda: dict(
+        session=shown_session(), objects=app.state.objects.snapshot(shown_session(), limit=None),
+        events=app.state.changes.events(shown_session()),
+        live=app.state.phone is not None and app.state.session is not None,
+        scout=scout_position(rover_pose()), route=app.state.nav.path,
+        extras=lambda: scene_extras(app.state, shown_session(), time.time())))
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match"],
                        expose_headers=["ETag", "X-Capture-Age-Ms"])
@@ -496,6 +529,15 @@ def create_app(db_path: str | None = None, build_points=None,
                 continue
             publish(message)
             stats['published'] += 1
+            if app.state.approach_basis is not None and app.state.approach_basis != cells_fingerprint(
+                    message['origin'], (message['height'], message['width']), base64.b64decode(message['cells'])):
+                retire_route()
+
+    def retire_route():
+        app.state.approach_view = app.state.approach_basis = None
+
+    def cells_fingerprint(origin, shape, cells: bytes):
+        return (tuple(float(v) for v in origin), tuple(int(v) for v in shape), hash(bytes(cells)))
 
     def active_grid():
         grid = app.state.occupancy
@@ -521,7 +563,15 @@ def create_app(db_path: str | None = None, build_points=None,
         sightings = app.state.objects.record(session, result.frame_id, seen_at, result.found)
         app.state.labels.enqueue(session, sightings, result.crops)
         app.state.detected_at = time.monotonic()
+        overlay = detections_message(result, sightings, app.state.overlay_classes)
+        app.state.detection_view = (overlay, result.jpeg)
+        publish(overlay)
         events, changed = app.state.changes.observe(result.t_capture, seen_at, sightings, result.views)
+        if (view := app.state.approach_view) is not None and (sightings or changed):
+            person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                           if o['id'] == view['object_id']), None)
+            if person is None or [person['position'][0], person['position'][2]] != view['person']:
+                retire_route()
         if sightings or changed:
             publish(objects_message(session))
         for record in events:
@@ -552,6 +602,8 @@ def create_app(db_path: str | None = None, build_points=None,
             app.state.point_memory.reset()
         app.state.session = session
         app.state.pose = app.state.pose_at = app.state.detected_at = None
+        app.state.detection_view = None
+        retire_route()
         app.state.tracking_lost_capture = -1.0
         app.state.capture.clear()
         app.state.rich_capture.reset()
@@ -600,6 +652,21 @@ def create_app(db_path: str | None = None, build_points=None,
         if request.headers.get('if-none-match') == headers['ETag']:
             return Response(status_code=304, headers=headers)
         return Response(frame.jpeg, media_type='image/jpeg', headers=headers)
+
+    @app.get('/capture/detections.jpg')
+    async def detection_jpeg(session_id: str, map_epoch: int, frame_id: int):
+        """The exact JPEG a live `detections` message describes, while it is the newest one.
+
+        Boxes are only valid on their own frame, so any other frame, map or a
+        retired (reset/disconnected) view is refused rather than substituted.
+        """
+        headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
+        view = app.state.detection_view
+        if view is None or (session_id, map_epoch, frame_id) != (
+                view[0]['session_id'], view[0]['map_epoch'], view[0]['frame_id']):
+            return Response(status_code=409, headers=headers)
+        headers['X-Frame-Id'] = str(frame_id)
+        return Response(view[1], media_type='image/jpeg', headers=headers)
 
     @app.get('/capture/frame.bin')
     async def capture_bundle():
@@ -680,6 +747,45 @@ def create_app(db_path: str | None = None, build_points=None,
         publish(objects_message(session))
         return dict(version=1, session_id=session[0], map_epoch=session[1], rescan_id=started.id,
                     baseline_objects=len(started.baseline))
+
+    @app.post('/route')
+    async def route(body: Route):
+        """Suggested walking approach to a remembered person; visualization only.
+
+        Never sets a rover goal, path or motion. The dashboard re-requests it when the
+        map or the person's evidence changes and drops it on a map reset.
+        """
+        session = (body.session_id, body.map_epoch)
+        if session != app.state.session:
+            raise HTTPException(409, 'Route requested for a map that is no longer active')
+        app.state.route_requests += 1
+        request = app.state.route_requests  # a newer selection supersedes this one
+        person = next((o for o in app.state.objects.snapshot(session, limit=None)
+                       if o['id'] == body.object_id and o['class'] == 'person'), None)
+        if person is None:
+            retire_route()  # a failed selection never leaves an older route standing
+            raise HTTPException(404, 'No localized person with that id in the active map')
+        target = (person['position'][0], person['position'][2])
+        grid = active_grid()
+
+        def plan():
+            revision, origin, cells = (None, None, None) if grid is None else grid.snapshot()
+            planned = approach_route(None if cells is None else
+                                     Grid.from_array(cells, origin=origin, cell_m=CELL_M), body.start, target)
+            basis = ('no_map',) if cells is None else cells_fingerprint(origin, cells.shape, cells.tobytes())
+            return revision, planned, basis
+
+        revision, planned, basis = await asyncio.to_thread(plan)
+        if app.state.session != session:
+            raise HTTPException(409, 'Map reset while planning')
+        response = dict(version=1, session_id=session[0], map_epoch=session[1], object_id=body.object_id,
+                        person=list(target), start=list(body.start), occupancy_revision=revision, **planned)
+        if request == app.state.route_requests:
+            # Success or not, this is now the selected route; an unavailable result
+            # replaces (invalidates) any earlier success.
+            app.state.approach_view = dict(response, t_wall_ms=int(time.time() * 1000))
+            app.state.approach_basis = basis
+        return response
 
     @app.post('/ask')
     async def ask(body: Ask):
@@ -810,6 +916,7 @@ def create_app(db_path: str | None = None, build_points=None,
             if app.state.phone is owner:
                 app.state.phone = None
                 app.state.pose = app.state.pose_at = app.state.detected_at = None
+                app.state.detection_view = None
                 app.state.tracking_lost_capture = -1.0
                 app.state.capture.clear()
                 app.state.rich_capture.reset()
@@ -859,4 +966,4 @@ def create_app(db_path: str | None = None, build_points=None,
 
 
 app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env(),
-                 label_provider=provider_from_env())
+                 label_provider=provider_from_env(), voice_providers=voice_from_env())
