@@ -181,11 +181,13 @@ class ObstacleRunnerTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         h.stop(action)  # app Stop/reset/disconnect all invoke this halt boundary
                     count = len(h.rover.commands)
+                    publications = len(h.paths)
                     release.set()
                     await asyncio.sleep(.15)
                     self.assertFalse(h.nav.active)
                     self.assertEqual(h.nav.path, [])
                     self.assertEqual(h.rover.commands[count:], [])
+                    self.assertEqual(h.paths[publications:], [])
                     self.assertEqual(h.stops, ['command_stale' if action == 'generation' else action])
                 finally:
                     release.set()
