@@ -3643,3 +3643,34 @@ input[type="checkbox"] {
     max-height: calc(100% - 180px);
   }
 }
+
+.recon-people {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 8px;
+}
+.recon-people button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 6px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  font: inherit;
+  cursor: pointer;
+}
+.recon-people button.selected {
+  border-color: #ffb86b;
+}
+.recon-people button span:last-child {
+  color: var(--muted);
+  font-size: 10px;
+}
+.recon-summary + header {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}

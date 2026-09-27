@@ -15,12 +15,17 @@ import {
 } from "lucide-react";
 import Scene, { type SceneHandle } from "./Scene";
 import { SpokenEvent } from "./SpokenEvent";
+import { useReconApproaches } from "./useReconApproaches";
 import { VoiceAsk } from "./VoiceAsk";
 import { PhoneControls } from "./PhoneControls";
 import { NavigationProposals } from "./NavigationProposals";
 import { DetectionOverlay } from "./DetectionOverlay";
 import { detectionsLive, liveMarkers } from "./detections";
-import { ApproachRouteCard, useApproachRoute } from "./ApproachRoutePanel";
+import {
+  ApproachRouteCard,
+  ReconSummary,
+  useApproachRoute,
+} from "./ApproachRoutePanel";
 import { useMission } from "./useMission";
 import { useDashboardActions } from "./useDashboardActions";
 import { hiddenByFilter } from "./dashboardActions";
@@ -212,23 +217,24 @@ export default function App() {
     sourceKey: JSON.stringify([config.source, config.wsUrl, config.apiUrl]),
     now,
   });
+  const recon = useReconApproaches(config.apiUrl, mission, {
+    ready: !stale && controller.mapConfirmed && mission.health?.phone === "ok",
+    sourceKey: JSON.stringify([config.source, config.wsUrl, config.apiUrl]),
+    now,
+  });
   const routeResult =
     "result" in approach.route ? approach.route.result : undefined;
   const approachDrawing =
     "start" in approach.route
       ? {
           start: approach.route.start,
-          startKind: approach.route.automatic
-            ? ("mission" as const)
-            : ("operator" as const),
+          startKind: "operator" as const,
           points: routeResult?.status === "ok" ? routeResult.points : null,
           approach: routeResult?.status === "ok" ? routeResult.approach : null,
         }
       : null;
-  const pickingRouteStart =
-    approach.route.phase === "picking" && !approach.route.automatic;
+  const pickingRouteStart = approach.route.phase === "picking";
   const select = (id: string) => {
-    approach.selectPerson(id);
     setSelected(id);
     setPanel("intelligence");
   };
@@ -347,6 +353,13 @@ export default function App() {
         onGoal={(x, z) => void controller.navigate(x, z)}
         liveDetections={live}
         approachRoute={approachDrawing}
+        personNumbers={Object.fromEntries(
+          recon.rows.map((row) => [row.id, row.number]),
+        )}
+        reconRoutes={recon.drawings.map((route) => ({
+          ...route,
+          highlighted: route.id === selected,
+        }))}
         now={now}
         pickingRouteStart={pickingRouteStart && !panel}
         onRouteStart={approach.pickStart}
@@ -575,9 +588,15 @@ export default function App() {
           personLastSeen={approach.person?.last_seen ?? null}
           now={now}
           onClear={approach.clear}
-          personFound={approach.personFound}
-          peopleCount={approach.peopleCount}
-        />
+        >
+          {recon.rows.length > 0 && (
+            <ReconSummary
+              recon={recon}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          )}
+        </ApproachRouteCard>
         <VoiceAsk config={config} onActions={actions.run}>
           {(controls.classes || !controls.boxes || !controls.labels) && (
             <div className="view-filter" data-testid="view-filter">

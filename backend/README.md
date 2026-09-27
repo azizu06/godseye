@@ -389,7 +389,10 @@ height, chassis center, an entrance, or a safe route. The optional
 `health.mission_entry` is `null` or the scoped metadata described in
 `docs/INTERFACES.md`; GET, WebSocket health and arm responses use the same record.
 The entry is stored once in `sessions.configuration_json.mission_entry`, preserving
-other configuration keys. Stop, mode changes, rearm, and same-map reconnect/restart
+other configuration keys. Entry uses the exact pose accepted by the final arm
+readiness check under the active profile, including the prototype profile's current
+pose-age policy; it adds no separate freshness or motion gate.
+Stop, mode changes, rearm, and same-map reconnect/restart
 never replace it. New sessions/epochs start without an entry; failed/cancelled arms
 and Standard arms do not create one.
 
@@ -404,8 +407,9 @@ Offline lifecycle tests: `python -m unittest backend.tests.test_mission_entry -v
 
 ## Suggested approach route (visualization only)
 
-`POST /route` `{ "session_id", "map_epoch", "object_id", "start": [x, z] }` returns
-a suggested walking route from an operator-selected entrance/start to a
+`POST /route` `{ "session_id", "map_epoch", "object_id", "start": [x, z],
+"purpose"?: "selected" / "recon" }` returns
+a suggested walking route from a supplied entrance/start to a
 remembered `person` in the active map (`backend/approach.py`). It reuses the
 navigation grid A* on the current occupancy classification, with these demo
 clearance assumptions instead of the car footprint: a 0.5 m wide walker
@@ -421,8 +425,16 @@ A wrong map returns `409` and an unknown or non-person object returns `404`. It 
 publishes `path`, arms or commands motion. The dashboard re-requests it on new
 occupancy or a moved person and drops it on a map reset.
 
+`purpose` defaults to `"selected"`. Automatic recon requests use `"recon"` so
+all eligible people can be planned independently, including across multiple viewers.
+Recon requests do not increment or change the selected request generation/signature,
+and never replace or clear the selected voice cache, even on an unavailable result,
+missing target or planning failure. They retain every target, map, revision and
+lifecycle recheck. Invalid purposes return `422`. These are independent suggestions,
+not a multi-person evacuation plan or a claim of human walking safety.
+
 `app.state.approach_view` is the current selected route for read-only consumers
-(voice answers): the newest `/route` response dict plus `t_wall_ms`, or `None`.
+(voice answers): the newest selected `/route` response dict plus `t_wall_ms`, or `None`.
 An unavailable result replaces an earlier success. A `404` selection, a map reset,
 a newly published occupancy picture that differs from the cells it was planned on,
 and a sighting that moves, merges or removes the person all set it to `None`.

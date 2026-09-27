@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { closeWorkspace, panel } from "./helpers";
+import { panel, workspaceAction } from "./helpers";
 
 async function recon(page: Page, withEntry = true, delayed = false) {
   const now = Date.now();
@@ -29,12 +29,21 @@ async function recon(page: Page, withEntry = true, delayed = false) {
   let send = (_message: unknown) => {};
   let missionEntry: unknown = withEntry ? entry : null;
   let available = true;
-  const bodies: { object_id: string; start: number[] }[] = [];
+  const unavailableIds = new Set<string>();
+  let active = 0,
+    maximumActive = 0;
+  const bodies: { object_id: string; start: number[]; purpose?: string }[] = [];
   const actions: string[] = [];
   const person = (id: string, observations = 3, state = "present") => ({
     id,
     class: "person",
-    position: id === "person-1" ? [1, 0.2, 1] : [1.5, 0.2, 0],
+    position: [
+      [1, 0.2, 1],
+      [1.5, 0.2, 0],
+      [-0.5, 0.2, 1.5],
+      [2, 0.2, 1],
+      [-1, 0.2, 2],
+    ][Number(id.split("-")[1]) - 1] ?? [0, 0.2, 0],
     confidence: 0.9,
     observations,
     state,
@@ -93,7 +102,12 @@ async function recon(page: Page, withEntry = true, delayed = false) {
     if (path !== "/route") return route.fulfill({ status: 404 });
     const body = route.request().postDataJSON();
     bodies.push(body);
+    active++;
+    maximumActive = Math.max(maximumActive, active);
     if (delayed) await held;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const position = person(body.object_id).position;
+    const endpoint = [position[0] - 0.3, position[2] - 0.3];
     await route.fulfill({
       json: {
         version: 1,
@@ -101,11 +115,11 @@ async function recon(page: Page, withEntry = true, delayed = false) {
         ...body,
         person: [1, 1],
         occupancy_revision: 1,
-        ...(available
+        ...(available && !unavailableIds.has(body.object_id)
           ? {
               status: "ok",
-              points: [body.start, [0, -1], [0.5, 0.6]],
-              approach: [0.5, 0.6],
+              points: [body.start, [0, -1], endpoint],
+              approach: endpoint,
               length_m: 2.7,
             }
           : { status: "unavailable", reason: "no_observed_free_route" }),
@@ -120,6 +134,7 @@ async function recon(page: Page, withEntry = true, delayed = false) {
         },
       },
     });
+    active--;
   });
   await page.goto(
     "/?live=ws%3A%2F%2Flocalhost%3A9886%2Flive&api=http%3A%2F%2Flocalhost%3A9886",
@@ -127,6 +142,8 @@ async function recon(page: Page, withEntry = true, delayed = false) {
   await expect(page.locator(".scene-label")).toContainText("Person");
   return {
     now,
+    unavailableIds,
+    maximumActive: () => maximumActive,
     release,
     openings: () => openings,
     disconnect: () => {
@@ -173,130 +190,73 @@ async function expectOverlaysFit(page: Page) {
   ).toBeVisible();
 }
 
-test("repeated person evidence automatically shows a fixed-entry approach in 3D and 2D without motion", async ({
+test("all five people receive independent queued approaches in both views, including one unavailable branch", async ({
   page,
 }) => {
   const feed = await recon(page);
-  await page.waitForTimeout(300);
+  feed.unavailableIds.add("person-5");
   await expect(page.getByTestId("person-found")).toHaveCount(0);
   expect(feed.bodies).toHaveLength(0);
-  feed.objects([feed.person("person-1")]);
-  await expect(page.getByTestId("person-found")).toContainText("Person found");
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  expect(feed.bodies).toHaveLength(1);
-  expect(feed.bodies[0]).toMatchObject({
-    object_id: "person-1",
-    start: [-1, -1],
-  });
-  await expect(page.getByTestId("route-start-label")).toContainText(
-    "MISSION ENTRY",
+  const people = [1, 2, 3, 4, 5].map((n) => feed.person(`person-${n}`));
+  feed.objects(people);
+  await expect(page.getByTestId("person-found")).toHaveText("5 people found");
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(4);
+  await expect(page.getByTestId("recon-summary")).toContainText(
+    "4 suggested approaches · 1 unavailable",
   );
-  await expect(page.getByTestId("route-card")).toContainText("unverified");
+  expect(feed.bodies).toHaveLength(5);
+  expect(feed.maximumActive()).toBeLessThanOrEqual(2);
+  expect(new Set(feed.bodies.map((body) => body.object_id)).size).toBe(5);
+  for (const body of feed.bodies)
+    expect(body).toMatchObject({ start: [-1, -1], purpose: "recon" });
   await expectOverlaysFit(page);
-  await page.screenshot({ path: "/tmp/godseye-person-found-3d.png" });
-  feed.objects([feed.person("person-2"), feed.person("person-1")]);
-  await expect(page.getByTestId("route-card")).toContainText(
-    "2 people observed",
-  );
-  expect(feed.bodies).toHaveLength(1); // New people/snapshot order do not steal the target.
+  await page.screenshot({ path: "/tmp/godseye-people-found-3d.png" });
+  feed.objects([...people].reverse());
+  feed.occupancy();
+  await page.waitForTimeout(250);
+  expect(feed.bodies).toHaveLength(5);
+  await page
+    .getByTestId("recon-person")
+    .filter({ hasText: "Person 2" })
+    .click();
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(4);
+  expect(feed.bodies).toHaveLength(5);
   await page.getByRole("button", { name: "2D", exact: true }).click();
-  await expect(page.getByTestId("approach-route-2d")).toHaveAttribute(
-    "points",
-    "-1,-1 0,-1 0.5,0.6",
-  );
-  await expect(page.getByTestId("route-start-label")).toContainText(
-    "MISSION ENTRY",
-  );
+  await expect(page.getByTestId("approach-route-2d")).toHaveCount(4);
+  for (const line of await page.getByTestId("approach-route-2d").all())
+    expect(await line.getAttribute("points")).toMatch(/^-1,-1 0,-1 /);
+  expect(
+    new Set(
+      await page
+        .getByTestId("approach-route-2d")
+        .evaluateAll((lines) =>
+          lines.map((line) => line.getAttribute("points")),
+        ),
+    ).size,
+  ).toBe(4);
   await expectOverlaysFit(page);
-  await page.screenshot({ path: "/tmp/godseye-person-found-2d.png" });
+  await page.screenshot({ path: "/tmp/godseye-people-found-2d.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expectOverlaysFit(page);
-  await page.screenshot({ path: "/tmp/godseye-person-found-mobile.png" });
-  await page.setViewportSize({ width: 1440, height: 1100 });
-  await page
-    .getByRole("button", { name: "Select Person on map" })
-    .first()
-    .click();
-  await expect.poll(() => feed.bodies.length).toBe(2);
-  expect(feed.bodies[1]).toMatchObject({
-    object_id: "person-2",
-    start: [-1, -1],
-  });
-  await closeWorkspace(page);
-  await page.getByRole("button", { name: "Clear approach route" }).click();
-  feed.objects([feed.person("person-1"), feed.person("person-2")]);
-  await page.waitForTimeout(300);
-  await expect(page.getByTestId("route-card")).toHaveCount(0);
-  expect(feed.bodies).toHaveLength(2);
+  await page.screenshot({ path: "/tmp/godseye-people-found-mobile.png" });
+  feed.objects(
+    people.map((person) =>
+      person.id === "person-2"
+        ? { ...person, state: "not_found_on_rescan" }
+        : person,
+    ),
+  );
+  await expect(page.getByTestId("approach-route-2d")).toHaveCount(3);
+  await expect(
+    page.getByTestId("recon-person").filter({ hasText: "Person 2" }),
+  ).toContainText("not found");
   expect(feed.actions).toEqual([]);
 });
-
-test("missing entry, unreachable floor and stale person never produce a fallback trace", async ({
+test("missing and wrong-scope entry never invent origins, and fresh evidence restores only its person", async ({
   page,
 }) => {
   const feed = await recon(page, false);
-  feed.objects([feed.person("person-1")]);
-  await expect(page.getByTestId("person-found")).toContainText("Person found");
-  await expect(page.getByTestId("route-status")).toContainText("mission entry");
-  expect(feed.bodies).toHaveLength(0);
-  feed.unavailable();
-  feed.setEntry(feed.entry);
-  await expect(page.getByTestId("route-status")).toContainText(
-    "no observed-free connection",
-  );
-  await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
-  feed.available();
-  feed.occupancy();
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  feed.objects([feed.person("person-1", 3, "not_found_on_rescan")]);
-  await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
-  await expect(page.getByTestId("person-found")).toHaveCount(0);
-  await expect(page.getByTestId("route-status")).toContainText("not found");
-  feed.reset();
-  await expect(page.getByTestId("route-card")).toHaveCount(0);
-  expect(feed.actions).toEqual([]);
-});
-
-test("explicit manual approach selection is preserved when another person arrives", async ({
-  page,
-}) => {
-  const feed = await recon(page);
-  feed.objects([feed.person("person-1")]);
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  await panel(page, "Spatial memory");
-  await page.locator(".objects-panel .object-row").first().click();
-  await page.getByRole("button", { name: "Suggest approach route" }).click();
-  await expect(page.getByTestId("route-card")).toContainText(
-    "Click the entrance or start point",
-  );
   feed.objects([feed.person("person-1"), feed.person("person-2")]);
-  await page.waitForTimeout(300);
-  await expect(page.getByTestId("route-card")).toContainText(
-    "Click the entrance or start point",
-  );
-  expect(feed.bodies).toHaveLength(1);
-  await page
-    .locator(".scene-canvas canvas")
-    .click({ position: { x: 900, y: 800 } });
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  expect(feed.bodies).toHaveLength(2);
-  expect(feed.bodies[1].start).not.toEqual([-1, -1]);
-  await page.getByRole("button", { name: "Clear approach route" }).click();
-  feed.objects([
-    feed.person("person-1"),
-    feed.person("person-2"),
-    feed.person("person-3"),
-  ]);
-  await page.waitForTimeout(300);
-  await expect(page.getByTestId("route-card")).toHaveCount(0);
-  expect(feed.actions).toEqual([]);
-});
-
-test("legacy, malformed and other-map entry cannot invent an origin", async ({
-  page,
-}) => {
-  const feed = await recon(page, false);
-  feed.objects([feed.person("person-1")]);
   for (const entry of [
     undefined,
     { bad: true },
@@ -304,52 +264,109 @@ test("legacy, malformed and other-map entry cannot invent an origin", async ({
     { ...feed.entry, session_id: "other" },
   ]) {
     feed.setEntry(entry);
-    await expect(page.getByTestId("person-found")).toBeVisible();
-    await expect(page.getByTestId("route-status")).toContainText(
+    await expect(page.getByTestId("person-found")).toHaveText("2 people found");
+    await expect(page.getByTestId("recon-person").first()).toContainText(
       "mission entry was not recorded",
     );
-    await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
     expect(feed.bodies).toHaveLength(0);
   }
   feed.setEntry(feed.entry);
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  expect(feed.bodies[0].start).toEqual([-1, -1]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  feed.objects([
+    feed.person("person-1", 3, "not_found_on_rescan"),
+    feed.person("person-2"),
+  ]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(1);
+  feed.objects([feed.person("person-1"), feed.person("person-2")]);
+  await expect.poll(() => feed.bodies.length).toBe(3);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  expect(feed.bodies[2].object_id).toBe("person-1");
+  feed.reset();
+  await expect(page.getByTestId("route-card")).toHaveCount(0);
 });
-
-test("automatic route requires fresh person evidence after reconnect and expires with it", async ({
+test("manual approach selection and clearing never hide other automatic people", async ({
   page,
 }) => {
   const feed = await recon(page);
-  feed.objects([feed.person("person-1")]);
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
+  feed.objects([feed.person("person-1"), feed.person("person-2")]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  await panel(page, "Spatial memory");
+  await page.locator(".objects-panel .object-row").first().click();
+  await page.getByRole("button", { name: "Suggest approach route" }).click();
+  await expect(page.getByTestId("route-card")).toContainText(
+    "Click the entrance or start point",
+  );
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  await page
+    .locator(".scene-canvas canvas")
+    .click({ position: { x: 900, y: 800 } });
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(3);
+  expect(feed.bodies.filter((body) => body.purpose === "recon")).toHaveLength(
+    2,
+  );
+  const manual = feed.bodies.find((body) => body.purpose !== "recon")!;
+  expect(manual.start).not.toEqual([-1, -1]);
+  await page.getByRole("button", { name: "Clear approach route" }).click();
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
+  await expect(page.getByTestId("person-found")).toHaveText("2 people found");
+  expect(feed.actions).toEqual([]);
+});
+test("all branches require fresh person evidence after reconnect and expire independently", async ({
+  page,
+}) => {
+  const feed = await recon(page);
+  feed.objects([feed.person("person-1"), feed.person("person-2")]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
   const openings = feed.openings();
   feed.disconnect();
   await expect.poll(feed.openings).toBeGreaterThan(openings);
-  await expect(page.getByTestId("person-found")).toHaveCount(0);
   await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
   feed.occupancy();
   await page.waitForTimeout(200);
-  expect(feed.bodies).toHaveLength(1);
-  feed.objects([feed.person("person-1")]);
-  await expect(page.getByTestId("route-approach-label")).toBeVisible();
-  expect(feed.bodies[1].start).toEqual([-1, -1]);
+  expect(feed.bodies).toHaveLength(2);
+  feed.objects([feed.person("person-1"), feed.person("person-2")]);
+  await expect.poll(() => feed.bodies.length).toBe(4);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(2);
   await page.clock.setFixedTime(new Date(feed.now + 31000));
-  await expect(page.getByTestId("person-found")).toHaveCount(0);
   await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
+  feed.objects([
+    { ...feed.person("person-1"), last_seen: (feed.now + 31000) / 1000 },
+    feed.person("person-2"),
+  ]);
+  await expect(page.getByTestId("route-approach-label")).toHaveCount(1);
+  expect(feed.bodies).toHaveLength(5);
   expect(feed.actions).toEqual([]);
 });
-
-test("automatic pending route cannot return after map reset even if HTTP ignores abort", async ({
-  page,
-}) => {
-  const feed = await recon(page, true, true);
-  feed.objects([feed.person("person-1")]);
-  await expect.poll(() => feed.bodies.length).toBe(1);
-  feed.reset();
-  await expect(page.getByTestId("route-card")).toHaveCount(0);
-  feed.release();
-  await page.waitForTimeout(300);
-  await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
-  await expect(page.getByTestId("route-card")).toHaveCount(0);
-  expect(feed.actions).toEqual([]);
-});
+for (const condition of ["map reset", "source change"] as const)
+  test(`late automatic replies cannot restore any branch after ${condition}`, async ({
+    page,
+  }) => {
+    const feed = await recon(page, true, true);
+    feed.objects([
+      feed.person("person-1"),
+      feed.person("person-2"),
+      feed.person("person-3"),
+    ]);
+    await expect.poll(() => feed.bodies.length).toBe(2);
+    if (condition === "map reset") feed.reset();
+    else {
+      await page.routeWebSocket("ws://localhost:9885/live", () => {});
+      await page.route("http://localhost:9885/**", (route) =>
+        route.fulfill({ status: 404 }),
+      );
+      await workspaceAction(page, "Connection settings");
+      await page
+        .getByLabel("Telemetry WebSocket")
+        .fill("ws://localhost:9885/live");
+      await page.getByLabel("Backend API base").fill("http://localhost:9885");
+      await page
+        .getByRole("button", { name: "Connect source", exact: true })
+        .click();
+    }
+    await expect(page.getByTestId("route-card")).toHaveCount(0);
+    feed.release();
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("route-approach-label")).toHaveCount(0);
+    expect(feed.bodies).toHaveLength(2);
+    expect(feed.actions).toEqual([]);
+  });

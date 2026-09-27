@@ -245,11 +245,11 @@ class ApproachViewTests(unittest.TestCase):
             self.assertIsNone(client.app.state.approach_view)
 
 class RouteEvidenceTests(unittest.TestCase):
-    def request(self, client, session, person):
+    def request(self, client, session, person, **extra):
         return client.post('/route', json=dict(session_id=session[0], map_epoch=session[1],
-                                             object_id=person, start=[.5, .5]))
+                                             object_id=person, start=[.5, .5], **extra))
 
-    def delayed_request(self, client, session, person, change):
+    def delayed_request(self, client, session, person, change, **extra):
         started, release = threading.Event(), threading.Event()
         responses = []
 
@@ -260,7 +260,7 @@ class RouteEvidenceTests(unittest.TestCase):
             return result
 
         with mock.patch('backend.app.approach_route', delayed):
-            worker = threading.Thread(target=lambda: responses.append(self.request(client, session, person)))
+            worker = threading.Thread(target=lambda: responses.append(self.request(client, session, person, **extra)))
             worker.start()
             self.assertTrue(started.wait(5))
             try:
@@ -475,6 +475,71 @@ class RouteEvidenceTests(unittest.TestCase):
                     self.assertEqual(old['status'], 'unavailable')
                     self.assertEqual(old['reason'], 'map_changed' if change == 'blocked' else 'route_evidence_changed')
                     self.assertNotIn('points', old)
+
+
+    def test_recon_requests_do_not_select_or_overwrite_manual_cache(self):
+        with TestClient(create_app(':memory:', capture_directory='')) as client:
+            reset = client.post('/session').json()
+            session = (reset['session_id'], reset['map_epoch'])
+            client.app.state.occupancy = Grid2D(session, room())
+            person = person_at(client, session, (3., .4, 3.))
+            other = person_at(client, session, (1., .4, 3.))
+            self.assertNotEqual(person, other)
+            self.assertEqual(self.request(client, session, person).json()['status'], 'ok')
+            prior = (client.app.state.route_requests, client.app.state.route_selection,
+                     client.app.state.approach_view, client.app.state.approach_basis)
+            self.assertEqual(self.request(client, session, other, purpose='recon').json()['status'], 'ok')
+            self.assertEqual(self.request(client, session, 'missing', purpose='recon').status_code, 404)
+            with mock.patch('backend.app.approach_route', return_value=dict(status='unavailable', reason='fixture')):
+                self.assertEqual(self.request(client, session, other, purpose='recon').json()['status'], 'unavailable')
+            with mock.patch('backend.app.approach_route', side_effect=RuntimeError('fixture planner failure')):
+                with self.assertRaisesRegex(RuntimeError, 'fixture planner failure'):
+                    self.request(client, session, other, purpose='recon')
+            self.assertEqual(self.request(client, session, other, purpose='unsupported').status_code, 422)
+            self.assertEqual((client.app.state.route_requests, client.app.state.route_selection,
+                              client.app.state.approach_view, client.app.state.approach_basis), prior)
+
+    def test_concurrent_recon_people_preserve_lifecycle_checks_and_selected_intent(self):
+        for purpose in ('selected', 'recon'):
+            for change in ('none', 'blocked', 'disconnect', 'reset'):
+                with self.subTest(purpose=purpose, change=change), \
+                        TestClient(create_app(':memory:', capture_directory='')) as client, \
+                        client.websocket_connect('/phone') as phone:
+                    phone.send_json(hello('recon-routes'))
+                    wait_for(lambda: client.app.state.session == ('recon-routes', 1))
+                    session = ('recon-routes', 1)
+                    grid = Grid2D(session, room())
+                    client.portal.call(lambda: setattr(client.app.state, 'occupancy', grid))
+                    person = person_at(client, session, (3., .4, 3.))
+                    other = person_at(client, session, (1., .4, 3.))
+                    cache = []
+
+                    def changed():
+                        with mock.patch('backend.app.approach_route', approach_route):
+                            newer = self.request(client, session, other, purpose=purpose)
+                        self.assertEqual(newer.json()['status'], 'ok', newer.text)
+                        cache.append(client.app.state.approach_view)
+                        if change == 'blocked':
+                            grid.cells = grid.cells.copy()
+                            grid.cells[25:45, 25:45] = OCCUPIED
+                            grid.revision += 1
+                        elif change == 'disconnect':
+                            phone.close()
+                            wait_for(lambda: client.app.state.phone is None)
+                        elif change == 'reset':
+                            client.post('/session')
+
+                    result = self.delayed_request(client, session, person, changed, purpose='recon')
+                    if change == 'none':
+                        self.assertEqual(result.json()['status'], 'ok', result.text)
+                        self.assertIs(client.app.state.approach_view, cache[0])
+                        self.assertEqual(client.app.state.route_requests, 1 if purpose == 'selected' else 0)
+                    elif change == 'reset':
+                        self.assertEqual(result.status_code, 409)
+                    else:
+                        self.assertEqual(result.json()['reason'], 'map_changed' if change == 'blocked'
+                                         else 'route_evidence_changed')
+                        self.assertNotIn('points', result.json())
 
 
 if __name__ == '__main__':

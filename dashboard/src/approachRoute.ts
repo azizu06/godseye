@@ -103,6 +103,7 @@ export async function requestRoute(
     map_epoch: number;
     object_id: string;
     start: Vec2;
+    purpose?: "selected" | "recon";
   },
   signal: AbortSignal,
 ): Promise<RouteResult> {

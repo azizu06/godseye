@@ -205,6 +205,49 @@ class MissionEntryTests(unittest.TestCase):
                         self.assertEqual((entry['start'], entry['frame_id'], entry['t_capture']),
                                          ([6., 7.], 200, 2.))
 
+    def test_entry_uses_current_profile_pose_age_policy_without_a_second_gate(self):
+        from types import SimpleNamespace
+        import numpy as np
+        from backend.occupancy import OccupancySnapshot
+        from backend.prototype import PrototypeActuation, prototype_geometry
+        from backend.rover_relay import RelayCar
+
+        key = 'TEST_KEY_NOT_REAL_01234567890123456789'
+        for prototype in (False, True):
+            with self.subTest(prototype=prototype):
+                car = RelayCar(key, PrototypeActuation()) if prototype else FakeCar()
+                if prototype:
+                    car.connected = True
+                    car.health = lambda: 'ok'
+                    car.blockers = lambda: []
+
+                    async def prepare(session):
+                        car.armed_session = session.upper()
+
+                    car.prepare = prepare
+                app = create_app(':memory:', car=car, detector=FakeDetector(), capture_directory='',
+                                 calibration=prototype_geometry(.24, .14) if prototype else None)
+                with TestClient(app) as client, client.websocket_connect('/phone') as phone:
+                    phone.send_json(hello())
+                    self.ready(client, phone, x=6., z=7.)
+                    snapshot = OccupancySnapshot(('map-session', 1), 1, time.monotonic(), (), .18,
+                                                 (-1., -1.), .05, np.ones((40, 40), dtype=np.uint8), 0.)
+                    app.state.occupancy = SimpleNamespace(session=('map-session', 1), map_snapshot=lambda: snapshot)
+                    app.state.autonomy_map = snapshot
+                    app.state.nav.start_explore = Mock()
+                    headers = {'Authorization': 'Bearer ' + key} if prototype else {}
+                    client.post('/mode', json={'mode': 'explore'}, headers=headers)
+                    client.portal.call(lambda: setattr(app.state, 'pose_at', time.monotonic() - .5))
+                    result = client.post('/arm', headers=headers)
+                    if prototype:
+                        self.assertEqual(app.state.nav.settings.pose_max_age_s, 1.)
+                        self.assertEqual(result.status_code, 200, result.text)
+                        self.assertEqual(result.json()['mission_entry']['start'], [6., 7.])
+                        self.assertEqual(result.json()['mission_entry']['frame_id'], 100)
+                    else:
+                        self.assertEqual(result.status_code, 409)
+                        self.assertIsNone(client.get('/health').json()['mission_entry'])
+
     def test_same_process_reconnect_before_first_explore_can_record_real_start(self):
         with self.rig() as (client, _):
             with client.websocket_connect('/phone') as phone:

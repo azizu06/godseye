@@ -83,6 +83,7 @@ class Ask(Input):
 
 
 class Route(Input):
+    purpose: Literal['selected', 'recon'] = 'selected'
     session_id: str = Field(min_length=1, max_length=256)
     map_epoch: int = Field(ge=1)
     object_id: str = Field(min_length=1, max_length=256)
@@ -1129,14 +1130,18 @@ def create_app(db_path: str | None = None, build_points=None,
         session = (body.session_id, body.map_epoch)
         if session != app.state.session:
             raise HTTPException(409, 'Route requested for a map that is no longer active')
-        app.state.route_requests += 1
-        request = app.state.route_requests  # only the latest request may replace the shared cache
+        selected = body.purpose == 'selected'
+        request = None
         selection = (*session, body.object_id, tuple(body.start))
-        app.state.route_selection = selection
+        if selected:
+            app.state.route_requests += 1
+            request = app.state.route_requests
+            app.state.route_selection = selection
         person = next((o for o in app.state.objects.snapshot(session, limit=None)
                        if o['id'] == body.object_id and o['class'] == 'person'), None)
         if person is None:
-            retire_route()  # a failed selection never leaves an older route standing
+            if selected:
+                retire_route()  # a failed selection never leaves an older route standing
             raise HTTPException(404, 'No localized person with that id in the active map')
         target = (person['position'][0], person['position'][2])
         lifecycle = app.state.route_lifecycle
@@ -1170,7 +1175,7 @@ def create_app(db_path: str | None = None, build_points=None,
             raise HTTPException(409, 'The map changed while planning')
         current_person = next((o for o in app.state.objects.snapshot(session, limit=None)
                                if o['id'] == body.object_id and o['class'] == 'person'), None)
-        if request != app.state.route_requests and selection != app.state.route_selection:
+        if selected and request != app.state.route_requests and selection != app.state.route_selection:
             planned = unavailable('route_superseded')
         elif lifecycle != app.state.route_lifecycle:
             planned = unavailable('route_evidence_changed')
@@ -1186,7 +1191,7 @@ def create_app(db_path: str | None = None, build_points=None,
             planned = unavailable('map_changed')
         response = dict(version=1, session_id=session[0], map_epoch=session[1], object_id=body.object_id,
                         person=list(target), start=list(body.start), occupancy_revision=revision, **planned)
-        if request == app.state.route_requests and lifecycle == app.state.route_lifecycle:
+        if selected and request == app.state.route_requests and lifecycle == app.state.route_lifecycle:
             # A failed selection replaces an earlier success. A disconnected or
             # reset lifecycle cannot repopulate the read-only voice route cache.
             app.state.approach_view = dict(response, t_wall_ms=int(time.time() * 1000),

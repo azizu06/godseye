@@ -59,6 +59,8 @@ export interface SceneProps {
   liveDetections: LiveMarker[];
   /** Suggested walking route; visualization only, never a rover goal. */
   approachRoute: ApproachDrawing | null;
+  reconRoutes?: ApproachDrawing[];
+  personNumbers?: Record<string, number>;
   /** Viewer clock (ms) for object last-seen wording. */
   now: number;
   pickingRouteStart: boolean;
@@ -366,6 +368,7 @@ function World({
   onGoal,
   liveDetections,
   approachRoute,
+  reconRoutes = [],
   pickingRouteStart,
   onRouteStart,
 }: {
@@ -379,6 +382,7 @@ function World({
   onGoal: (x: number, z: number) => void;
   liveDetections: LiveMarker[];
   approachRoute: ApproachDrawing | null;
+  reconRoutes?: ApproachDrawing[];
   /** Viewer clock (ms) for object last-seen wording. */
   now: number;
   pickingRouteStart: boolean;
@@ -418,36 +422,38 @@ function World({
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         </mesh>
       )}
-      {approachRoute && (
-        <group>
-          <mesh
-            position={[approachRoute.start[0], 0.09, approachRoute.start[1]]}
-            rotation={[-Math.PI / 2, 0, 0]}
-          >
-            <ringGeometry args={[0.12, 0.16, 32]} />
-            <meshBasicMaterial color="#ffb86b" side={THREE.DoubleSide} />
-          </mesh>
-          {approachRoute.points && (
-            <Line
-              points={approachRoute.points.map((p) => [p[0], 0.09, p[1]])}
-              color="#ffb86b"
-              lineWidth={3}
-            />
-          )}
-          {approachRoute.approach && (
+      {[...(approachRoute ? [approachRoute] : []), ...reconRoutes].map(
+        (approachRoute, index) => (
+          <group key={approachRoute.id ?? `manual-${index}`}>
             <mesh
-              position={[
-                approachRoute.approach[0],
-                0.09,
-                approachRoute.approach[1],
-              ]}
+              position={[approachRoute.start[0], 0.09, approachRoute.start[1]]}
               rotation={[-Math.PI / 2, 0, 0]}
             >
-              <circleGeometry args={[0.12, 32]} />
+              <ringGeometry args={[0.12, 0.16, 32]} />
               <meshBasicMaterial color="#ffb86b" side={THREE.DoubleSide} />
             </mesh>
-          )}
-        </group>
+            {approachRoute.points && (
+              <Line
+                points={approachRoute.points.map((p) => [p[0], 0.09, p[1]])}
+                color="#ffb86b"
+                lineWidth={approachRoute.highlighted ? 5 : 3}
+              />
+            )}
+            {approachRoute.approach && (
+              <mesh
+                position={[
+                  approachRoute.approach[0],
+                  0.09,
+                  approachRoute.approach[1],
+                ]}
+                rotation={[-Math.PI / 2, 0, 0]}
+              >
+                <circleGeometry args={[0.12, 32]} />
+                <meshBasicMaterial color="#ffb86b" side={THREE.DoubleSide} />
+              </mesh>
+            )}
+          </group>
+        ),
       )}
       <ambientLight intensity={1.5} />
       <directionalLight position={[4, 8, 3]} intensity={2} />
@@ -614,6 +620,8 @@ export function Map2D({
   canGoal,
   onGoal,
   approachRoute,
+  reconRoutes = [],
+  personNumbers = {},
   pickingRouteStart,
   onRouteStart,
 }: SceneProps) {
@@ -625,9 +633,9 @@ export function Map2D({
   const all = [
     ...mission.objects.map((o) => [o.position[0], o.position[2]]),
     ...mission.path,
-    ...(approachRoute
-      ? [approachRoute.start, ...(approachRoute.points ?? [])]
-      : []),
+    ...[...(approachRoute ? [approachRoute] : []), ...reconRoutes].flatMap(
+      (route) => [route.start, ...(route.points ?? [])],
+    ),
     ...(mission.pose
       ? scopeArc().map(([x, , z]) => {
           const p = mission.pose!;
@@ -742,52 +750,62 @@ export function Map2D({
           strokeDasharray=".12 .08"
         />
       )}
-      {approachRoute && (
-        <g pointerEvents="none" fill="#ffcf91">
-          <rect
-            x={approachRoute.start[0] - 0.08}
-            y={approachRoute.start[1] - 0.08}
-            width=".16"
-            height=".16"
-          />
-          <text
-            data-testid="route-start-label"
-            x={approachRoute.start[0] + 0.13}
-            y={approachRoute.start[1] - 0.12}
-            fontSize=".14"
+      {[...(approachRoute ? [approachRoute] : []), ...reconRoutes].map(
+        (approachRoute, index) => (
+          <g
+            key={approachRoute.id ?? `manual-${index}`}
+            pointerEvents="none"
+            fill="#ffcf91"
           >
-            {approachRoute.startKind === "mission"
-              ? "MISSION ENTRY · fixed"
-              : "START · operator-selected"}
-          </text>
-          {approachRoute.points && (
-            <polyline
-              data-testid="approach-route-2d"
-              points={approachRoute.points.map((p) => p.join(",")).join(" ")}
-              fill="none"
-              stroke="#ffb866"
-              strokeWidth=".065"
+            <rect
+              x={approachRoute.start[0] - 0.08}
+              y={approachRoute.start[1] - 0.08}
+              width=".16"
+              height=".16"
             />
-          )}
-          {approachRoute.approach && (
-            <>
-              <circle
-                cx={approachRoute.approach[0]}
-                cy={approachRoute.approach[1]}
-                r=".1"
-                fill="#ffb866"
+            <text
+              data-testid="route-start-label"
+              x={approachRoute.start[0] + 0.13}
+              y={approachRoute.start[1] - 0.12}
+              fontSize=".14"
+            >
+              {approachRoute.startKind === "mission"
+                ? "MISSION ENTRY · fixed"
+                : "START · operator-selected"}
+            </text>
+            {approachRoute.points && (
+              <polyline
+                data-testid="approach-route-2d"
+                data-person-id={approachRoute.id}
+                points={approachRoute.points.map((p) => p.join(",")).join(" ")}
+                fill="none"
+                stroke="#ffb866"
+                strokeWidth={approachRoute.highlighted ? ".09" : ".065"}
               />
-              <text
-                data-testid="route-approach-label"
-                x={approachRoute.approach[0] + 0.14}
-                y={approachRoute.approach[1] - 0.12}
-                fontSize=".14"
-              >
-                APPROACH POINT · suggested
-              </text>
-            </>
-          )}
-        </g>
+            )}
+            {approachRoute.approach && (
+              <>
+                <circle
+                  cx={approachRoute.approach[0]}
+                  cy={approachRoute.approach[1]}
+                  r=".1"
+                  fill="#ffb866"
+                />
+                <text
+                  data-testid="route-approach-label"
+                  data-person-id={approachRoute.id}
+                  x={approachRoute.approach[0] + 0.14}
+                  y={approachRoute.approach[1] - 0.12}
+                  fontSize=".14"
+                >
+                  {approachRoute.label
+                    ? `${approachRoute.label.replace("PERSON ", "P")} approach`
+                    : "APPROACH POINT · suggested"}
+                </text>
+              </>
+            )}
+          </g>
+        ),
       )}
       {last?.old_position && last.new_position && (
         <line
@@ -829,7 +847,9 @@ export function Map2D({
             fill="#d9e0e9"
             fontSize=".17"
           >
-            {objectName(o)}
+            {personNumbers[o.id]
+              ? `Person ${personNumbers[o.id]}`
+              : objectName(o)}
           </text>
         </g>
       ))}
@@ -946,10 +966,14 @@ export default function Scene(props: SceneProps) {
     props.onSelect,
     layers.objects && props.showLabels,
     props.showLabels ? props.liveDetections : [],
-    props.approachRoute,
+    [
+      ...(props.approachRoute ? [props.approachRoute] : []),
+      ...(props.reconRoutes ?? []),
+    ],
     // Ten-second steps keep age wording current without re-rendering the map every tick.
     Math.floor(props.now / 10_000) * 10_000,
     layers.weakObjects,
+    props.personNumbers,
   );
   useEffect(() => {
     const handle = props.handle?.current;
