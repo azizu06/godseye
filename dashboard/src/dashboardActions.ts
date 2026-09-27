@@ -238,13 +238,17 @@ export function planActions(actions: VoiceAction[], ctx: PlanContext): Plan {
   return { ok: true, controls, ...plan, reversible, lines };
 }
 
-/** The filter's effect on shown objects, so hidden people are never silently invisible. */
+/**
+ * Objects a class filter hides (the selected object is always shown), so hidden
+ * people are never silently invisible. The 3D evidence policy applies afterwards.
+ */
 export function hiddenByFilter(
   objects: WorldObject[],
   classes: string[] | null,
+  selected: string | null = null,
 ) {
   const hidden = classes
-    ? objects.filter((o) => !classes.includes(o.class))
+    ? objects.filter((o) => o.id !== selected && !classes.includes(o.class))
     : [];
   return {
     count: hidden.length,

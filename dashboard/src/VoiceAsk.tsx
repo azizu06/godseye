@@ -22,6 +22,8 @@ export interface VoiceReply {
   actions: VoiceAction[];
   /** The map the reply was grounded on. */
   scope: string | null;
+  /** One-use token to have the applied result spoken in Scout's voice. */
+  confirm: string | null;
 }
 
 const MAX_RECORD_MS = 15000;
@@ -54,6 +56,7 @@ export function parseVoiceReply(data: unknown): VoiceReply | null {
       speechFailed: false,
       actions: [],
       scope,
+      confirm: null,
     };
   const question = text(value.question, 500);
   const answer = text(value.answer, 600);
@@ -65,36 +68,30 @@ export function parseVoiceReply(data: unknown): VoiceReply | null {
     (!answer && !actions.length)
   )
     return null;
-  const speech = value.speech as Record<string, unknown> | null;
+  const speech = parseSpeech(value.speech);
+  return {
+    question,
+    answer,
+    speech,
+    speechFailed: !speech && !actions.length,
+    actions,
+    scope,
+    confirm: actions.length ? text(value.confirm, 64) : null,
+  };
+}
+
+/** A ready spoken WAV reply, or null. */
+export function parseSpeech(
+  value: unknown,
+): { mime: string; data: string } | null {
+  const speech = value as Record<string, unknown> | null;
   const ready =
     !!speech &&
     speech.status === "ready" &&
     speech.mime === "audio/wav" &&
     typeof speech.data === "string" &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(speech.data);
-  return {
-    question,
-    answer,
-    speech: ready ? { mime: "audio/wav", data: speech!.data as string } : null,
-    speechFailed: !ready && !actions.length,
-    actions,
-    scope,
-  };
-}
-
-/** Speak an applied-action result with an on-device voice only; no provider request. */
-function speakLocally(line: string, done: () => void): boolean {
-  const synth =
-    typeof window === "undefined" ? undefined : window.speechSynthesis;
-  const voice = synth
-    ?.getVoices()
-    .find((v) => v.localService && v.lang.toLowerCase().startsWith("en"));
-  if (!synth || !voice) return false;
-  const utterance = new SpeechSynthesisUtterance(line);
-  utterance.voice = voice;
-  utterance.onend = utterance.onerror = done;
-  synth.speak(utterance);
-  return true;
+  return ready ? { mime: "audio/wav", data: speech!.data as string } : null;
 }
 
 function failure(status: number): string {
@@ -136,7 +133,6 @@ export function VoiceAsk({
   const player = useRef<HTMLAudioElement | null>(null);
   const playbackUrl = useRef<string | null>(null);
   const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const utterance = useRef(0);
 
   const releaseMic = useCallback(() => {
     if (limit.current) clearTimeout(limit.current);
@@ -145,8 +141,6 @@ export function VoiceAsk({
     stream.current = null;
   }, []);
   const stopPlayback = useCallback(() => {
-    utterance.current++;
-    window.speechSynthesis?.cancel();
     player.current?.pause();
     player.current = null;
     if (playbackUrl.current) URL.revokeObjectURL(playbackUrl.current);
@@ -227,52 +221,32 @@ export function VoiceAsk({
                   () => "The dashboard action failed.",
                 );
         setExchange({ q: reply.question, a: result });
-        const quiet = () => {
-          setPhase("idle");
-          setMessage("");
-        };
         if (abort.signal.aborted) return;
-        const token = ++utterance.current;
-        if (
-          speakLocally(result, () => utterance.current === token && quiet())
-        ) {
-          setPhase("speaking");
-          setMessage("Speaking…");
-        } else quiet();
+        // Only the applied result is spoken, after it happened, in Scout's own voice.
+        const spoken =
+          reply.confirm &&
+          (await fetch(`${api}/voice/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: reply.confirm, text: result }),
+            signal: abort.signal,
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => parseSpeech(data?.speech))
+            .catch(() => null));
+        if (abort.signal.aborted) return;
+        await play(
+          spoken || null,
+          "Spoken result unavailable; the result is shown.",
+        );
         return;
       }
       if (!reply.answer) throw new Error("invalid reply");
       setExchange({ q: reply.question, a: reply.answer });
-      if (!reply.speech) {
-        setPhase("idle");
-        setMessage("Spoken reply unavailable; the answer is shown.");
-        return;
-      }
-      const bytes = Uint8Array.from(atob(reply.speech.data), (c) =>
-        c.charCodeAt(0),
+      await play(
+        reply.speech,
+        "Spoken reply unavailable; the answer is shown.",
       );
-      const url = URL.createObjectURL(
-        new Blob([bytes], { type: reply.speech.mime }),
-      );
-      playbackUrl.current = url;
-      const audio = new Audio(url);
-      player.current = audio;
-      const done = () => {
-        if (player.current !== audio) return;
-        stopPlayback();
-        setPhase("idle");
-        setMessage("");
-      };
-      audio.onended = done;
-      audio.onerror = () => {
-        if (player.current !== audio) return;
-        stopPlayback();
-        setPhase("idle");
-        setMessage("Playback unavailable; the answer is shown.");
-      };
-      setPhase("speaking");
-      setMessage("Speaking…");
-      await audio.play().catch(() => audio.onerror?.(new Event("error")));
     } catch {
       if (abort.signal.aborted) return;
       setPhase("idle");
@@ -280,6 +254,37 @@ export function VoiceAsk({
     } finally {
       if (request.current === abort) request.current = null;
     }
+  }
+
+  async function play(
+    speech: { mime: string; data: string } | null,
+    unavailable: string,
+  ) {
+    if (!speech) {
+      setPhase("idle");
+      setMessage(unavailable);
+      return;
+    }
+    const bytes = Uint8Array.from(atob(speech.data), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: speech.mime }));
+    playbackUrl.current = url;
+    const audio = new Audio(url);
+    player.current = audio;
+    audio.onended = () => {
+      if (player.current !== audio) return;
+      stopPlayback();
+      setPhase("idle");
+      setMessage("");
+    };
+    audio.onerror = () => {
+      if (player.current !== audio) return;
+      stopPlayback();
+      setPhase("idle");
+      setMessage("Playback unavailable; the text is shown.");
+    };
+    setPhase("speaking");
+    setMessage("Speaking…");
+    await audio.play().catch(() => audio.onerror?.(new Event("error")));
   }
 
   async function begin() {

@@ -36,6 +36,8 @@ MAX_FRAME_DETECTIONS = 16
 MAX_AGE_S = 7 * 24 * 3600  # older, or in the future, means a wrong phone clock
 MAX_APPROACH_POINTS = 16
 MAX_ACTIONS = 4
+MAX_CONFIRM = 400
+CONFIRM_S = 60  # the dashboard applies actions immediately; a later confirmation is refused
 MAX_FILTER_CLASSES = 8
 TRANSCRIBE_S, ANSWER_S, SPEAK_S = 15, 12, 15
 DEFAULT_BUDGET = 100  # paid questions per backend process (a new map does not reset it); never retried
@@ -304,6 +306,16 @@ def register_voice_routes(app, providers, budget, evidence):
     """`evidence()` -> dict(session, objects, events, live, scout, route, extras, classes) of the shown map."""
     busy = asyncio.Lock()
     asked = 0
+    pending = {}  # one-use confirmation token -> monotonic expiry, one per action reply
+
+    async def speak(text):
+        try:
+            pcm = await asyncio.wait_for(providers.speaker.synthesize(text, limit=MAX_REPLY_PCM), SPEAK_S)
+            wav = wav_audio(pcm, MAX_REPLY_PCM)
+            return dict(status='ready', mime='audio/wav', duration_s=len(pcm) / (RATE * 2),
+                        data=base64.b64encode(wav).decode('ascii'))
+        except Exception:
+            return dict(status='error')
 
     @app.get('/voice')
     async def voice_status():
@@ -367,19 +379,49 @@ def register_voice_routes(app, providers, budget, evidence):
                 raise HTTPException(502, 'Answer unavailable')
             result.update(status='ok', answer=answer)
             if actions:
-                # The dashboard applies these and reports what actually happened; nothing is spoken here.
+                # The dashboard applies these, then may have its actual result spoken once via /voice/confirm.
+                now = time.monotonic()
+                for token in [t for t, expiry in pending.items() if expiry < now]:
+                    del pending[token]
+                while len(pending) >= 8:
+                    pending.pop(next(iter(pending)))
+                result['confirm'] = secrets.token_urlsafe(16)
+                pending[result['confirm']] = now + CONFIRM_S
                 result['actions'] = actions
                 return result
             if await request.is_disconnected():
                 raise HTTPException(499, 'Question cancelled')
-            try:
-                pcm = await asyncio.wait_for(providers.speaker.synthesize(answer, limit=MAX_REPLY_PCM), SPEAK_S)
-                wav = wav_audio(pcm, MAX_REPLY_PCM)
-                result['speech'] = dict(status='ready', mime='audio/wav', duration_s=len(pcm) / (RATE * 2),
-                                        data=base64.b64encode(wav).decode('ascii'))
-            except Exception:
-                result['speech'] = dict(status='error')
+            result['speech'] = await speak(answer)
             return result
+
+    @app.post('/voice/confirm')
+    async def voice_confirm(request: Request):
+        """Speak the dashboard's actual action result in Scout's voice, once per action reply.
+
+        The text is what the dashboard applied, never model prose; the one-use token bounds it to one
+        speech request per paid question. Like questions, the text is neither logged nor stored.
+        """
+        if providers is None:
+            raise HTTPException(503, 'Voice Q&A unavailable')
+        declared = request.headers.get('content-length')
+        if declared and declared.isdigit() and int(declared) > 4096:
+            raise HTTPException(413, 'Confirmation too long')
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(422, 'Invalid confirmation') from None
+        token = body.get('token') if isinstance(body, dict) else None
+        text = _clean(body.get('text'), MAX_CONFIRM) if isinstance(body, dict) else None
+        if not isinstance(token, str) or token not in pending:
+            raise HTTPException(409, 'Confirmation expired or already used')
+        if text is None:
+            raise HTTPException(422, 'Invalid confirmation')
+        if busy.locked():
+            raise HTTPException(429, 'Voice question in progress; retry later')
+        if pending.pop(token) < time.monotonic():
+            raise HTTPException(409, 'Confirmation expired or already used')
+        async with busy:
+            return dict(version=1, status='ok', speech=await speak(text))
 
 
 def scout_position(pose, max_age_s=2.):

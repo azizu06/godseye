@@ -443,6 +443,49 @@ class ActionRouteTests(unittest.TestCase):
             self.assertIsNone(result['speech'])
             self.assertEqual(voice.speaker.texts, [])
 
+    def test_actual_results_are_spoken_once_by_the_same_voice_after_the_dashboard_applies_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            answer = {'answer': 'Done already.', 'actions': [act('set_view', mode='2d')]}
+            voice = providers(answerer=FakeAnswerer(answer))
+            with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+                token = result['confirm']
+                self.assertEqual(voice.speaker.texts, [])  # nothing spoken before the result exists
+                spoken = client.post('/voice/confirm', json={'token': token, 'text': 'Switched to 2D.'})
+                self.assertEqual(spoken.status_code, 200)
+                self.assertEqual(spoken.json()['speech']['status'], 'ready')
+                with wave.open(io.BytesIO(base64.b64decode(spoken.json()['speech']['data']))) as clip:
+                    self.assertEqual(clip.getframerate(), 16000)
+                self.assertEqual(voice.speaker.texts, ['Switched to 2D.'])
+                # One confirmation per action reply; unknown, reused or malformed requests speak nothing.
+                for body in ({'token': token, 'text': 'again'}, {'token': 'forged', 'text': 'hi'}, {'text': 'hi'}):
+                    self.assertEqual(client.post('/voice/confirm', json=body).status_code, 409)
+                token = client.post('/voice/ask', content=CLIP, headers=WEBM).json()['confirm']
+                for bad in ('', 'x' * 401, 'bad\x00text', 7):
+                    self.assertEqual(client.post('/voice/confirm', json={'token': token, 'text': bad}).status_code, 422)
+                self.assertEqual(client.post('/voice/confirm', content=b'not json',
+                                             headers={'Content-Type': 'application/json'}).status_code, 422)
+                # A failed voice still reports the shown result without leaking provider detail.
+                voice.speaker.error = RuntimeError('secret-detail')
+                token = client.post('/voice/ask', content=CLIP, headers=WEBM).json()['confirm']
+                failed = client.post('/voice/confirm', json={'token': token, 'text': 'Switched to 2D.'})
+                self.assertEqual(failed.json()['speech'], {'status': 'error'})
+                self.assertNotIn('secret', failed.text)
+            self.assertEqual(len(voice.speaker.texts), 2)
+
+    def test_confirmations_expire_and_need_configured_voice(self):
+        with tempfile.TemporaryDirectory() as folder:
+            voice = providers(answerer=FakeAnswerer({'answer': 'x', 'actions': [act('frame_room')]}))
+            with patch('backend.voice.CONFIRM_S', 0):
+                with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
+                    token = client.post('/voice/ask', content=CLIP, headers=WEBM).json()['confirm']
+                    time.sleep(.01)
+                    self.assertEqual(client.post('/voice/confirm', json={'token': token, 'text': 'Framed.'}).status_code,
+                                     409)
+            self.assertEqual(voice.speaker.texts, [])
+            with TestClient(create_app(seeded(folder))) as client:
+                self.assertEqual(client.post('/voice/confirm', json={'token': 't', 'text': 'x'}).status_code, 503)
+
     def test_rejected_actions_speak_the_fixed_reason_and_return_no_actions(self):
         with tempfile.TemporaryDirectory() as folder:
             answer = {'answer': 'Driving to the kitchen now.', 'actions': [act('propose_navigation', x=1, z=1)]}
@@ -462,6 +505,7 @@ class ActionRouteTests(unittest.TestCase):
                 result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
             self.assertNotIn('actions', result)
             self.assertNotIn('action_error', result)
+            self.assertNotIn('confirm', result)
             self.assertEqual(result['answer'], 'Nothing new.')
 
 

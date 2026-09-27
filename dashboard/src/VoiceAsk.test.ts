@@ -20,6 +20,7 @@ describe("parseVoiceReply", () => {
       speechFailed: false,
       actions: [],
       scope: '["room",1]',
+      confirm: null,
     });
   });
   it("keeps the text answer when speech failed or is malformed", () => {
@@ -43,6 +44,7 @@ describe("parseVoiceReply", () => {
       speechFailed: false,
       actions: [],
       scope: null,
+      confirm: null,
     });
   });
   it("accepts typed actions without speech and rejects any invalid action whole", () => {

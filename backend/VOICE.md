@@ -73,15 +73,20 @@ navigation owner and stay `unsupported` ("use Rover controls"); `take_photo` is
 `unsupported` because the phone offers no remote capture (use **High-res photo** on the
 phone). Object labels are data: they cannot add names, classes or objects.
 
-A reply with actions skips ElevenLabs speech. The dashboard (`dashboardActions.ts`,
-`useDashboardActions.ts`) re-validates them, applies nothing unless the reply's map is the
-shown map, every target still exists and it arrived within 30 s of sending (and not
-after Cancel), applies each id at most once, then shows and speaks the actual results
-with an on-device `speechSynthesis` voice only (no provider request). The model's prose is
-not shown for action replies. The class filter and layer switches change only what this
-viewer draws: stored objects, Spatial memory and the detection list stay complete, the
-dock says how many objects (and people) the filter hides, and **Show all** restores it.
-Undo restores the view, selection, panel and 3D camera from before the last voice change.
+A reply with actions is not spoken and carries a one-use `confirm` token. The dashboard
+(`dashboardActions.ts`, `useDashboardActions.ts`) re-validates the actions, applies nothing
+unless the reply's map is the shown map, every target still exists and it arrived within
+30 s of sending (and not after Cancel), and applies each id at most once. Only then does it
+post the actual result text (success or "Nothing changed" failure) to `POST /voice/confirm`
+`{token, text}`, which speaks it with the same ElevenLabs voice (one call per token, at most
+400 characters, 60 s expiry; reused or unknown tokens get 409, invalid text 422). The model's
+prose is never shown or spoken for action replies, and there is no browser-speech fallback:
+if speech fails the result stays on screen. The class filter narrows what this viewer draws
+before the 3D evidence policy (`objectDisplay.ts`) applies, and like that policy it always
+keeps the selected object. Stored objects, Spatial memory and the detection list stay
+complete; the dock says how many objects (and people) the filter hides, and **Show all**
+restores it. Undo restores the view, selection, panel and 3D camera from before the last
+voice change.
 `download_view_snapshot` saves the 3D canvas as PNG (labels not included) or the 2D map as
 SVG; `save_camera_frame` downloads the newest already received detection frame JPEG and
 reports its capture time and age. Neither requests a new photo.

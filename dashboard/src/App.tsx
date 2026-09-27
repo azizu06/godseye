@@ -181,20 +181,22 @@ export default function App() {
     scene: sceneHandle,
   });
   const { controls } = actions;
-  // The class filter narrows only what is drawn; stored objects and raw detections stay intact.
+  // The class filter narrows only what is drawn, before the scene's evidence policy
+  // (objectDisplay.ts); stored objects, Spatial memory and raw detections stay intact.
+  // Like that policy, it always keeps the selected object discoverable.
   const shownMission = useMemo(
     () =>
       controls.classes
         ? {
             ...mission,
-            objects: mission.objects.filter((o) =>
-              controls.classes!.includes(o.class),
+            objects: mission.objects.filter(
+              (o) => o.id === selected || controls.classes!.includes(o.class),
             ),
           }
         : mission,
-    [mission, controls.classes],
+    [mission, controls.classes, selected],
   );
-  const hidden = hiddenByFilter(mission.objects, controls.classes);
+  const hidden = hiddenByFilter(mission.objects, controls.classes, selected);
   const detectionsFresh = detectionsLive(mission.detections, now);
   const live = useMemo(
     () =>
@@ -572,9 +574,9 @@ export default function App() {
                 : "Showing all classes"}
               {!controls.boxes && " · boxes hidden"}
               {!controls.labels && " · labels hidden"}
-              {hidden.count > 0 && ` · ${hidden.count} hidden`}
+              {hidden.count > 0 && ` · ${hidden.count} hidden by filter`}
               {hidden.people > 0 &&
-                ` (${hidden.people} ${hidden.people === 1 ? "person" : "people"})`}
+                `, including ${hidden.people} ${hidden.people === 1 ? "person" : "people"}`}
             </span>
             <button
               onClick={() =>
