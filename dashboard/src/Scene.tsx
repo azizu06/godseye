@@ -1,4 +1,5 @@
 import PointCloudLayer from "./PointCloudLayer";
+import { ResponderRover } from "./ResponderRover";
 import type { PointCloudStore } from "./pointCloud";
 import { createPortal } from "react-dom";
 import { ColorSurfaces } from "./ColorSurfaces";
@@ -673,21 +674,7 @@ function World({
             <ringGeometry args={[0.2, 0.23, 48]} />
             <meshBasicMaterial color="#a4c5f2" side={THREE.DoubleSide} />
           </mesh>
-          <mesh>
-            <boxGeometry args={[0.25, 0.12, 0.35]} />
-            <meshStandardMaterial
-              color="#a5b7cf"
-              metalness={0.6}
-              roughness={0.3}
-              emissive="#293c58"
-            />
-            <Edges color="#c6d9f5" />
-          </mesh>
-          <mesh position={[0, 0.16, 0]} rotation={[-0.15, 0, 0]}>
-            <boxGeometry args={[0.12, 0.2, 0.035]} />
-            <meshStandardMaterial color="#263953" />
-            <Edges color="#bad1f2" />
-          </mesh>
+          <ResponderRover />
           <mesh position={[0, 0.02, 0.33]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.1, 0.2, 3]} />
             <meshBasicMaterial color="#d8e7fc" />
