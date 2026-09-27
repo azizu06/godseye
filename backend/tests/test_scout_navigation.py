@@ -67,7 +67,8 @@ class ContinuousRunnerTests(unittest.IsolatedAsyncioTestCase):
         try:
             await h.finished()
             self.assertEqual(h.stops, ['arrived'])
-            self.assertTrue(any(v == 0. and w != 0. for v, w in rover.commands))
+            self.assertTrue(any(v > 0. and w != 0. for v, w in rover.commands),
+                            'the corner should be rounded while moving when the arc is clear')
         finally:
             await h.nav.aclose()
 

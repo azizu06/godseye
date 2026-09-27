@@ -587,10 +587,12 @@ while the default car reports down, so runs are exercised by tests with
   tick, cruising at 0.15 m/s, slowing within 0.40 m of the goal and clamped to
   the contract's 0.20 m/s and 0.5 rad/s (then to the motion limits). Heading errors above 0.6 rad turn in
   place (`v_mps` 0), finishing alignment to within 0.20 rad before moving again;
-  replans preserve an unfinished pivot. If the usual carrot cuts an inside corner,
-  the follower switches to a nearby route point (at most 0.15 m lookahead) and
-  aligns before advancing. A repeatedly rejected command still counts toward
-  the no-progress timeout. It never reverses; arrival is within 0.15 m.
+  replans preserve an unfinished pivot. Before each command, the runner checks
+  the immediate footprint step and samples the requested arc at half-cell
+  spacing toward its pursuit target. If that arc cuts an inside corner, it
+  shortens lookahead along the same route down to map/arrival resolution. These
+  are nominal requested kinematics, not measured prototype PWM arcs or a
+  stopping-distance certificate. It never reverses; arrival is within 0.15 m.
 - **Replanning:** a full replan from the current pose every four seconds, or sooner
   for a new obstacle or approaching Explore goal. An independent worker refreshes
   sensing and checks the remaining route every 0.20 seconds; a slow route search
@@ -602,6 +604,11 @@ while the default car reports down, so runs are exercised by tests with
   cancels its outstanding route search and remembers a half-meter region around
   the reached frontier (last 64 per run), avoiding repeated trips to the same seam.
   Check results for a replaced route cannot invalidate its successor.
+  If no pursuit step is feasible, Explore keeps the route and remains armed at
+  zero instead of treating the wait as a motion stall. Identical map/path/pose
+  replans retain that rejection; changed map, route or meaningful pose evidence
+  permits another attempt. Health reports `navigation_wait_reason` while Explore
+  waits, including `no_feasible_step` and `explore_complete`.
   `path` is published only when its points change, and new `/live` viewers get it.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the

@@ -141,6 +141,10 @@ Legacy/restarted sessions without a recorded entry are not backfilled: start a n
 session at the intended entry point. This metadata changes no motion authority or
 walking-clearance assumptions; `/route` remains the existing visualization-only API.
 
+`health` may also include `navigation_wait_reason`: `null` while following or idle,
+or a reason such as `no_feasible_step` or `explore_complete` while Explore stays armed
+at zero awaiting new map evidence. It does not replace `stop_reason`.
+
 
 ## 3. Dashboard → Mac: REST on `http://<mac>:8765`
 
