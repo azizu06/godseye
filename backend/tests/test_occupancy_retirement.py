@@ -26,6 +26,38 @@ def old_scene():
 
 
 class DepthRetirementTests(unittest.TestCase):
+    def test_current_mesh_retires_after_two_clear_depth_views(self):
+        grid = OccupancyGrid(SESSION)
+        floor, obstacle = old_scene()
+        mesh = frame_evidence(obstacle).keys
+        grid.commit(frame_evidence(floor), 1., depth_view=view(1., distance=.8),
+                    mesh_keys=mesh)
+        self.assertEqual(grid.map_snapshot().cell(0., -1.), occupancy.OCCUPIED)
+        first = view(2.)
+        kept = grid.mesh_keys_consistent_with_depth(mesh, first)
+        self.assertEqual(len(kept), len(mesh))
+        grid.commit(frame_evidence(floor), 2., depth_view=first, mesh_keys=kept)
+        second = view(3.)
+        kept = grid.mesh_keys_consistent_with_depth(mesh, second)
+        self.assertLess(len(kept), len(mesh))
+        grid.commit(frame_evidence(floor), 3., depth_view=second, mesh_keys=kept)
+        self.assertEqual(grid.map_snapshot().cell(0., -1.), occupancy.FREE)
+
+    def test_current_mesh_survives_uncertain_or_occluded_depth(self):
+        floor, obstacle = old_scene()
+        mesh = frame_evidence(obstacle).keys
+        for second in (view(3., confidence=0), view(3., distance=.8)):
+            with self.subTest(confidence=second.confidence[0, 0], distance=second.depth[0, 0]):
+                grid = OccupancyGrid(SESSION)
+                grid.commit(frame_evidence(floor), 1., depth_view=view(1., distance=.8),
+                            mesh_keys=mesh)
+                first = view(2.)
+                grid.commit(frame_evidence(floor), 2., depth_view=first, mesh_keys=mesh)
+                kept = grid.mesh_keys_consistent_with_depth(mesh, second)
+                self.assertEqual(len(kept), len(mesh))
+                grid.commit(frame_evidence(floor), 3., depth_view=second, mesh_keys=kept)
+                self.assertEqual(grid.map_snapshot().cell(0., -1.), occupancy.OCCUPIED)
+
     def test_navigation_cell_reopens_only_after_two_accepted_clear_views(self):
         grid = OccupancyGrid(SESSION)
         floor, obstacle = old_scene()
