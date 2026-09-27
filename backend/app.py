@@ -48,6 +48,7 @@ from backend.occupancy import (CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_
                                DepthView, Evidence, OccupancyGrid, depth_view, frame_evidence)
 from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem, start_clearance_diagnostics
+from backend.landmarks import LandmarkFrames, find_landmark
 from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
@@ -281,6 +282,7 @@ def create_app(db_path: str | None = None, build_points=None,
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
     nav_settings = nav_settings or NavSettings()
     proposals = NavProposals(nav_settings)  # voice navigation proposals awaiting a human confirmation
+    landmark_frames = LandmarkFrames()  # recent downscaled RGB-D frames of the active map for voice go-to
 
     @asynccontextmanager
     async def lifespan(app):
@@ -363,6 +365,7 @@ def create_app(db_path: str | None = None, build_points=None,
                                          relay.actuation if relay else None, 'stopping_distance_m', None) or 0.)
         proposals.invalidate()
         app.state.nav_proposals = proposals
+        app.state.landmark_frames = landmark_frames
         app.state.labels = ObjectLabels(db, label_provider,
             lambda session: publish(objects_message(session)) if session == shown_session() else None,
             timeout_s=label_timeout_s)
@@ -404,7 +407,11 @@ def create_app(db_path: str | None = None, build_points=None,
         events=app.state.changes.events(shown_session()),
         live=app.state.phone is not None and app.state.session is not None,
         scout=scout_position(rover_pose()), route=app.state.nav.path, classes=app.state.overlay_classes,
-        extras=lambda: scene_extras(app.state, shown_session(), time.time())), stop=lambda: operator_halt())
+        extras=lambda: scene_extras(app.state, shown_session(), time.time())), stop=lambda: operator_halt(),
+        landmark=lambda name: find_landmark(
+            name, frames=landmark_frames.frames(app.state.session), locator=voice_providers.answerer,
+            snapshot=map_snapshot, pose=lambda: app.state.nav.fresh_pose(), settings=nav_settings,
+            validate=proposals.validate))
     register_move_routes(app, lambda: app.state.mover, speak)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match", "Authorization"],
@@ -747,6 +754,11 @@ def create_app(db_path: str | None = None, build_points=None,
         mesh_keys = None
         if custom_builder is None:
             frame = parse_frame_bundle(payload, session_id=session_id, map_epoch=map_epoch)
+            if voice_providers is not None:
+                try:  # bounded, in-memory only; never costs the map update
+                    landmark_frames.offer((session_id, map_epoch), frame)
+                except Exception:
+                    logger.exception('landmark frame skipped')
             view = depth_view(frame)
             if frame.mesh_points is not None:
                 mesh_points = (filter_prototype_self_mesh(frame.mesh_points, frame.transform, calibration,
