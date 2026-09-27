@@ -535,8 +535,12 @@ export function useMission() {
     }
   }, [healthy, unexpectedStop, cancelControl, latchStop]);
   useEffect(() => {
-    if (!canDrive) cancelControl();
-  }, [canDrive, cancelControl]);
+    // A handoff's own pending request, stop latch and mode-change disarm drop
+    // canDrive while it runs; cancelling here made it Stop its own goal. Its
+    // valid() check still ends it on Stop, health loss, or a source/map change.
+    // Re-evaluated when pending clears, so a failed handoff still cancels.
+    if (!canDrive && controlBusy.current === null) cancelControl();
+  }, [canDrive, pending, cancelControl]);
   const manualCapabilities =
     autonomy?.adapter === "iphone"
       ? (autonomy.manual_control ?? undefined)
