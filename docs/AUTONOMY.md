@@ -264,9 +264,10 @@ Actual motor speed, yaw sign and stopping distance remain unverified. This is on
 for supervised tests in open space, not a claim of accurate autonomous driving.
 
 The prototype pose/map follower chooses forward or moving left/right arcs, reserving
-a pivot for turns above about 69°. Explore prefers reachable
-unexplored space ahead and, when both hallway walls are observed, first moves toward
-their center before following the far end. A straight path with at least 1 m of
+a pivot for turns above about 69°. In an open room, Explore favors reachable
+frontiers with more unmapped area nearby, then covers the remaining frontiers
+until the mapped room has none. When both hallway walls are observed, it first
+moves toward their center and follows the far end. A straight path with at least 1 m of
 clear route ahead requests the prototype's 0.2 m/s nominal command and PWM 180;
 an observed corridor must also be at least 1.2 m wide and centered. Off-center
 travel on a detour uses a differential forward arc at PWM 180; slow approaches

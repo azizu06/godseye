@@ -126,12 +126,12 @@ def recoverable_start(snapshot, x, z, extra_margin_m):
 def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
     if snapshot.traversable(next_x, next_z):
         return True
-    if not recoverable_start(snapshot, x, z, extra_margin_m):
+    if snapshot.traversable(x, z) or not recoverable_start(snapshot, x, z, extra_margin_m):
         return False
     before = obstacle_clearance_m(snapshot, x, z)
     after = obstacle_clearance_m(snapshot, next_x, next_z)
     return (snapshot.cell(next_x, next_z) != OCCUPIED and
-            after >= snapshot.inflation_m - extra_margin_m and after >= before - .005)
+            after >= snapshot.inflation_m - extra_margin_m and after >= before)
 
 
 def straight_runway_m(path, segment, x, z, yaw):

@@ -520,11 +520,12 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
         grid = _fit(grid, [(sx, sz)], config)
         if grid is None:
             return None
-    start = grid.world_to_cell(sx, sz)
-    if start is None:
+    start_cell = grid.world_to_cell(sx, sz)
+    if start_cell is None:
         return None
     mask = traversable_mask(grid, dataclasses.replace(config, unknown_traversable=allow_unknown))
-    if not mask[start]:
+    start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
+    if start is None:
         return None
     frontiers = mask & _safe_frontiers(grid, config)
     h, w = mask.shape

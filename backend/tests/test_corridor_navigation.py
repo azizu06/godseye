@@ -25,12 +25,16 @@ class CorridorTests(unittest.TestCase):
                               armed_mode=lambda: 'explore')
         self.assertFalse(snapshot.traversable(0., 1.))
         self.assertTrue(recoverable_start(snapshot, 0., 1., settings.start_recovery_margin_m))
-        kind, _, goal, plan = navigator._plan(lambda: snapshot, (0., 1.), (-.3, 4.), False)
+        kind, _, goal, plan = navigator._plan(lambda: snapshot, (0., 1.), None, True, yaw=0.)
         self.assertEqual(kind, 'plan')
         self.assertTrue(plan.ok, plan.reason)
         self.assertGreater(goal[1], 2.)
         self.assertTrue(recovery_step_allowed(snapshot, 0., 1., -.01, 1.01,
                                               settings.start_recovery_margin_m))
+        self.assertFalse(recovery_step_allowed(snapshot, 0., 1., .01, 1.01,
+                                               settings.start_recovery_margin_m))
+        self.assertFalse(recovery_step_allowed(snapshot, -.05, 1., 0., 1.,
+                                               settings.start_recovery_margin_m))
 
     def test_prototype_does_not_recover_into_a_close_obstacle(self):
         cells = np.ones((120, 60), np.uint8)
