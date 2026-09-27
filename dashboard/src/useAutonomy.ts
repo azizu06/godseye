@@ -6,6 +6,7 @@ export interface AutonomyReadiness {
   adapter: "logging" | "iphone";
   profile?: "prototype" | "measured";
   warnings?: string[];
+  prototype_cruise_pwm?: number | null;
   ready: boolean;
   manual_control?: ManualCapabilities | null;
   auto_requested?: boolean;

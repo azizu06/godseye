@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--prototype', action='store_true', help='Uncalibrated prototype; never auto-arms')
     parser.add_argument('--prototype-max-pwm', type=int, default=180,
                         help='Ceiling for EVERY prototype move, including arcs/pivots (1–180; not a calibrated speed)')
+    parser.add_argument('--prototype-cruise-pwm', type=int,
+                        help='Opt-in faster prototype: forward/arc PWM at nominal cruise (61 to --prototype-max-pwm); '
+                             'reduced toward baseline near obstacles, unknown floor and arrival; stopping distance unmeasured')
     parser.add_argument('--prototype-variable-arcs', action='store_true',
                         help='Enable variable inner-wheel power; requires paired updated phone/ESP firmware')
     parser.add_argument('--estimated-length-m', type=float)
@@ -26,6 +29,8 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--weights', help='Detector weights; defaults to GODSEYE_YOLO_WEIGHTS')
     args = parser.parse_args()
+    if args.prototype_cruise_pwm is not None and not args.prototype:
+        parser.error('--prototype-cruise-pwm requires --prototype')
     folder = args.config_dir.expanduser().resolve()
     if args.init:
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -59,9 +64,15 @@ def main():
         from backend.prototype import PrototypeActuation, prototype_geometry
         if not 1 <= args.prototype_max_pwm <= 180:
             parser.error('--prototype-max-pwm must be in [1, 180]')
-        actuation = PrototypeActuation(max_pwm=args.prototype_max_pwm, variable_arc_pwm=args.prototype_variable_arcs)
+        if args.prototype_cruise_pwm is not None and not 60 < args.prototype_cruise_pwm <= args.prototype_max_pwm:
+            parser.error('--prototype-cruise-pwm must be above 60 and at most --prototype-max-pwm')
+        actuation = PrototypeActuation(max_pwm=args.prototype_max_pwm, variable_arc_pwm=args.prototype_variable_arcs,
+                                       cruise_pwm=args.prototype_cruise_pwm)
         geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
         print('UNCALIBRATED PROTOTYPE: PWM 60–180 proportional forward/arc power, PWM 60 pivot; actual speed unmeasured.', flush=True)
+        if args.prototype_cruise_pwm is not None:
+            print(f'FASTER UNCALIBRATED CRUISE: forward/arc PWM up to {args.prototype_cruise_pwm} on clear, fresh map; '
+                  'reduced near obstacles; stopping distance unmeasured.', flush=True)
     else:
         actuation = load_actuation(folder / 'actuation.json')
         geometry = load_calibration(folder / 'geometry.json')

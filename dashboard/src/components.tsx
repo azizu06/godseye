@@ -663,6 +663,16 @@ export function OperatorControls({
               way.
             </p>
           )}
+          {autonomy.profile === "prototype" &&
+            typeof autonomy.prototype_cruise_pwm === "number" && (
+              <p>
+                <strong>Faster uncalibrated cruise</strong>
+                <br />
+                Forward and arc PWM {autonomy.prototype_cruise_pwm} in clear,
+                freshly mapped space; reduced power near obstacles. Stopping
+                distance at this power is unmeasured.
+              </p>
+            )}
           <p>
             {waitReason
               ? "Exploration is waiting."

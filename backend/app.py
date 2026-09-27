@@ -271,6 +271,7 @@ def create_app(db_path: str | None = None, build_points=None,
     if relay is not None and not relay.actuation.blockers:
         nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower(),
                                adaptive_explore=getattr(relay.actuation, 'prototype', False),
+                               proximity_slowdown=getattr(relay.actuation, 'cruise_pwm', None) is not None,
                                replan_s=4. if getattr(relay.actuation, 'prototype', False)
                                else (nav_settings or NavSettings()).replan_s,
                                start_recovery_margin_m=.1524 if getattr(relay.actuation, 'prototype', False)
@@ -496,6 +497,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     prototype_max_pwm=getattr(relay.actuation, 'max_pwm', None) if relay else None,
+                    prototype_cruise_pwm=getattr(relay.actuation, 'cruise_pwm', None) if relay else None,
                     prototype_variable_arcs=getattr(relay.actuation, 'variable_arc_pwm', False) if relay else False,
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
                     auto_requested=app.state.auto_requested, scan_pacing=app.state.nav.scan_status,

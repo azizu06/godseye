@@ -325,6 +325,42 @@ then explicitly Arm. Stop and reassess if the rover turns in the wrong direction
 Validation: `python -m unittest backend.tests.test_prototype -v` checks estimate
 provenance, unchanged measured gates, API readiness, command bounds and continuous delivery without artificial pauses or run limits. No hardware motion is implied by those tests.
 
+### Opt-in faster prototype cruise
+
+Without an extra flag, the checkpoint-5 command format sends PWM 60 at the
+follower's 0.15 m/s nominal cruise; only Explore requests above 0.15 (up to its
+0.20 straight-leg request) reach higher duty. Explore's adaptive cap is
+0.10 + 0.10 × open space × map freshness × depth confidence; for example, a
+0.25 s old map with 0.75 confidence caps open-floor requests near 0.156, which this
+mapping sends as about PWM 74. This is derived from the code, not from logged packets.
+`--prototype-cruise-pwm N` explicitly raises forward and arc duty:
+
+```sh
+python -m tools.run_rover_backend --prototype \
+  --estimated-length-m 0.2286 --estimated-width-m 0.127 --prototype-cruise-pwm 110
+```
+
+N must be an integer above 60 and at most `--prototype-max-pwm` (default and hard
+limit 180, the installed phone and ESP autonomous ceiling; 255 would need new phone
+and ESP firmware). Nominal requests at or below 0.10 m/s keep default power; duty
+rises linearly to N at 0.15 m/s and never falls below the default mapping. The
+Explore cap still reduces power toward baseline near obstacles, unknown floor ahead
+and aging sensing, reaching baseline at the edge of footprint clearance. With this
+option only, Navigate goal runs apply the same cap.
+Arrival slowing, pivots (PWM 60), planner and follower kinematics, footprint
+inflation, clearance, Stop, leases and permits are unchanged. `/autonomy` reports
+`prototype_cruise_pwm` and an added warning, and the dashboard shows
+**Faster uncalibrated cruise**. Start near 110 in open space and raise it only after
+observing stopping distance. Actual speed, coasting and stopping distance at the
+higher duty remain unmeasured.
+
+Scan pacing adds at most 2 s per checkpoint, at departure and then after 1 m or
+60° and at least 5 s. For the recorded 2.44 m, 26 s Explore run, three distance
+checkpoints would cost at most 6 s (under a quarter); turns can add more. Low
+forward duty, not pacing, is the main limit. At faster travel the 5 s spacing
+makes pauses a larger fraction; this option leaves pacing unchanged.
+Hardware-free checks: `python -m unittest backend.tests.test_prototype_cruise -v`.
+
 Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.

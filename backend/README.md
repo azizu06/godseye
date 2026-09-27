@@ -918,6 +918,13 @@ footprint bound without the extra margin is already clear. Each sampled step mus
 or increase distance to every overlapping obstacle and enter no new obstacle
 clearance region. It does not permit departure through occupied geometry inside the footprint.
 No occupied geometry is deleted to enable a route.
+Without `--prototype-variable-arcs`, nominal 0.15 m/s cruise sends PWM 60.
+Opt-in `--prototype-cruise-pwm N` (61 to `--prototype-max-pwm`, at most 180) raises
+forward/arc duty toward N between 0.10 and 0.15 nominal, never below the default
+mapping. The Explore proximity/freshness/unknown-floor cap still applies, and
+with this option only it also applies to goal runs (`NavSettings.proximity_slowdown`).
+Pivots, kinematics, clearance and Stop are unchanged; `/autonomy.prototype_cruise_pwm`
+and an extra warning report the mode. Stopping distance at that duty is unmeasured.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
 
 An explicit Explore arm requests one generation. Motors require fresh sensing,

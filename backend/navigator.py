@@ -49,6 +49,7 @@ RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode i
 @dataclass(frozen=True)
 class NavSettings:
     adaptive_explore: bool = False  # explicit prototype only; measured rate range stays intact
+    proximity_slowdown: bool = False  # faster prototype cruise only: goal runs get the same cap
     rate_hz: float = 10.  # control ticks; each one submits a command
     replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
     start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
@@ -720,7 +721,7 @@ class Navigator:
                                 command_blocked = True
                                 last_plan = -math.inf
 
-                if explore and s.adaptive_explore and snapshot is not None:
+                if (explore or s.proximity_slowdown) and s.adaptive_explore and snapshot is not None:
                     v, w = exploration_command(snapshot, x, z, yaw, v, w, now, s.map_max_age_s)
 
                 if pacer is not None:
