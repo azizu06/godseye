@@ -13,7 +13,7 @@ test("received spatial memory, Blender tools, controls and export", async ({
   page.on("pageerror", (e) => errors.push(e.message));
   const feed = await observedFeed(page);
   await expect(
-    page.getByRole("heading", { name: "Godseye spatial workspace" }),
+    page.getByRole("heading", { name: "PIP spatial workspace" }),
   ).toBeVisible();
   await workspace(page);
   await expect(page.getByText(/Receiving telemetry/)).toBeVisible();

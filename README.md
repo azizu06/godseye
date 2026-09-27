@@ -1,6 +1,6 @@
-# God's Eye
+# PIP — Personal Indoor Pathfinder
 
-A hackathon project that pairs a small rover with an iPhone to navigate its surroundings and build a live 3D view of the world on a laptop.
+PIP sends **Scout**, our rover, wherever you point or say. A hackathon project that pairs a small rover with an iPhone to navigate its surroundings and build a live 3D view of the world on a laptop.
 
 The idea is simple: build a car/rover, connect an Arduino Uno R3 to control its movement, and mount an iPhone at the front. The phone supplies high-quality cameras, LiDAR depth sensing, and on-device processing to support autonomous driving and navigation. At the same time, it streams sensor data to a laptop, where a 3D reconstruction grows and updates as the rover discovers new areas or observes changes.
 
