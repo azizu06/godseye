@@ -25,6 +25,8 @@ def main():
                         help='Enable variable inner-wheel power; requires paired updated phone/ESP firmware')
     parser.add_argument('--prototype-clearance-m', type=float, default=.1524,
                         help='Prototype margin beyond the footprint bound (default 0.1524 m = 6 in; 0 to 0.5)')
+    parser.add_argument('--prototype-camera-offset-m', type=float, nargs=2, metavar=('FORWARD', 'LEFT'),
+                        help='Operator-estimated phone camera offset from the chassis centre; default bounds it anywhere')
     parser.add_argument('--estimated-length-m', type=float)
     parser.add_argument('--estimated-width-m', type=float)
     parser.add_argument('--host', default='0.0.0.0')
@@ -72,7 +74,10 @@ def main():
                                        cruise_pwm=args.prototype_cruise_pwm)
         if not 0 <= args.prototype_clearance_m <= .5:
             parser.error('--prototype-clearance-m must be in [0, 0.5]')
-        geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m, args.prototype_clearance_m)
+        offset = tuple(args.prototype_camera_offset_m) if args.prototype_camera_offset_m else None
+        geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m, args.prototype_clearance_m, offset)
+        if offset is not None:
+            print(f'OPERATOR CAMERA OFFSET: forward {offset[0]:.3f} m, left {offset[1]:.3f} m.', flush=True)
         if args.prototype_clearance_m != .1524:
             print(f'OPERATOR CLEARANCE: {args.prototype_clearance_m:.4f} m margin beyond the footprint bound.', flush=True)
         print('UNCALIBRATED PROTOTYPE: PWM 60–180 proportional forward/arc power, PWM 60 pivot; actual speed unmeasured.', flush=True)
