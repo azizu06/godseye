@@ -97,12 +97,12 @@ def depth_view(frame) -> DepthView:
 
 
 def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, second,
-                                *, max_candidates=1024, cursor=0):
+                                *, max_candidates=2048, cursor=0):
     """Old occupied voxel centers seen through in both distinct raw depth frames.
 
-    This is deliberately conservative: a whole padded projection of each 5x5x2 cm
-    voxel must have medium-or-high-confidence depth farther than its farthest possible point
-    plus the visual cleanup margin. An occlusion or missing pixel retains evidence.
+    The center 3x3 depth patch must confidently see beyond each old voxel in
+    two frames. Nearby unrelated geometry at the padded silhouette edge must
+    not keep a departed person in the navigation map indefinitely.
     The caller applies these keys only if the second frame itself is accepted.
     """
     empty = np.empty(0, np.int64)
@@ -118,7 +118,20 @@ def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, seco
     if not len(candidates):
         return empty
     count = min(len(candidates), max_candidates)
-    selected = candidates[(np.arange(count) + cursor) % len(candidates)]
+    # Prioritize evidence in the rover's immediate surroundings; walking-person
+    # voxels near the route otherwise wait behind thousands of older wall voxels
+    # in key order. Keep a rolling share for distant map cleanup.
+    columns = keys[candidates] // _LEVELS
+    ix, iz = np.divmod(columns, _SIDE)
+    x = (ix - _SIDE // 2 + .5) / _PER_M
+    z = (iz - _SIDE // 2 + .5) / _PER_M
+    camera_x, camera_z = second.transform[0, 3], second.transform[2, 3]
+    distance = (x - camera_x) ** 2 + (z - camera_z) ** 2
+    near_count = count if count == len(candidates) else max(1, count * 3 // 4)
+    near = np.argpartition(distance, near_count - 1)[:near_count]
+    far_count = count - near_count
+    rolling = (np.arange(far_count) + cursor) % len(candidates)
+    selected = candidates[np.unique(np.concatenate((near, rolling)))]
     old = keys[selected]
     columns = old // _LEVELS
     ix, iz = np.divmod(columns, _SIDE)
@@ -147,8 +160,8 @@ def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, seco
                  & np.isfinite(u) & np.isfinite(v) & np.isfinite(pixels))
         result = np.zeros(len(old), bool)
         for i in np.flatnonzero(valid):
-            left, right = math.floor(u[i] - pixels[i]), math.ceil(u[i] + pixels[i])
-            top, bottom = math.floor(v[i] - pixels[i]), math.ceil(v[i] + pixels[i])
+            left, right = round(u[i]) - 1, round(u[i]) + 1
+            top, bottom = round(v[i]) - 1, round(v[i]) + 1
             if left < 0 or top < 0 or right >= dw or bottom >= dh:
                 continue
             d = depth[top:bottom + 1, left:right + 1]
@@ -302,7 +315,7 @@ class OccupancyGrid:
             floor_y = estimate_floor(keys % _LEVELS)
         retired = contradicted_obstacle_keys(keys, hits, floor_y, self.obstacle_from_m,
                                              first, current, cursor=cursor)
-        return retired, cursor + 1024
+        return retired, cursor + 512
 
     def commit(self, evidence: Evidence, now: float, *, retirement_keys=None,
                retirement_cursor=None, depth_view: DepthView | None = None) -> None:

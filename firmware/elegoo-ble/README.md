@@ -10,7 +10,7 @@ This firmware replaces the ELEGOO ESP camera/access-point firmware with a BLE-to
 
 - The attached kit was electronically identified as **ESP32-S3 revision 0.2, 8 MB flash, 8 MB embedded PSRAM**. Use target `esp32-s3` (the default). Older ESP32-WROVER modules use target `esp32`. ESP32-S2 has no Bluetooth and cannot run this design.
 - UART2 at 9600 baud, 8N1: **S3 RX GPIO3, TX GPIO40**; **WROVER RX GPIO33, TX GPIO4**. These differ: never flash a guessed pin mapping. The S3 pins come from ELEGOO's `ESP32_CameraServer_AP_2023_V1.3.ino` in the [program archive](https://drive.google.com/file/d/19IENruwaLPVMKnKpy1bk7TjwF5JThqie/view) linked by its official camera FAQ. The [older manufacturer's firmware](https://github.com/elegooofficial/ELEGOO-Smart-Robot-Car-Kit-V4.0/blob/main/ESP32-WROVER-Camera.zip) confirms the WROVER pins.
-- Stock Uno timed `N=2` firmware. The Uno firmware is not changed.
+- Stock Uno `N=2` timed movement and `N=4` differential-speed movement. The Uno firmware is not changed.
 - No ESP camera capture or Wi-Fi AP is started. After flashing, the stock ELEGOO camera page, Wi-Fi SSID and stock Wi-Fi app path are unavailable until the original firmware is restored. The phone supplies our images/depth.
 
 The hardware capability is documented in the [ESP32-WROVER datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-wrover_datasheet_en.pdf); the GATT implementation uses Espressif's [BLE API](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/ble.html).
@@ -46,21 +46,19 @@ Custom service `9E9E0001-3A17-4D2E-9A61-5C7D581F1800` has RX `...0002...` (write
 Only these commands pass the bridge, reconstructed from validated fields:
 
 - `N=2`: direction 1–4, PWM 1–80, lease exactly 200 ms.
-- `N=202`: autonomous direction 1–4, PWM 1–180, Uno timer exactly 1500 ms, with an
-  active session and fresh permit. The higher bound needs the matching iPhone
-  app; manual `N=2` keeps its 80 limit.
+- `N=202`: autonomous direction 1–6, PWM 1–180, with an active session and fresh permit. Directions 1–4 use timed Uno `N=2`; direction 5 or 6 requests a forward left or right arc via the stock Uno `N=4` differential-speed command. The higher bound and arcs need the matching iPhone app; manual `N=2` keeps its 80 limit.
 - `N=22,D1=1`: cached line-sensor query, preserving its request ID.
 - `N=100`: Stop.
 - `N=201`: open a drive session after a fresh ESP permit and a UART Stop handoff.
 - `N=202`: bounded timed movement or idle zero, requiring that session, a fresh ESP permit and an increasing sequence. See [the autonomous protocol](../../docs/AUTONOMY.md#esp-protocol).
 
-No indefinite movement, arbitrary UART passthrough, ultrasonic blocking query or firmware-write command is exposed. A GATT write response acknowledges BLE delivery, not motor execution. Only a matching Uno reply verifies the downstream connection. Autonomous driving additionally requires the backend's measured geometry and actuation profiles.
+No arbitrary UART passthrough, ultrasonic blocking query or firmware-write command is exposed. The stock `N=4` arc has no Uno timer: the ESP sends Stop after one second without a command refresh and on BLE disconnect. A GATT write response acknowledges BLE delivery, not motor execution. Only a matching Uno reply verifies the downstream connection. Autonomous driving additionally requires measured geometry and actuation profiles, or explicit prototype mode with operator-supplied estimates.
 
 BLE callbacks only copy bounded input into `BridgeInbox`; JSON parsing runs on the main loop. This fixes a Bluetooth-task stack overflow observed on the S3 during an autonomous idle test. The updated firmware was flashed and hash-verified; five real Uno queries took 96.7–174.4 ms, and the Stop acknowledgement, permit, arm barrier, idle zero and replay rejection all passed without movement. Run `python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy` with the phone disconnected to repeat that check.
 
 If the PlatformIO uploader's stub fails on this S3, esptool 5 with `--no-stub` and 115200 baud successfully updated the application at `0x10000`. Use that application-only path only when the installed bootloader and partition layout already match the build.
 
-There is one pending movement and one pending query. New movement replaces pending movement; Stop clears it and takes priority. Movement waiting more than 100 ms is discarded with Stop. Incomplete frames expire after 150 ms. UART writes are paced at their actual 9600-baud serialization cost. Manual movement keeps its 200 ms lease. Autonomous movement coasts through brief packet gaps; the bridge sends Stop after a full second without a forwarded command and on BLE disconnect, and the Uno has an independent 1.5 s timed fallback. An expired permit or missed movement refresh brakes the motors without retiring the explicitly armed session; only a later command with a new permit and sequence can move again. Malformed input, replay, disconnect and explicit Stop still retire the session. These are software timers, not a measured hardware stopping guarantee. Already-transmitted bytes and radio delays are not absolute end-to-end command expiry.
+There is one pending movement and one pending query. New movement replaces pending movement; Stop clears it and takes priority. Movement waiting more than 100 ms is discarded with Stop. Incomplete frames expire after 150 ms. UART writes are paced at their actual 9600-baud serialization cost. Manual movement keeps its 200 ms lease. Autonomous movement coasts through brief packet gaps; the bridge sends Stop after a full second without a forwarded command and on BLE disconnect. Timed `N=2` movement also has an independent 1.5 s Uno fallback; `N=4` arcs rely on the ESP Stop. An expired permit or missed movement refresh brakes the motors without retiring the explicitly armed session; only a later command with a new permit and sequence can move again. Malformed input, replay, disconnect and explicit Stop still retire the session. These are software timers, not a measured hardware stopping guarantee. Already-transmitted bytes and radio delays are not absolute end-to-end command expiry.
 
 The demo service does not implement authenticated pairing or bonding; anyone in Bluetooth range with a compatible client could connect while advertising. It supports one active connection and does not advertise again until it disconnects. Use only in a supervised demo environment; add authenticated pairing before wider deployment.
 

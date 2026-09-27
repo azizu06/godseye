@@ -28,7 +28,7 @@ final class RoverController: ObservableObject {
     var unoAgeMS: Double { max(0, (now - lastReply) * 1000) }
     var permitAgeMS: Double { lastPermit.isFinite ? max(0, (now - lastPermit) * 1000) : -1 }
     var autonomyAvailable: Bool {
-        bluetooth != nil && connected && verified && unoAgeMS < 1500 && now - lastPermit < 0.2
+        bluetooth != nil && connected && verified && unoAgeMS < 1500 && now - lastPermit < 0.5
     }
 
     private var connection: NWConnection?
@@ -299,9 +299,9 @@ final class RoverController: ObservableObject {
         if autonomyEnabled && !verified {
             stop()
             status = "Laptop control stopped · rover disconnected"
-        } else if autonomyEnabled && now - lastPermit >= 0.25 {
+        } else if autonomyEnabled && now - lastPermit >= 0.5 {
             // Never flush motion sampled before a permit gap. The ESP's motor
-            // lease brakes independently while this arm session waits to resume.
+            // command-loss brake acts independently while this arm session waits to resume.
             autonomyPending = nil
         }
         if busy {
@@ -321,7 +321,7 @@ final class RoverController: ObservableObject {
                 autonomyPending = nil
                 guard command.type == .stop || autonomyGate.fresh(command, now: now) else {
                     // A superseded movement may age while a BLE write finishes.
-                    // Drop it; the firmware owns the unchanged 200 ms timeout.
+                    // Drop it; the firmware owns the autonomous command-loss timeout.
                     if command.type != .command { stop() }
                     return
                 }

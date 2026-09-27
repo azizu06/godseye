@@ -147,7 +147,7 @@ class BridgeCore {
         !doc["T"].is<int>() || doc["T"].as<int>() != 1500) { reject(); return; }
     int direction = doc["D1"], power = doc["D2"];
     const bool nonzero = direction != 0 || power != 0;
-    if (nonzero && (direction < 1 || direction > 4 || power < 1 || power > 180)) {
+    if (nonzero && (direction < 1 || direction > 6 || power < 1 || power > 180)) {
       reject(); return;
     }
     const uint32_t sequence = doc["S"];
@@ -164,8 +164,18 @@ class BridgeCore {
     strcpy(motion.session, id);
     StaticJsonDocument<256> canonical;
     canonical["H"] = nonzero ? "M" : "S";
-    canonical["N"] = nonzero ? 2 : 100;
-    if (nonzero) { canonical["D1"] = direction; canonical["D2"] = power; canonical["T"] = 1500; }
+    const bool arc = direction == 5 || direction == 6;
+    canonical["N"] = nonzero ? (arc ? 4 : 2) : 100;
+    if (arc) {
+      // Stock Uno N=4 sets both forward motor speeds. The ESP's own 1 s
+      // command-loss brake sends N=100 if the untimed arc stops refreshing.
+      canonical["D1"] = direction == 5 ? power : power / 2;
+      canonical["D2"] = direction == 5 ? power / 2 : power;
+    } else if (nonzero) {
+      canonical["D1"] = direction;
+      canonical["D2"] = power;
+      canonical["T"] = 1500;
+    }
     serializeJson(canonical, motion.bytes, sizeof(motion.bytes));
   }
 

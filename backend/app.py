@@ -243,8 +243,10 @@ def create_app(db_path: str | None = None, build_points=None,
     device = DeviceRelay(relay.authorized) if relay is not None else None
     if relay is not None and not relay.actuation.blockers:
         nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower(),
-                               replan_s=3. if getattr(relay.actuation, 'prototype', False)
+                               replan_s=4. if getattr(relay.actuation, 'prototype', False)
                                else (nav_settings or NavSettings()).replan_s,
+                               start_recovery_margin_m=.1524 if getattr(relay.actuation, 'prototype', False)
+                               else (nav_settings or NavSettings()).start_recovery_margin_m,
                                pose_max_age_s=1. if getattr(relay.actuation, 'prototype', False)
                                else (nav_settings or NavSettings()).pose_max_age_s)
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects

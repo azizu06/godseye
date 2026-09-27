@@ -69,7 +69,7 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
 
 @main struct Check {
     @MainActor static func until(_ predicate: () -> Bool) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        let deadline = ProcessInfo.processInfo.systemUptime + 7
         while !predicate() {
             precondition(ProcessInfo.processInfo.systemUptime < deadline, "Timed out")
             try await Task.sleep(nanoseconds: 20_000_000)
@@ -133,6 +133,10 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
                 precondition(rover.acceptAutonomy(arm))
                 try await until { armed }
                 try await Task.sleep(nanoseconds: 60_000_000)
+                second.permits = false
+                try await Task.sleep(nanoseconds: 300_000_000)
+                precondition(rover.autonomyAvailable, "A 300 ms permit gap must not interrupt laptop control")
+                second.startPermits()
                 for seq in 1...100 {
                     let movement = try command("command", seq: seq)
                     precondition(rover.acceptAutonomy(movement))
@@ -150,8 +154,9 @@ struct RoverBLEPeer: Identifiable { let id: UUID; let name: String }
                 try await Task.sleep(nanoseconds: 80_000_000)
                 precondition(second.packets.contains { $0["N"] as? Int == 100 && $0["H"] as? String == "TESTSTOP" })
                 second.permits = false
-                try await until { !rover.autonomyEnabled }
-                precondition(!rover.enabled)
+                try await Task.sleep(nanoseconds: 600_000_000)
+                precondition(rover.autonomyEnabled && !rover.enabled,
+                             "A permit gap must retain laptop ownership after Stop")
                 second.onFailure?("Bluetooth lost")
                 precondition(!rover.connected && !rover.enabled)
                 print("BLE controller manual regression, autonomous ownership, arm/permit gates, latest-only movement, priority Stop and lost-feedback checks passed.")

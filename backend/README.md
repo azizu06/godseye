@@ -214,11 +214,13 @@ only when the picture changed:
   monotonic time of the newest accepted frame, even one that adds nothing, so a
   planner can tell fresh sensing from a stale map without waiting for a new
   `occupancy` message.
-- **Fresh-depth obstacle retirement:** a map worker checks at most 1,024 old
-  obstacle voxels per accepted capture. Two increasing, medium-or-high-confidence raw-depth
-  views in the same uninterrupted tracking interval must both see beyond the
-  complete padded projection of each old voxel by at least 12 cm or 5%, plus
-  its voxel radius. Missing depth, occlusion, image edges and low confidence
+- **Fresh-depth obstacle retirement:** a map worker checks at most 2,048 old
+  obstacle voxels per accepted capture, prioritizing those near the rover while
+  continuing to sweep older map memory. Two increasing, medium-or-high-confidence
+  raw-depth views in the same uninterrupted tracking interval must both see beyond
+  the center 3×3 depth patch of each old voxel by at least 12 cm or 5%, plus its
+  voxel radius. Nearby geometry at the padded silhouette edge no longer keeps a
+  departed person on the navigation map. Missing depth, occlusion, image edges and low confidence
   retain the obstacle. Only an accepted newer frame applies removals; the grid
   revision then makes navigation recheck its route. A phone disconnect or tracking
   loss breaks the two-view proof. The separate dashboard map has its own visual
@@ -813,6 +815,13 @@ The operator may opt into `tools.run_rover_backend --prototype` with explicit
 estimated chassis dimensions. It uses the phone manual-control default PWM with continuous commands; it does
 not fill or certify measured calibration files.
 Live map/floor, tracking, feedback and authentication gates remain in effect.
+Explore restores the faster straight-line command on clear straight route legs
+after going around an obstacle, without waiting for the entire route to be straight.
+The prototype's updated bridge can also steer forward on a differential-motor
+arc; the measured adapter still uses its separately calibrated turn behavior.
+It keeps the original hallway bearing through short detours so a pivot beside an
+obstacle does not turn the next frontier search back toward explored floor; after
+a completed long side leg, that leg sets the bearing for the next branch.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
 
 Within an AR map, occupancy retains the last observed floor height when the

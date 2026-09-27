@@ -509,11 +509,11 @@ def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig
 
 def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
                                config: PlannerConfig, *, allow_unknown=False):
-    """Reachable unexplored boundary with forward progress and room around the rover.
+    """Reachable unexplored boundary with forward progress or open-room information gain.
 
-    The nearest boundary can be behind or against a hallway wall. Search the same
-    traversable component, then favor distance along the current heading and a
-    clear central approach. A side frontier wins once the straight corridor ends.
+    In an observed two-wall corridor, keep a forward route until it ends. In an
+    open room, prefer a large unmapped region that a nearby frontier can reveal;
+    a tiny gap ahead must not starve the rest of the room.
     """
     sx, sz = (float(v) for v in start_xz)
     if allow_unknown:
@@ -533,6 +533,12 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
     queue, head = [start], 0
     forward = (math.sin(yaw), math.cos(yaw))
     side = (forward[1], -forward[0])
+    corridor = corridor_alignment(
+        grid, (sx, sz), (sx + 2. * forward[0], sz + 2. * forward[1]), yaw, config) is not None
+    unknown = np.pad((grid.cells == UNKNOWN).astype(np.int32), ((1, 0), (1, 0)))
+    unknown = unknown.cumsum(axis=0).cumsum(axis=1)
+    gain_radius = max(1, math.ceil(1.5 / grid.cell_m))
+    steps = np.zeros((h, w), np.int32)
     best = None
     best_score = -math.inf
     radius = max(1, math.ceil(1. / grid.cell_m))
@@ -553,7 +559,16 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
                              if len(obstacle_r) else 1.)
                 progress = dx * forward[0] + dz * forward[1]
                 lateral = abs(dx * side[0] + dz * side[1])
-                score = 4. * progress - .5 * lateral + 2. * clearance
+                if corridor:
+                    score = 4. * progress - .5 * lateral + 2. * clearance
+                else:
+                    gr0, gr1 = max(0, r - gain_radius), min(h, r + gain_radius + 1)
+                    gc0, gc1 = max(0, c - gain_radius), min(w, c + gain_radius + 1)
+                    unseen = (unknown[gr1, gc1] - unknown[gr0, gc1]
+                              - unknown[gr1, gc0] + unknown[gr0, gc0])
+                    information_m = math.sqrt(max(0, int(unseen))) * grid.cell_m
+                    travel_m = steps[r, c] * grid.cell_m
+                    score = 5. * information_m - .7 * travel_m + .35 * progress + clearance
                 if score > best_score:
                     best, best_score = (x, z), score
         for dr, dc in moves:
@@ -561,6 +576,7 @@ def preferred_explore_frontier(grid: Grid, start_xz, yaw: float,
             if (0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not seen[nr, nc]
                     and (not dr or not dc or (mask[r, nc] and mask[nr, c]))):
                 seen[nr, nc] = True
+                steps[nr, nc] = steps[r, c] + 1
                 queue.append((nr, nc))
     return best
 

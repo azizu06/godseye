@@ -134,7 +134,7 @@ final class RoverAutonomyLink: ObservableObject {
                         if command.type == .command &&
                             (!self.validCapture() || self.rover?.autonomyAvailable != true) {
                             // Do not queue a movement through a sensor/permit gap.
-                            // Firmware brakes after 200 ms and a fresh command can resume.
+                            // Firmware brakes after sustained command loss; a fresh command can resume.
                             self.status = "Paused · waiting for fresh capture and rover feedback"
                         } else {
                             guard command.type == .stop || self.validCapture(),

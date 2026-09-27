@@ -30,7 +30,7 @@ final class CaptureController {
 }
 @main struct Check {
     @MainActor static func until(_ predicate: () -> Bool) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        let deadline = ProcessInfo.processInfo.systemUptime + 7
         while !predicate() {
             precondition(ProcessInfo.processInfo.systemUptime < deadline, "Timed out")
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -60,24 +60,33 @@ final class CaptureController {
                     exit(0)
                 }
                 try await until { ble.packets.contains { $0["N"] as? Int == 202 } }
-                let count = ble.packets.filter { $0["N"] as? Int == 202 }.count
                 let heartbeatLoss = CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "heartbeat-loss"
-                // Exercise both local capture loss and a silent laptop while
-                // the phone still sends healthy, unsolicited BLE feedback.
-                if !heartbeatLoss { capture.ready = false }
-                try await until { !relay.enabled && !rover.autonomyEnabled }
-                precondition(!capture.controlPriority, "Disconnect must restore capture uploads")
                 if heartbeatLoss {
+                    // A silent laptop eventually retires the transport.
+                    try await until { !relay.enabled && !rover.autonomyEnabled }
                     precondition(relay.status == "Stopped · laptop heartbeat timed out", relay.status)
+                } else {
+                    // A capture gap pauses motion but keeps the requested laptop mode.
+                    capture.ready = false
+                    try await until { relay.status == "Paused · waiting for fresh capture and rover feedback" }
+                    let paused = ble.packets.filter { $0["N"] as? Int == 202 }.count
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                    precondition(relay.enabled && rover.autonomyEnabled && capture.controlPriority)
+                    precondition(ble.packets.filter { $0["N"] as? Int == 202 }.count == paused)
+                    capture.ready = true
+                    try await until { ble.packets.filter { $0["N"] as? Int == 202 }.count > paused }
+                    relay.disconnect()
+                    try await until { !relay.enabled && !rover.autonomyEnabled }
                 }
+                precondition(!capture.controlPriority, "Disconnect must restore capture uploads")
+                let count = ble.packets.filter { $0["N"] as? Int == 202 }.count
                 try await Task.sleep(nanoseconds: 150_000_000)
                 precondition(ble.packets.filter { $0["N"] as? Int == 202 }.count == count)
                 precondition(ble.packets.contains { $0["N"] as? Int == 100 })
-                capture.ready = true
                 try await Task.sleep(nanoseconds: 100_000_000)
-                precondition(!relay.enabled && !rover.enabled, "Capture recovery must not resume control")
+                precondition(!relay.enabled && !rover.enabled, "Disconnected control must not resume")
                 rover.disconnect()
-                print("Swift relay with fake BLE: authentication, arm/Stop, timed commands and loss handling passed.")
+                print("Swift relay with fake BLE: authentication, arm/Stop, capture pause and loss handling passed.")
                 exit(0)
             } catch { print(error); exit(1) }
         }

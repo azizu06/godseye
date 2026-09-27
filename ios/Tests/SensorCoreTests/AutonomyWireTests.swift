@@ -29,13 +29,15 @@ final class AutonomyWireTests: XCTestCase {
         XCTAssertEqual(fields["H"] as? String, session)
         XCTAssertLessThan(packet.count, 192)
         XCTAssertEqual(try drive(["power": 180]).power, 180)
+        XCTAssertEqual(try drive(["direction": 5, "power": 180]).direction, 5)
+        XCTAssertEqual(try drive(["direction": 6, "power": 180]).direction, 6)
         let idle = try drive(["direction": 0, "power": 0])
         XCTAssertEqual(idle.type, .command)
         XCTAssertEqual(try stop().packet, try ElegooWire.stop(id: "0123ABCD"))
     }
 
     func testMalformedUnboundedAndArbitraryCommandsRejected() throws {
-        for change: [String: Any] in [["power": 181], ["direction": 5], ["direction": 0],
+        for change: [String: Any] in [["power": 181], ["direction": 7], ["direction": 0],
             ["seq": 0], ["seq": -1], ["seq": 4294967296 as UInt64], ["seq": true],
             ["lease_ms": 200], ["permit": "fedcba9876543210"], ["session": "OLD"],
             ["raw": "N=3"], ["version": 2], ["type": "raw"]] {

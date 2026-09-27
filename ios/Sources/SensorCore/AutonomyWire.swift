@@ -39,7 +39,7 @@ public struct AutonomyCommand: Decodable {
             guard hex(value.session, count: 32), hex(value.permit, count: 16),
                   let seq = value.seq, seq > 0, value.lease_ms == 1500,
                   let direction = value.direction, let power = value.power,
-                  (direction == 0 && power == 0) || ((1...4).contains(direction) && (1...180).contains(power)) else {
+                  (direction == 0 && power == 0) || ((1...6).contains(direction) && (1...180).contains(power)) else {
                 throw Error.invalidCommand
             }
         }

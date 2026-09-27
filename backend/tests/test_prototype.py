@@ -35,7 +35,7 @@ class PrototypeTests(unittest.TestCase):
         app = create_app(db_path=':memory:', car=car, calibration=prototype_geometry(.24, .14), capture_directory='')
         with TestClient(app) as client:
             self.assertEqual(app.state.motion.limits.max_speed_mps, .2)
-            self.assertEqual(app.state.nav.settings.replan_s, 3.)
+            self.assertEqual(app.state.nav.settings.replan_s, 4.)
             self.assertEqual(app.state.nav.settings.pose_max_age_s, 1.)
             status = client.get('/autonomy').json()
             self.assertEqual(status['profile'], 'prototype')
@@ -108,14 +108,16 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(client.post('/stop').status_code, 200)
             self.assertFalse(state.auto_requested)
 
-    def test_fixed_power_no_reverse_arcs_or_rate_claims(self):
+    def test_fixed_power_forward_arcs_and_no_reverse_or_rate_claims(self):
         profile = PrototypeActuation()
         for v, w, direction in [(.05, 0., 3), (0., .2, 1), (0., -.2, 2)]:
             command = profile.command(v, w)
             self.assertEqual((command.direction, command.pwm, command.lease_ms), (direction, 60, 1500))
+        self.assertEqual((profile.command(.15, .3).direction, profile.command(.15, .3).pwm), (5, 180))
+        self.assertEqual((profile.command(.15, -.3).direction, profile.command(.15, -.3).pwm), (6, 180))
         self.assertIsNone(profile.command(0., 0.))
         self.assertIsNone(profile.stopping_distance_m)
-        for v, w in [(-.01, 0.), (.21, 0.), (.01, .1), (0., .51), (math.nan, 0.)]:
+        for v, w in [(-.01, 0.), (.21, 0.), (0., .51), (math.nan, 0.)]:
             with self.assertRaises(ValueError): profile.command(v, w)
 
     def test_open_straight_cruise_has_more_power_than_slow_approach_or_pivot(self):
@@ -125,12 +127,15 @@ class PrototypeTests(unittest.TestCase):
         self.assertEqual(profile.command(.15, 0.).pwm, 60)
         self.assertEqual(profile.command(.2, 0.).pwm, 180)
 
-    def test_small_heading_noise_does_not_trigger_alternating_pivots(self):
+    def test_small_heading_noise_follows_with_a_moving_turn(self):
         path = [(0., 0.), (0., 3.)]
         profile = PrototypeActuation().follower()
         for yaw in (-.2, .2):
             self.assertEqual(PurePursuit(path, profile).step(0., .5, yaw).status, 'follow')
-        self.assertEqual(PurePursuit(path, profile).step(0., .5, .5).status, 'rotate')
+        turn = PurePursuit(path, profile).step(0., .5, .5)
+        self.assertEqual(turn.status, 'follow')
+        self.assertGreater(turn.v_mps, 0.)
+        self.assertNotEqual(turn.yaw_rate_rps, 0.)
 
     def test_continuous_commands_have_no_added_pause_or_run_limit(self):
         now = [10.]

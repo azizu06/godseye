@@ -5,6 +5,8 @@
 constexpr auto ARM = "{\"N\":201,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000001\"}";
 constexpr auto DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":1500}";
 constexpr auto FAST_DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":180,\"T\":1500}";
+constexpr auto LEFT_ARC = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":5,\"D2\":180,\"T\":1500}";
+constexpr auto RIGHT_ARC = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":6,\"D2\":180,\"T\":1500}";
 constexpr auto IDLE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":2,\"D1\":0,\"D2\":0,\"T\":1500}";
 constexpr auto RESUME = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000003\",\"S\":2,\"D1\":3,\"D2\":40,\"T\":1500}";
 constexpr auto STOP = "{\"N\":100,\"H\":\"S\"}";
@@ -36,6 +38,17 @@ int main() {
     feed(b, FAST_DRIVE, 5);
     assert(b.next(6, out) && command(out) == 2);
     assert(strstr(out.bytes, "\"D2\":180") != nullptr);
+  }
+  for (const auto arc : {LEFT_ARC, RIGHT_ARC}) {
+    BridgeCore b; arm(b);
+    feed(b, arc, 5);
+    assert(b.next(6, out) && command(out) == 4);
+    StaticJsonDocument<256> motor;
+    assert(!deserializeJson(motor, out.bytes));
+    const bool left = strcmp(arc, LEFT_ARC) == 0;
+    assert(motor["D1"].as<int>() == (left ? 180 : 90));
+    assert(motor["D2"].as<int>() == (left ? 90 : 180));
+    assert(b.next(1006, out) && command(out) == 100); // ESP brakes untimed Uno arc.
   }
   {
     BridgeCore b; arm(b);

@@ -88,6 +88,34 @@ class DepthRetirementTests(unittest.TestCase):
                         retirement_cursor=cursor, depth_view=current)
         self.assertEqual(grid.map_snapshot().cell(0., -1.), occupancy.FREE)
 
+    def test_clear_center_survives_unrelated_foreground_at_voxel_edge(self):
+        grid = OccupancyGrid(SESSION)
+        floor, obstacle = old_scene()
+        for t in (1., 2., 3.):
+            grid.commit(frame_evidence(np.concatenate([floor, obstacle])), t)
+        first, second = view(4.), view(5.)
+        # A neighboring door frame or wall may touch a projected voxel's padded
+        # edge even when the old person center has clearly become background.
+        first.depth[:, 8] = second.depth[:, 8] = .8
+        removed = occupancy.contradicted_obstacle_keys(
+            grid._keys, grid._hits, grid.map_snapshot().floor_y,
+            grid.obstacle_from_m, first, second)
+        self.assertGreater(len(removed), 0)
+
+    def test_nearby_obstacle_is_checked_before_distant_memory(self):
+        grid = OccupancyGrid(SESSION)
+        floor, obstacle = old_scene()
+        distant = np.array([[x, FLOOR_Y + y, -4.]
+                            for x in np.arange(-1., 1., .05)
+                            for y in np.arange(.2, 1.2, .02)])
+        for t in (1., 2., 3.):
+            grid.commit(frame_evidence(np.concatenate([floor, obstacle, distant])), t)
+        first, second = view(4.), view(5.)
+        removed = occupancy.contradicted_obstacle_keys(
+            grid._keys, grid._hits, grid.map_snapshot().floor_y,
+            grid.obstacle_from_m, first, second, max_candidates=32)
+        self.assertGreater(len(removed), 0)
+
     def test_uncertain_or_occluded_depth_cannot_clear_obstacle(self):
         grid = OccupancyGrid(SESSION)
         floor, obstacle = old_scene()

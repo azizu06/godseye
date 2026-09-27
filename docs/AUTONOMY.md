@@ -20,8 +20,9 @@ now discards that old pose, brakes on stale feedback, and resumes on fresh data.
 
 The implementation provides:
 
-- A pivot-then-drive mode for the existing follower, matching the stock Uno's
-  timed `N=2` directions. It never pretends those commands can drive a curved arc.
+- The measured adapter retains pivot-then-drive on stock timed `N=2` directions.
+  The explicit prototype can instead request restricted forward arcs through
+  the updated ESP bridge's differential-motor command.
 - Navigation heading corrected by the measured camera mounting yaw. Map positions
   and the live display retain the v1 camera coordinates; footprint inflation already
   accounts for the measured camera offset.
@@ -90,19 +91,23 @@ holds the pending Arm until a fresh permit arrives; the barrier still times out
 after three seconds, and no drive command uses a stale permit.
 
 `N=202,H=<session>,C=<permit>,S=<increasing uint32>,D1=<direction>,D2=<PWM>,T=1500`
-becomes the bounded stock `N=2` packet only when the session, sequence and permit
-are valid again at UART dispatch. `D1=0,D2=0` is an idle zero in the live session.
+becomes the bounded stock `N=2` packet for directions 1–4, or a restricted stock
+`N=4` differential-speed forward arc for direction 5 (left) or 6 (right), only
+when the session, sequence and permit are valid again at UART dispatch. Arcs run
+the two forward motors at full/half PWM and rely on the ESP's 1 s command-loss
+Stop because stock `N=4` has no Uno timer. `D1=0,D2=0` is an idle zero in the live session.
 The legacy `N=100` Stop always retires it. After the UART Stop handoff,
 `{Z<request H>}` acknowledges that specific Stop; use a unique request ID for an
 arm barrier. `{X}` reports malformed input or a retired session. Manual movement while an autonomous session is
 active stops it; a separate explicit Stop is required before manual takeover.
 Other legacy commands retain their existing rules. No arbitrary UART passthrough
-or indefinite motor command is added.
+or unguarded indefinite motor command is added.
 
 The 1 s bridge watchdog sends Stop on a sustained missed refresh. It keeps the already
 armed session so a later command with a new permit and sequence may resume;
-the late packet itself cannot revive the old motor lease. The Uno still receives
-its own independent 1.5 s timed command. Invalid sessions, replay, explicit
+the late packet itself cannot revive the old motor lease. Straight and pivot `N=2`
+commands also have the Uno's independent 1.5 s timer; forward arcs use the ESP
+brake because `N=4` is untimed on the Uno. Invalid sessions, replay, explicit
 Stop and disconnect retire the arm. Queue expiry, reconnect, malformed fragments and 32-bit clock wrap are
 covered by `python3 firmware/elegoo-ble/test/run.py`. The server rejects movement older than 150 ms again at socket dispatch; the phone
 rechecks permit receipt age before its bounded BLE write.
@@ -258,12 +263,14 @@ the full footprint clearance. Measured mode still requires known-clear floor.
 Actual motor speed, yaw sign and stopping distance remain unverified. This is only
 for supervised tests in open space, not a claim of accurate autonomous driving.
 
-The pose/map follower chooses forward or pivot direction. Explore prefers reachable
+The prototype pose/map follower chooses forward or moving left/right arcs, reserving
+a pivot for turns above about 69°. Explore prefers reachable
 unexplored space ahead and, when both hallway walls are observed, first moves toward
 their center before following the far end. A straight path with at least 1 m of
 clear route ahead requests the prototype's 0.2 m/s nominal command and PWM 180;
 an observed corridor must also be at least 1.2 m wide and centered. Off-center
-travel, pivots and slower approaches retain PWM 60. The
+travel on a detour uses a differential forward arc at PWM 180; slow approaches
+and rare pivots retain PWM 60. The
 autonomous phone/ESP command path permits up to PWM 180; stock manual control
 remains capped at 80. This is three times the former prototype duty setting,
 not a measured threefold travel speed. The phone app and ESP firmware must both
@@ -272,11 +279,16 @@ through consecutive hallways rather than ending at 10 m from the AR origin;
 Explore holds a reachable forward destination across minor map updates and
 extends that destination as fresh depth reveals more hallway, avoiding a stop at
 each old frontier. It checks its route for new obstacles between full replans
-every three seconds. Medium-or-high-confidence depth can clear a departed
+every four seconds, or sooner when the destination is near or blocked. Medium-or-high-confidence depth can clear a departed
 obstacle after two distinct views see through its former footprint.
+If a wall newly overlaps only the prototype's extra six-inch clearance around
+the camera point, Explore may snap a route toward nearby clear space and continue
+only while each step maintains or increases obstacle clearance. An obstacle
+inside the estimated chassis footprint still blocks this recovery.
 The prototype never invents reverse motion or synthetic speed curves. Commands
 update continuously with no added pauses or run duration limit. Each command
-uses the firmware's 1 s command-loss brake and the Uno's 1.5 s fallback. Stop, tracking/depth freshness,
+uses the firmware's 1 s command-loss brake; straight and pivot commands also
+have the Uno's 1.5 s timed fallback, while forward arcs do not. Stop, tracking/depth freshness,
 authenticated pairing, unique arm sessions, ESP permits, Uno feedback and link
 watchdogs remain enforced. A latched Explore request may rearm after transient loss.
 The dashboard labels this profile **Uncalibrated prototype**. Select Explore or Navigate,

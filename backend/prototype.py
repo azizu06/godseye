@@ -1,8 +1,8 @@
 """Explicit, uncalibrated prototype profile. Never used by the default backend.
 
 The planner's nominal rate requests select direction and a two-step prototype
-power choice, NOT a measured physical speed. Ordinary output matches the phone
-manual default; only a centered observed-hallway cruise request uses more power.
+power choice, NOT a measured physical speed. Forward arcs use the bridge's
+restricted differential-motor command; the measured adapter remains unchanged.
 Dimensions must be supplied by the operator; measured calibration stays intact.
 """
 import math
@@ -44,19 +44,22 @@ class PrototypeActuation:
     warnings = (
         'Uncalibrated prototype: estimated chassis, forward-facing camera assumed.',
         'Flat-terrain exploration may cross unseen floor; detected obstacles retain footprint clearance.',
-        'PWM 60 for turns/approach and 180 only for centered open-hallway cruise; speed and stopping distance are unverified.',
+        'PWM 180 for clear straight and forward-arc travel; speed and stopping distance are unverified.',
     )
 
     def follower(self):
-        return FollowerConfig(pivot_only=True, rotate_in_place_rad=.35,
-                              cruise_mps=.15, min_mps=.05, max_yaw_rate_rps=.5)
+        return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
+                              lookahead_m=.6, cruise_mps=.15, min_mps=.05,
+                              max_yaw_rate_rps=.5)
 
     def command(self, v_mps, yaw_rate_rps):
         if not (math.isfinite(v_mps) and math.isfinite(yaw_rate_rps)):
             raise ValueError('nonfinite prototype command')
         if v_mps == 0 and yaw_rate_rps == 0:
             return None
-        if not 0 <= v_mps <= .2 or abs(yaw_rate_rps) > .5 or (v_mps and yaw_rate_rps):
-            raise ValueError('prototype supports only forward or pivot requests')
+        if not 0 <= v_mps <= .2 or abs(yaw_rate_rps) > .5:
+            raise ValueError('prototype drive request outside motion limits')
+        if v_mps and abs(yaw_rate_rps) >= .15:
+            return TimedMotorCommand(5 if yaw_rate_rps > 0 else 6, 180)
         return TimedMotorCommand(3 if v_mps else (1 if yaw_rate_rps > 0 else 2),
                                  180 if v_mps >= .18 else 60)

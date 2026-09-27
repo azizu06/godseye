@@ -22,11 +22,12 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Callable
 
+import numpy as np
 
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
-from backend.occupancy import OccupancySnapshot
+from backend.occupancy import OCCUPIED, OccupancySnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ RUN_MODES = {'goal': 'navigate', 'explore': 'explore'}  # run kind -> the mode i
 @dataclass(frozen=True)
 class NavSettings:
     rate_hz: float = 10.  # control ticks; each one submits a command
-    replan_s: float = 1.  # full replan period
+    replan_s: float = 4.  # keep a chosen side around an obstacle while the path is clear
+    start_recovery_margin_m: float = 0.  # prototype only: escape an overlap with extra clearance
     blocked_check_s: float = .25  # at most this often, a grid change triggers a path_blocked check
     map_max_age_s: float = 1.  # accepted sensing, independent of poses and /live publication
     pose_max_age_s: float = .25  # matches the health/watchdog freshness rule
@@ -90,8 +92,60 @@ def planning_grid(snapshot, settings):
     grid = Grid.from_array(snapshot.cells, origin=snapshot.origin, cell_m=snapshot.cell_m)
     config = replace(settings.planner, robot_radius_m=snapshot.inflation_m, margin_m=0.,
                      unknown_traversable=snapshot.unknown_traversable, footprint_clearance=True,
-                     snap_radius_m=0., start_snap_radius_m=0.)
+                     snap_radius_m=0.,
+                     start_snap_radius_m=.6 if settings.start_recovery_margin_m > 0 else 0.)
     return grid, config
+
+
+def obstacle_clearance_m(snapshot, x, z):
+    """Distance from a camera-floor position to the nearest observed occupied cell."""
+    if snapshot.cells is None or snapshot.origin is None:
+        return 0.
+    radius = snapshot.inflation_m + snapshot.cell_m
+    row, col = snapshot._index(x, z)
+    reach = math.ceil(radius / snapshot.cell_m) + 1
+    r0, r1 = max(0, row - reach), min(snapshot.cells.shape[0], row + reach + 1)
+    c0, c1 = max(0, col - reach), min(snapshot.cells.shape[1], col + reach + 1)
+    rows, cols = np.where(snapshot.cells[r0:r1, c0:c1] == OCCUPIED)
+    if not len(rows):
+        return math.inf
+    left = snapshot.origin[0] + (cols + c0) * snapshot.cell_m
+    top = snapshot.origin[1] + (rows + r0) * snapshot.cell_m
+    dx = np.maximum(np.maximum(left - x, x - left - snapshot.cell_m), 0.)
+    dz = np.maximum(np.maximum(top - z, z - top - snapshot.cell_m), 0.)
+    return float(np.min(np.hypot(dx, dz)))
+
+
+def recoverable_start(snapshot, x, z, extra_margin_m):
+    """Only the explicit prototype may drive away from a wall inside its extra margin."""
+    return bool(extra_margin_m > 0 and snapshot.ready and snapshot.unknown_traversable
+                and snapshot.cell(x, z) != OCCUPIED and snapshot.inflation_m is not None
+                and obstacle_clearance_m(snapshot, x, z) >= snapshot.inflation_m - extra_margin_m)
+
+
+def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
+    if snapshot.traversable(next_x, next_z):
+        return True
+    if not recoverable_start(snapshot, x, z, extra_margin_m):
+        return False
+    before = obstacle_clearance_m(snapshot, x, z)
+    after = obstacle_clearance_m(snapshot, next_x, next_z)
+    return (snapshot.cell(next_x, next_z) != OCCUPIED and
+            after >= snapshot.inflation_m - extra_margin_m and after >= before - .005)
+
+
+def straight_runway_m(path, segment, x, z, yaw):
+    """Length of the current route aligned with the rover, before its next bend."""
+    fx, fz = math.sin(yaw), math.cos(yaw)
+    farthest = 0.
+    for px, pz in path[max(0, segment):]:
+        dx, dz = px - x, pz - z
+        forward = dx * fx + dz * fz
+        lateral = abs(dx * fz - dz * fx)
+        if forward < farthest - .05 or lateral > .15:
+            break
+        farthest = max(farthest, forward)
+    return farthest
 
 
 class Navigator:
@@ -128,7 +182,7 @@ class Navigator:
 
     # Planning runs in worker threads -------------------------------------------------
 
-    def _plan(self, occupancy, start, goal, explore, yaw=0.):
+    def _plan(self, occupancy, start, goal, explore, yaw=0., explore_yaw=None):
         """Read the authoritative snapshot in this worker, then plan only known-clear floor."""
         def straight_ahead(points):
             fx, fz = math.sin(yaw), math.cos(yaw)
@@ -149,12 +203,14 @@ class Navigator:
         if problem:
             return 'plan', snapshot, goal, PlanResult([], problem)
         grid, config = planning_grid(snapshot, self.settings)
-        if not snapshot.traversable(*start):
+        if not (snapshot.traversable(*start) or
+                recoverable_start(snapshot, *start, self.settings.start_recovery_margin_m)):
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         if explore:
+            heading = yaw if explore_yaw is None else explore_yaw
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
-                goal = preferred_explore_frontier(grid, start, yaw, config,
+                goal = preferred_explore_frontier(grid, start, heading, config,
                                                   allow_unknown=snapshot.unknown_traversable)
                 if goal is None:
                     goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
@@ -164,10 +220,10 @@ class Navigator:
                 # Keep one cruise down the hallway as the camera reveals more
                 # floor. A goal that was yesterday's frontier should advance
                 # before the rover reaches it and brakes for another search.
-                farther = preferred_explore_frontier(grid, start, yaw, config,
+                farther = preferred_explore_frontier(grid, start, heading, config,
                                                     allow_unknown=snapshot.unknown_traversable)
                 if farther is not None:
-                    fx, fz = math.sin(yaw), math.cos(yaw)
+                    fx, fz = math.sin(heading), math.cos(heading)
                     dx, dz = farther[0] - goal[0], farther[1] - goal[1]
                     if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
                         goal = farther
@@ -263,6 +319,8 @@ class Navigator:
         job = None
         progress = None  # (x, z, yaw, since) while motion is commanded
         fast_corridor = False
+        explore_heading = None
+        leg_origin = None
         try:
             while True:
                 now = time.monotonic()
@@ -287,6 +345,8 @@ class Navigator:
                 if pose.tracking != 'normal':
                     return self._finish('tracking_lost')
                 x, z, yaw = pose.x, pose.z, pose.yaw_rad
+                if explore and explore_heading is None:
+                    explore_heading = yaw
 
                 if job is not None and job.done():
                     try:
@@ -308,7 +368,7 @@ class Navigator:
                         continue
                     if outcome_kind == 'check' and outcome[2]:
                         if explore and outcome[2] == 'path_blocked':
-                            goal, follower, progress, last_plan = None, None, None, now
+                            follower, progress, last_plan = None, None, -math.inf
                             fast_corridor = False
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
@@ -320,7 +380,7 @@ class Navigator:
                         _, _, goal, result = outcome
                         if not result.ok:
                             if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
-                                goal, follower, progress, last_plan = None, None, None, now
+                                follower, progress, last_plan = None, None, now
                                 fast_corridor = False
                                 self._show([])
                                 if not self._submit(generation, RUN_MODES[kind], 0., 0.):
@@ -329,6 +389,8 @@ class Navigator:
                                 continue
                             return self._finish(PLAN_STOP_REASONS.get(result.reason, result.reason))
                         self.goal = goal
+                        if explore and leg_origin is None:
+                            leg_origin = (x, z)
                         fast_corridor = result.fast_corridor
                         follower = (follower.replaced(result.points) if follower is not None
                                     else PurePursuit(result.points, s.follower))
@@ -340,10 +402,12 @@ class Navigator:
                         return self._finish(problem)
                 if job is None:
                     occupancy = self._occupancy
-                    if snapshot is None or now - last_plan >= s.replan_s:  # -inf forces an immediate plan
+                    goal_near = (explore and goal is not None and now - last_plan >= .5 and
+                                 math.hypot(goal[0] - x, goal[1] - z) < 1.)
+                    if snapshot is None or now - last_plan >= s.replan_s or goal_near:
                         last_plan = now
                         job = asyncio.ensure_future(asyncio.to_thread(
-                            self._plan, occupancy, (x, z), goal, explore, yaw))
+                            self._plan, occupancy, (x, z), goal, explore, yaw, explore_heading))
                     elif follower is not None and now - last_check >= s.blocked_check_s:
                         last_check = now
                         job = asyncio.ensure_future(asyncio.to_thread(
@@ -351,9 +415,10 @@ class Navigator:
 
                 v = w = 0.
                 if follower is not None and snapshot is not None:
-                    if not snapshot.traversable(x, z):
+                    if not (snapshot.traversable(x, z) or
+                            recoverable_start(snapshot, x, z, s.start_recovery_margin_m)):
                         if explore:
-                            goal, follower, progress, last_plan = None, None, None, now
+                            follower, progress, last_plan = None, None, now
                             fast_corridor = False
                             self._show([])
                             if not self._submit(generation, RUN_MODES[kind], 0., 0.):
@@ -365,6 +430,12 @@ class Navigator:
                     if command.arrived:
                         if not explore:
                             return self._finish('arrived')
+                        # Carry the same hallway bearing through short evasive
+                        # turns. A completed long side leg becomes the bearing
+                        # for the next hallway or branch.
+                        if leg_origin is not None and math.hypot(x - leg_origin[0], z - leg_origin[1]) >= 1.2:
+                            explore_heading = math.atan2(x - leg_origin[0], z - leg_origin[1])
+                        leg_origin = (x, z)
                         # A replan/check belongs to the frontier just reached. Its
                         # late result must not restore that goal on the next tick.
                         if job is not None:
@@ -374,14 +445,17 @@ class Navigator:
                         fast_corridor = False
                     else:
                         v, w = command.v_mps, command.yaw_rate_rps
-                        if explore and fast_corridor and v >= .12 and w == 0.:
-                            v = .2  # only the observed, centered straight hallway segment
+                        if (explore and v >= .12 and w == 0. and
+                                (fast_corridor or straight_runway_m(
+                                    follower.path, follower.segment, x, z, yaw) >= .8)):
+                            v = .2  # regain cruise on clear straight legs after an obstacle
                         # Reject a pursuit arc cutting a corner of the footprint-clear path.
                         heading = yaw + w * period / 2
-                        if not snapshot.traversable(x + v * math.sin(heading) * period,
-                                                    z + v * math.cos(heading) * period):
+                        if not recovery_step_allowed(
+                                snapshot, x, z, x + v * math.sin(heading) * period,
+                                z + v * math.cos(heading) * period, s.start_recovery_margin_m):
                             if explore:
-                                goal, follower, progress, last_plan = None, None, None, now
+                                follower, progress, last_plan = None, None, -math.inf
                                 fast_corridor = False
                                 self._show([])
                                 if not self._submit(generation, RUN_MODES[kind], 0., 0.):

@@ -66,7 +66,8 @@ Computer-control startup also leaves bulk laptop upload off before the rover con
 the complete sensor recording remains on the iPhone when recording is enabled. Turn off computer-control-on-launch
 if you need bulk laptop upload instead of rover control.
 In prototype Explore, a temporary depth, pose or ESP-permit gap pauses movement
-without losing the requested mode. The ESP brakes after 200 ms without a fresh
+without losing the requested mode. The phone accepts permits for up to 500 ms,
+matching the ESP gate; the ESP brakes after 1 s without a fresh autonomous
 command. A broken connection retires its drive session; foreground setup can
 reconnect, and the laptop only resumes after fresh capture, map and rover feedback.
 Dashboard Stop, Disable laptop control, and mode changes clear the request.
