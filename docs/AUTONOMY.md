@@ -418,3 +418,14 @@ This policy is verified offline with real occupancy classification and a kinemat
 command sink (`backend/tests/test_obstacle_replanning.py`), not a physical obstacle
 avoidance demonstration. The active rover backend version and sensor/clearance
 conditions must still be checked before interpreting a physical stop.
+
+### Advisory obstacle gate: clear-evidence interruption fixed
+
+Software status: **fixed** in `backend/explore_obstacle_gate.py`. Unknown/stale
+depth and external holds invalidate the saved clear streak and resume timer,
+including when stale evidence keeps the same frame ID. A fresh distinct clear
+sequence must qualify again; duplicate usable frames still cannot advance it.
+The regression is `backend.tests.test_explore_obstacle_gate` (unknown-after-hold
+and repeated-sample interruption cases). This pure advisory helper is not wired
+into Navigator; this fix does not establish the cause or physical resolution of
+the recorded pink-stand stop above. That physical pass remains unverified.

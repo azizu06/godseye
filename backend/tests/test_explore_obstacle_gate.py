@@ -170,6 +170,25 @@ class UnknownBreaksResumeHoldRegressionTests(unittest.TestCase):
 
 
 class DistinctEvidenceFrameDedupTests(unittest.TestCase):
+    def test_interruption_invalidates_clear_credit_even_for_repeated_sample(self):
+        for external_hold in (False, True):
+            with self.subTest(external_hold=external_hold):
+                gate = ExploreObstacleGate()
+                gate.decide(IMMINENT, 0.)
+                for i, t in enumerate((.1, .2, .3), 1):
+                    gate.decide(PathObservation(False, True, frame_id=i), t)
+                # A sample can become stale, or a separate fault can interrupt
+                # an otherwise usable sample. Each invalidates clear proof.
+                interrupted = gate.decide(PathObservation(False, external_hold, frame_id=3),
+                                          1.31, external_hold=external_hold)
+                self.assertTrue(interrupted.yielding)
+                self.assertFalse(interrupted.resumed_this_tick)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=4), 1.4).yielding)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=5), 1.5).yielding)
+                self.assertTrue(gate.decide(PathObservation(False, True, frame_id=6), 1.6).yielding)
+                resumed = gate.decide(PathObservation(False, True, frame_id=7), 2.61)
+                self.assertTrue(resumed.resumed_this_tick)
+
     def test_repeated_clear_frame_id_does_not_advance_clear_streak_or_hold(self):
         gate = ExploreObstacleGate(GateConfig(resume_clear_frames=3, resume_hold_s=1.0))
         for i in range(3):

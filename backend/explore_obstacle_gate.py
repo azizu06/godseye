@@ -83,10 +83,16 @@ class ExploreObstacleGate:
 
         ``external_hold`` stands in for an operator Stop or a sensor/relay/
         watchdog fault latch owned elsewhere: while True this forces a yield
-        and leaves the debounce counters untouched, so it can never itself
-        rearm a resume -- clearing it only lets ordinary clear-frame evidence
-        and the resume hold resume driving on a later call.
+        and invalidates clear evidence, preserving the internal obstacle yield.
+        Clearing it requires a fresh clear streak and hold before an existing
+        obstacle yield can resume. It never rearms the actual motion controller.
         """
+        if external_hold or not observation.depth_known:
+            # A sample may become stale while retaining its frame ID. Invalidate
+            # clear proof before either early return, so elapsed time during an
+            # interruption cannot spend a hold earned by an earlier clear view.
+            self._clear_streak = 0
+            self._clear_hold_started_at = None
         if external_hold:
             return GateDecision(yielding=True, wait_reason=external_reason, resumed_this_tick=False)
 
@@ -117,12 +123,6 @@ class ExploreObstacleGate:
         elif observation.depth_known and not observation.path_blocked:
             self._clear_streak += 1
             self._confirm_streak = 0
-        else:
-            # Missing evidence cannot spend a hold earned by an earlier clear
-            # view. Keep the obstacle yield, but require a fresh clear streak
-            # and hold before resuming once depth becomes usable again.
-            self._clear_streak = 0
-            self._clear_hold_started_at = None
 
         resumed = False
         if not self._yielding:
