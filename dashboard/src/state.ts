@@ -1,4 +1,11 @@
 import { mapKey } from "./protocol";
+import {
+  clearPeople,
+  emptyPeople,
+  observePeople,
+  type PersonClearance,
+  type PersonMemory,
+} from "./personMemory";
 import type {
   ChangeEvent,
   DetectionFrame,
@@ -28,6 +35,8 @@ export interface Mission {
   objects: WorldObject[];
   events: ChangeEvent[];
   detections: ReceivedDetections | null;
+  /** Display-only retained people; reset with the map, kept across reconnects. */
+  people: PersonMemory;
   trajectory: Vec3[];
   received: number;
 }
@@ -43,9 +52,34 @@ export const emptyMission = (): Mission => ({
   objects: [],
   events: [],
   detections: null,
+  people: emptyPeople(),
   trajectory: [],
   received: 0,
 });
+/**
+ * A transport reconnect is not a new AR map. Keep historical spatial memory
+ * (objects, occupancy and its floor, retained people), but require fresh
+ * identity/pose/health before resuming live use. Point IDs may restart: clear
+ * only deduplication, retaining observed geometry.
+ */
+export const reconnectMission = (state: Mission): Mission => ({
+  ...state,
+  health: null,
+  healthAt: 0,
+  pose: null,
+  path: [],
+  pointIds: [],
+  detections: null,
+});
+/** Apply a depth proof only to the map it was measured in. */
+export const clearMissionPeople = (
+  state: Mission,
+  map: string,
+  cleared: readonly PersonClearance[],
+): Mission =>
+  state.mapKey === map
+    ? { ...state, people: clearPeople(state.people, cleared) }
+    : state;
 export function reduceMessage(
   state: Mission,
   message: Message,
@@ -96,7 +130,11 @@ export function reduceMessage(
     case "objects":
       return { ...next, objects: message.objects };
     case "detections":
-      return { ...next, detections: { frame: message, receivedAt: now } };
+      return {
+        ...next,
+        detections: { frame: message, receivedAt: now },
+        people: observePeople(state.people, message, now),
+      };
     case "event":
       return state.events.some((e) =>
         message.id !== undefined && e.id !== undefined

@@ -10,6 +10,7 @@ function Patch({
 }) {
   const revision = useRef(-1);
   const storage = patch.update;
+  const indexArray = storage?.indices ?? patch.indices;
   const geometry = useMemo(() => {
     const result = new THREE.BufferGeometry();
     result.setAttribute(
@@ -20,9 +21,7 @@ function Patch({
       ).setUsage(THREE.DynamicDrawUsage),
     );
     result.setIndex(
-      new THREE.BufferAttribute(storage?.indices ?? patch.indices, 1).setUsage(
-        THREE.DynamicDrawUsage,
-      ),
+      new THREE.BufferAttribute(indexArray, 1).setUsage(THREE.DynamicDrawUsage),
     );
     if (patch.colors)
       result.setAttribute(
@@ -34,13 +33,17 @@ function Patch({
     if (patch.uvs)
       result.setAttribute("uv", new THREE.BufferAttribute(patch.uvs, 2));
     return result;
+    // Retained storage: a deletion swaps in a same-capacity index array, which
+    // reuses this geometry and its GPU buffers instead of re-uploading vertices.
   }, [
     storage?.positions ?? patch.positions,
-    storage?.indices ?? patch.indices,
+    storage ? storage.indices.length : patch.indices,
   ]);
   useLayoutEffect(() => {
     geometry.setDrawRange(0, patch.indices.length);
     if (!storage) return;
+    if (geometry.index && geometry.index.array !== indexArray)
+      geometry.index.array = indexArray;
     const continuous = revision.current + 1 === storage.revision;
     const vertexStart = continuous ? storage.vertexStart * 3 : 0;
     const indexStart = continuous ? storage.indexStart : 0;

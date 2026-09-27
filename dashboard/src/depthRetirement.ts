@@ -215,4 +215,10 @@ export class DepthContradiction {
   ): boolean {
     return this.views.every((view) => view.contradicts([a, b, c]));
   }
+  /** A remembered volume (its corner points) is seen through in both views. */
+  region(points: readonly ArrayLike<number>[]): boolean {
+    return (
+      points.length > 0 && this.views.every((view) => view.contradicts(points))
+    );
+  }
 }

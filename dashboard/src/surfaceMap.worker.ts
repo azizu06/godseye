@@ -11,6 +11,12 @@ import { decodeCaptureSurface } from "./captureSurface";
 import { retainedCoverage } from "./retainedCoverage";
 import type { CapturedSurface, SurfacePatch } from "./surfaceTypes";
 import type { CapturedPoints } from "./pointCloud";
+import {
+  MAX_RETAINED_PEOPLE,
+  personProofResults,
+  type PersonClearance,
+  type PersonProbe,
+} from "./personMemory";
 const map = new PersistentSurfaceMap();
 const keyframes = new SurfaceKeyframes();
 let coverageEpoch = 0;
@@ -33,6 +39,8 @@ self.onmessage = async (
     trackingLostCapture?: number;
     latest?: number;
     retainedSurfaceIds?: string[];
+    /** Remembered people to test against this capture's two-view proof. */
+    people?: PersonProbe[];
   }>,
 ) => {
   const { id } = event.data;
@@ -175,9 +183,16 @@ self.onmessage = async (
       const retiredSurfaces: { id: string; indices: Uint32Array }[] = [];
       let nextRecent = recentGeometry;
       let removed = 0;
+      let clearedPeople: PersonClearance[] = [];
       if (retirement) {
         if (!valid()) throw Error("RGB-D expired before retirement");
         const evidence = new DepthContradiction(retirement);
+        // The same calibrated two-view proof that retires geometry shows a
+        // remembered person's old location is now empty; nothing else removes it.
+        clearedPeople = personProofResults(
+          evidence,
+          (event.data.people ?? []).slice(0, MAX_RETAINED_PEOPLE),
+        );
         const undo = map.retirementCheckpoint();
         removed = map.retire(evidence);
         if (removed) rollbackRetirement = undo;
@@ -262,6 +277,7 @@ self.onmessage = async (
           coverageEpoch,
           capacity,
           retiredSurfaces,
+          clearedPeople,
         },
         {
           transfer: [
