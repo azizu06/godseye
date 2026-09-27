@@ -195,8 +195,11 @@ only when the picture changed:
   the session started, so the floor is estimated from the evidence: the lowest
   2 cm height slice covering at least 25 distinct cells and at least twice the
   cells of the slices 6-16 cm above and below it (a wall covers every slice
-  equally). Until a floor is found nothing is published. A table top or ceiling
-  can only be mistaken for it when no floor has been seen.
+  equally). A depth-only floor must be below the accepted camera in both
+  measured and prototype profiles; a ceiling-dominant frame produces `no_floor`
+  instead of authorizing clearance. A previously observed floor may survive a
+  wall-only view while it remains below the camera in the same map. This height
+  check cannot distinguish all furniture surfaces from an actual floor.
 - **Thresholds:** evidence is counted once per frame per 5 x 5 x 2 cm voxel. A cell
   is free with at least 2 hits within 4 cm of the floor, and occupied (winning
   over free) with at least 3 hits from 8 cm to 1.5 m above it that also reach
@@ -239,6 +242,21 @@ only when the picture changed:
   `tools/fake_phone.py`'s gradient depth has no horizontal plane, so it
   produces no grid; tested on synthetic floors and boxes only
   (`backend/tests/test_occupancy.py`, `backend/tests/test_occupancy_retirement.py`).
+
+When the iPhone reports a v2 frame with an ARKit plane anchor classified as
+floor, the backend rasterizes the anchor polygon near the camera into free
+5 cm cells. This keeps floor mapping possible when a glossy surface gives
+low-confidence depth. LiDAR obstacle evidence still overrides those cells;
+the plane does not establish whether a sign or person has moved out of view.
+The anchor's X–Z bounds must overlap the camera's 6 m local window, with floor
+height 5 cm–1.5 m below the camera. Navigation still needs at least 16 accepted
+depth samples at its profile's existing confidence threshold; floor metadata
+alone cannot refresh collision sensing. This requires the paired floor-capable
+iPhone build as well as this backend. v1 depth-only phones remain supported but
+may correctly report `no_floor` on reflective floors. This comparison backend
+accepts v1/v2 frames; it does not accept the newer upstream mesh-v3 phone stream.
+Start a new map/session when installing the paired update so a previously
+published invalid floor cannot remain in a viewer's retained map.
 
 ## Rover calibration and the navigation map
 

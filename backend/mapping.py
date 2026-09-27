@@ -5,7 +5,7 @@ import struct
 
 import numpy as np
 
-from .frame_bundle import FrameBundle, parse_frame_bundle
+from .frame_bundle import FLOOR_SUPPORT_RADIUS_M, FrameBundle, parse_frame_bundle
 
 
 POINTS_PROTOCOL = "godseye.points.v2"
@@ -74,6 +74,42 @@ def depth_to_points(frame: FrameBundle, *, max_points: int = 2500, min_points: i
     world.setflags(write=False)
     colors.setflags(write=False)
     return PointChunk(world, colors, frame.session_id, frame.map_epoch, frame.frame_id, frame.t_capture)
+
+
+def floor_plane_points(frame: FrameBundle, *, radius_m: float = 2.5) -> np.ndarray:
+    """Rasterize an ARKit-classified floor anchor near the current camera.
+
+    Plane vertices are positive evidence of floor even where a glossy surface
+    makes scene-depth confidence zero. Keep the raster local and bounded; later
+    frames extend it as the camera moves.
+    """
+    if frame.floor is None:
+        return np.empty((0, 3), dtype=np.float64)
+    polygon = frame.floor.polygon
+    cx, cz = frame.transform[0, 3], frame.transform[2, 3]
+    x0 = max(float(polygon[:, 0].min()), cx - radius_m)
+    x1 = min(float(polygon[:, 0].max()), cx + radius_m)
+    z0 = max(float(polygon[:, 1].min()), cz - radius_m)
+    z1 = min(float(polygon[:, 1].max()), cz + radius_m)
+    cell = .05
+    xs = np.arange(np.ceil(x0 / cell) * cell + cell / 2, x1, cell)
+    zs = np.arange(np.ceil(z0 / cell) * cell + cell / 2, z1, cell)
+    if not len(xs) or not len(zs):
+        return np.empty((0, 3), dtype=np.float64)
+    xx, zz = np.meshgrid(xs, zs)
+    inside = np.zeros(xx.shape, bool)
+    # Even-odd polygon fill; a plane boundary need not be a rectangle.
+    previous = polygon[-1]
+    for vertex in polygon:
+        xi, zi = vertex
+        xj, zj = previous
+        if zi != zj:
+            inside ^= ((zi > zz) != (zj > zz)) & (xx < (xj - xi) * (zz - zi) / (zj - zi) + xi)
+        previous = vertex
+    xx, zz = xx[inside], zz[inside]
+    result = np.column_stack((xx, np.full(len(xx), frame.floor.y), zz))
+    result.setflags(write=False)
+    return result
 
 
 def build_point_chunk(payload: bytes, session_id: str, map_epoch: int, **limits) -> PointChunk:

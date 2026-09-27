@@ -1,4 +1,4 @@
-# God's Eye Interfaces (v1)
+# God's Eye Interfaces (v1, optional floor-frame v2)
 
 Frozen contract between the iPhone app, the Mac backend, the dashboard, and the car.
 Change it only by agreement, and bump `version` when you do. Based on the v0.1 spec, section 13.
@@ -7,7 +7,8 @@ Change it only by agreement, and bump `version` when you do. Based on the v0.1 s
 
 - All devices join one phone hotspot, 2.4 GHz ("Maximize Compatibility" on).
 - The Mac backend listens on port **8765**. Put the Mac's hotspot IP in each client's config; don't hardcode it.
-- Every message carries `"version": 1`.
+- Existing messages carry `"version": 1`. A frame carrying a classified ARKit
+  floor plane uses `"version": 2`; its binary layout and all v1 fields stay the same.
 
 ## Coordinates and units (v1)
 
@@ -74,6 +75,23 @@ Header JSON:
 - **Depth**: `sceneDepth.depthMap`, float32 meters, little-endian, row-major.
 - **Confidence**: `sceneDepth.confidenceMap`, uint8 (0 = low, 1 = medium, 2 = high).
 - Never send pose from a different frame than the image and depth in the same bundle.
+
+An iPhone frame with an ARKit plane anchor classified **floor** may add a `floor`
+object and set only that frame's `version` to 2:
+
+```json
+"floor": { "y": -0.16, "polygon": [[-1.0, -1.0], [1.0, -1.0], [1.0, 2.0], [-1.0, 2.0]] }
+```
+
+`y` is the plane's ARKit world height; `polygon` is 3–64 boundary vertices in
+world X–Z meters from the same ARFrame's anchor snapshot. The plane must be
+5 cm–1.5 m below the current camera, cover at least 0.04 m², and fit within
+20 m per side, with its X–Z bounds overlapping the camera's local 6 m window.
+A v2 frame without valid floor evidence is rejected. A v1 frame
+cannot include `floor`. This seeds **free floor cells only** where an ARKit floor
+anchor exists; it does not manufacture obstacle depth for reflective objects.
+Navigation still requires the profile's minimum accepted depth samples; a floor
+polygon alone cannot refresh collision sensing.
 
 ### 1d. `mesh` (optional, P2)
 

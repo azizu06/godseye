@@ -192,11 +192,25 @@ final class SensorCoreTests: XCTestCase {
         XCTAssertEqual(header["t_capture"] as? Double, 12.5)
         XCTAssertEqual((header["transform"] as? [Float]), transform)
         XCTAssertEqual(bundle.suffix(60), depth + confidence)
+        let floor: [String: Any] = ["y": 0.8, "polygon": [[1.0, -4.0], [3.0, -4.0],
+                                                        [3.0, -2.0], [1.0, -2.0]]]
+        let floorBundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg,
+            intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
+            depth: depth, confidence: confidence, depthWidth: 4, depthHeight: 3,
+            floor: floor)
+        let floorHeaderSize = floorBundle.prefix(4).enumerated().reduce(0) {
+            $0 | Int($1.element) << ($1.offset * 8)
+        }
+        let floorHeader = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: floorBundle[4..<(4 + floorHeaderSize)]) as? [String: Any])
+        XCTAssertEqual(floorHeader["version"] as? Int, 2)
+        XCTAssertNotNil(floorHeader["floor"])
         XCTAssertThrowsError(try WireProtocol.bundle(pose: pose, jpeg: jpeg,
             intrinsics: [3, 0, 0, 0, 3, 0, 2, 1.5, 1], width: 4, height: 3,
             depth: depth, confidence: Data(repeating: 3, count: 12), depthWidth: 4, depthHeight: 3))
         if let path = ProcessInfo.processInfo.environment["GODSEYE_WIRE_FIXTURE"] {
             try bundle.write(to: URL(fileURLWithPath: path))
+            try floorBundle.write(to: URL(fileURLWithPath: path + ".floor.bin"))
             try WireProtocol.json(pose).write(to: URL(fileURLWithPath: path + ".pose.json"))
         }
     }

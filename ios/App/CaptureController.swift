@@ -350,6 +350,37 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// The ARKit-classified horizontal floor can remain usable when scene depth
+    /// marks glossy floor pixels low-confidence. Keep its boundary in the same
+    /// camera frame's bundle so the backend can seed free floor cells.
+    private func liveFloor(_ frame: ARFrame) -> [String: Any]? {
+        let cameraY = frame.camera.transform.columns.3.y
+        let planes = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter {
+            $0.alignment == .horizontal && $0.classification == .floor &&
+            $0.planeExtent.width * $0.planeExtent.height >= 0.04 &&
+            (0.05...1.5).contains(cameraY - $0.transform.columns.3.y) &&
+            (3...64).contains($0.geometry.boundaryVertices.count)
+        }
+        let camera = frame.camera.transform.columns.3
+        let localPlanes = planes.filter { plane in
+            let vertices = plane.geometry.boundaryVertices.map {
+                plane.transform * SIMD4<Float>($0.x, $0.y, $0.z, 1)
+            }
+            return vertices.map(\.x).max()! >= camera.x - 6 &&
+                vertices.map(\.x).min()! <= camera.x + 6 &&
+                vertices.map(\.z).max()! >= camera.z - 6 &&
+                vertices.map(\.z).min()! <= camera.z + 6
+        }
+        guard let plane = localPlanes.max(by: {
+            $0.planeExtent.width * $0.planeExtent.height < $1.planeExtent.width * $1.planeExtent.height
+        }) else { return nil }
+        let polygon: [[Float]] = plane.geometry.boundaryVertices.map { vertex in
+            let world = plane.transform * SIMD4<Float>(vertex.x, vertex.y, vertex.z, 1)
+            return [world.x, world.z]
+        }
+        return ["y": plane.transform.columns.3.y, "polygon": polygon]
+    }
+
     /// Live projection data never waits for full-color copies, mesh exports or disk writes.
     private func encodeLive(_ frame: ARFrame, id: Int, identity: CaptureIdentity, pose: [String: Any]) {
         let started = ProcessInfo.processInfo.systemUptime
@@ -367,7 +398,8 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             let intrinsics = try WireProtocol.scaledIntrinsics(floats(frame.camera.intrinsics),
                 sourceWidth: width, sourceHeight: height, width: 960, height: 720)
             let bundle = try WireProtocol.bundle(pose: pose, jpeg: jpeg, intrinsics: intrinsics,
-                depth: raw.depth, confidence: confidence, depthWidth: raw.width, depthHeight: raw.height)
+                depth: raw.depth, confidence: confidence, depthWidth: raw.width, depthHeight: raw.height,
+                floor: liveFloor(frame))
             let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
             captureQueue.async {
                 guard self.identity == identity else { return }

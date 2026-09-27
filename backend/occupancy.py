@@ -9,7 +9,8 @@ origin is wherever the session started, so the floor height is estimated from th
 data. ARKit world Y is gravity-aligned, so the floor is a horizontal plane: a height
 slice covering many distinct cells that clearly outnumbers the slices 6-16 cm above
 and below it (a wall covers every slice about equally). The lowest such slice is the
-floor; a table top or ceiling can only win when no floor has been seen. The estimate
+floor; a table top can still win when no floor has been seen. A candidate above
+the accepted camera is rejected for both profiles. The estimate
 is recomputed from all evidence on every snapshot, so it settles as more floor
 appears; until a floor is found nothing is published. For the explicit flat-terrain
 prototype, a same-frame plane below the phone camera takes precedence over an
@@ -76,6 +77,7 @@ class Evidence:
     outside: int  # points outside the grid bounds
     camera_y: float | None = None  # same-frame ARKit camera height, when available
     camera_xz: tuple[float, float] | None = None
+    floor_y: float | None = None  # Classified floor from the accepted same-frame anchor.
 
 
 @dataclass(frozen=True)
@@ -174,7 +176,8 @@ def contradicted_obstacle_keys(keys, hits, floor_y, obstacle_from_m, first, seco
 
 
 def frame_evidence(positions, *, camera_y: float | None = None,
-                   camera_xz: tuple[float, float] | None = None) -> Evidence:
+                   camera_xz: tuple[float, float] | None = None,
+                   floor_y: float | None = None) -> Evidence:
     """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
     p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     with np.errstate(invalid='ignore'):
@@ -186,7 +189,7 @@ def frame_evidence(positions, *, camera_y: float | None = None,
     keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                      + iy[inside].astype(np.int64))
     keys.setflags(write=False)
-    return Evidence(keys, int(len(p) - inside.sum()), camera_y, camera_xz)
+    return Evidence(keys, int(len(p) - inside.sum()), camera_y, camera_xz, floor_y)
 
 
 @dataclass(frozen=True)
@@ -282,6 +285,7 @@ class OccupancyGrid:
         self._last_at = None
         self._last_picture = None
         self._floor_y = None  # Accepted floor in this AR map; reset with the grid.
+        self._floor_from_anchor = False
         self._camera_y = None
         self._camera_xz = (0., 0.)
         self._last_depth_view = None
@@ -341,7 +345,13 @@ class OccupancyGrid:
                 self._camera_y = evidence.camera_y
                 # A flat-terrain rover's floor is below its camera. Prefer the
                 # plane in a fresh frame over a ceiling dominating old voxels.
-                if getattr(self.calibration, 'unknown_traversable', False):
+                if (evidence.floor_y is not None and math.isfinite(evidence.floor_y)
+                        and Y_MIN_M <= evidence.floor_y < Y_MAX_M
+                        and .05 <= evidence.camera_y - evidence.floor_y <= 1.5):
+                    self._floor_y = evidence.floor_y
+                    self._floor_from_anchor = True
+                if (not self._floor_from_anchor
+                        and getattr(self.calibration, 'unknown_traversable', False)):
                     candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
                     if candidate is not None and candidate < evidence.camera_y:
                         if self._floor_y is None or candidate <= self._floor_y + .15:
@@ -390,31 +400,32 @@ class OccupancyGrid:
             self.revision += 1
 
     def _classify(self, keys, hits):
-        # Looking toward walls must not erase a floor already observed in this
-        # map. Prefer a fresh valid estimate (including a newly seen lower
-        # floor); fall back to its last observed height, never old free cells.
+        # A ceiling can dominate glossy-floor depth. Neither measured nor
+        # prototype navigation may call a plane above the same-frame camera a
+        # floor. A classified anchor wins over this depth-only heuristic.
         with self._lock:
             floor_y, camera_y, camera_xz = self._floor_y, self._camera_y, self._camera_xz
-        if getattr(self.calibration, 'unknown_traversable', False) and camera_y is not None:
-            if floor_y is not None:
-                return classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
+            anchored, revision = self._floor_from_anchor, self.revision
+        if floor_y is not None and camera_y is not None and floor_y >= camera_y:
+            floor_y = None
+        if not anchored:
             candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
-            if candidate is None or candidate >= camera_y:
-                return None
-            picture = classify(keys, hits, self.obstacle_from_m, floor_y=candidate, center_xz=camera_xz)
-            if picture is not None:
-                with self._lock:
-                    self._floor_y = candidate
-            return picture
-        picture = classify(keys, hits, self.obstacle_from_m, center_xz=camera_xz)
+            if candidate is not None and (camera_y is None or candidate < camera_y):
+                # Preserve the prototype's flat-terrain floor against elevated
+                # furniture; measured depth may refine a valid existing floor.
+                if (floor_y is None or not getattr(self.calibration, 'unknown_traversable', False)
+                        or candidate <= floor_y + .15):
+                    floor_y = candidate
+        if floor_y is None:
+            return None
+        picture = classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
         if picture is not None:
             with self._lock:
-                self._floor_y = picture[3]
-            return picture
-        with self._lock:
-            floor_y = self._floor_y
-        return (classify(keys, hits, self.obstacle_from_m, floor_y=floor_y, center_xz=camera_xz)
-                if floor_y is not None else None)
+                # A snapshot worker must not overwrite an anchor committed
+                # while it was classifying older depth evidence.
+                if self.revision == revision and not self._floor_from_anchor:
+                    self._floor_y = floor_y
+        return picture
 
     def snapshot(self):
         """(revision, origin [x, z] or None, uint8 cells[rows=z, cols=x] or None), unthrottled.
@@ -447,7 +458,7 @@ class OccupancyGrid:
         if picture is None:
             return None
         col0, row0, cells, floor_y = picture
-        fingerprint = (col0, row0, cells.shape, cells.tobytes())
+        fingerprint = (col0, row0, cells.shape, cells.tobytes(), floor_y)
         with self._lock:
             if fingerprint == self._last_picture:
                 return None
