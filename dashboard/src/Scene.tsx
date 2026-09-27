@@ -1156,13 +1156,10 @@ export default function Scene(props: SceneProps) {
         aria-label="View mode"
         title="Workspace: Escape, right-click or long-press the canvas"
       >
-        <div
-          className="viewport-brand"
-          aria-label="God’s Eye spatial workspace"
-        >
+        <div className="viewport-brand" aria-label="PIP spatial workspace">
           <Crosshair size={19} strokeWidth={1.4} aria-hidden="true" />
           <span>
-            GOD’S EYE<small>SPATIAL WORKSPACE</small>
+            PIP<small>PERSONAL INDOOR PATHFINDER</small>
           </span>
         </div>
         <div className="segmented">

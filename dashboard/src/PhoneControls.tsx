@@ -90,8 +90,8 @@ export function PhoneControls({
       </div>
       {!phone ? (
         <p className="drawer-note">
-          Open God’s Eye and connect Dashboard remote before mounting. Keep the
-          app open.
+          Open the phone app and connect Dashboard remote before mounting. Keep
+          the app open.
         </p>
       ) : (
         <>

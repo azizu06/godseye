@@ -348,7 +348,7 @@ export default function App() {
         }
       }}
     >
-      <h1 className="sr-only">Godseye spatial workspace</h1>
+      <h1 className="sr-only">PIP spatial workspace</h1>
       <Scene
         toolsHost={sceneToolsHost}
         feedLabel={`External feed · ${config.wsUrl} · ${connection}`}
