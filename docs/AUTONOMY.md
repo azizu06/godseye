@@ -435,7 +435,11 @@ establish that person's clearance, use authenticated `POST /explore/yield` with
 `person_clearance_unknown` or `obstacle_wait`). It immediately drops pending
 movement and holds zero indefinitely in the current session. After fresh evidence
 establishes clearance, authenticated `POST /explore/resume` with that same generation
-releases the wait and replans. Resume checks readiness; it never arms or releases
+submits one clearance observation. Three distinct fresh clear samples followed by
+a one-second clear hold are required; unknown/stale evidence breaks the hold,
+and repeated samples cannot advance it. A 200 response is not immediate release:
+read `yielding` and `resumed`, and keep observing until `yielding` is false. Then it
+replans in the same session. Resume checks readiness; it never arms or releases
 a fault/Stop, and stale generations return 409. Sensor/transport faults remain
 active during a yield.
 
@@ -458,3 +462,12 @@ response, motor coast, camera/chassis calibration or pedestrian detection accura
 ### Comparison-branch merge compatibility
 
 The merged backend accepts live frame versions 1, 2 and 3, retaining local classified-floor validity guards. The default prototype command format remains compatible with the published checkpoint-5 floor-capable phone/ESP: no optional inner-wheel field is emitted. `--prototype-variable-arcs` explicitly enables upstream's graduated inner-wheel command and 0.2 nominal follower cruise; that option requires a matching updated phone **and** ESP bridge. Leave it off with the currently installed checkpoint-5 pair. The all-direction `--prototype-max-pwm` ceiling applies in both modes. Neither policy is physical motor calibration.
+
+Recorded Explore02/03 on checkpoint 5 stopped at `start_blocked` before moving.
+Their camera-to-nearest occupied-cell distance was 0/0.0506–0.1002 m, below
+both the configured 0.4251 m inflation and the 0.2727 m conservative footprint
+bound without the extra margin. A free forward ray does not establish footprint
+clearance. These classified maps lack voxel height/confidence/current-return
+provenance, so they cannot distinguish self returns from real obstacles. Do not
+clear cells, shrink margins or force departure to bypass this decision. The
+regression `backend.tests.test_recorded_explore_start` preserves that guard.

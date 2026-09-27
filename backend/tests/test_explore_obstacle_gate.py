@@ -188,6 +188,18 @@ class DistinctEvidenceFrameDedupTests(unittest.TestCase):
         self.assertFalse(resumed.yielding)
         self.assertTrue(resumed.resumed_this_tick)
 
+    def test_a_clear_frame_that_becomes_stale_breaks_the_hold(self):
+        gate = ExploreObstacleGate()
+        gate.decide(IMMINENT, 0.)
+        for i, now in enumerate((1., 1.1, 1.2)):
+            gate.decide(PathObservation(False, True, frame_id=i), now)
+        self.assertTrue(gate.decide(PathObservation(False, False, frame_id=2), 2.3).yielding)
+        # Dedup must not preserve the old clearance hold through staleness.
+        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=3), 2.4).yielding)
+        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=4), 2.5).yielding)
+        self.assertTrue(gate.decide(PathObservation(False, True, frame_id=5), 2.6).yielding)
+        self.assertFalse(gate.decide(PathObservation(False, True, frame_id=6), 3.7).yielding)
+
     def test_reset_clears_frame_dedup_state(self):
         gate = ExploreObstacleGate(GateConfig(pause_confirm_frames=1))
         sample = PathObservation(path_blocked=True, depth_known=True, frame_id="same")

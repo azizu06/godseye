@@ -89,12 +89,6 @@ class PrototypeActuation:
         self.max_pwm = max_pwm
         self.variable_arc_pwm = variable_arc_pwm
 
-    def __init__(self, max_pwm=180, *, variable_arc_pwm=False):
-        if type(max_pwm) is not int or not 1 <= max_pwm <= 180:
-            raise ValueError('prototype max PWM must be an integer in [1, 180]')
-        self.max_pwm = max_pwm
-        self.variable_arc_pwm = variable_arc_pwm
-
     def follower(self):
         return FollowerConfig(pivot_only=False, rotate_in_place_rad=1.2,
                               lookahead_m=.6, cruise_mps=.2 if self.variable_arc_pwm else .15, min_mps=.05,

@@ -103,6 +103,15 @@ class ExploreObstacleGate:
         if observation.frame_id is not None:
             self._last_frame_id = observation.frame_id
 
+        if not observation.depth_known:
+            # A previously clear sample can become stale while its identity
+            # remains unchanged. Staleness breaks clearance even on a repeat.
+            self._clear_streak = 0
+            self._clear_hold_started_at = None
+            return GateDecision(yielding=self._yielding,
+                                wait_reason="path_crossing" if self._yielding else None,
+                                resumed_this_tick=False)
+
         if is_repeat_sample:
             # Same sensor sample re-presented: not a new distinct observation.
             # Must not advance any streak or the hold, and must not itself

@@ -1,6 +1,5 @@
 """Ordinary-obstruction API uses an existing fake drive session, never arm/prepare."""
 from contextlib import contextmanager
-from dataclasses import replace
 from types import SimpleNamespace
 import time
 import unittest
@@ -53,9 +52,42 @@ class ExploreYieldTests(unittest.TestCase):
             self.assertEqual(state.motion.generation, generation)
             self.assertIsNone(state.motion.desired)
             self.assertEqual(client.get('/autonomy').json()['explore_yield'], 'person_clearance_unknown')
-            self.assertEqual(client.post('/explore/resume', json=dict(generation=generation)).status_code, 200)
+            clock = [0.]
+            original = state.obstacle_gate.decide
+            state.obstacle_gate.decide = lambda observation, now: original(observation, clock[0])
+            for frame, now, expected in [(1, 0., True), (2, .1, True), (3, .2, True),
+                                          (3, 1.3, True), (4, 1.3, False)]:
+                clock[0] = now
+                state.detection_view = (dict(session_id='TEST', map_epoch=1, frame_id=frame,
+                                            t_wall_ms=int(time.time()*1000), detections=[]), b'')
+                response = client.post('/explore/resume', json=dict(generation=generation))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['yielding'], expected)
+                self.assertEqual(response.json()['resumed'], not expected)
             wait_for(lambda: state.nav.waiting_reason != 'person_clearance_unknown')
             self.assertTrue(state.armed)
+            self.assertEqual(state.motion.generation, generation)
+
+
+    def test_unknown_depth_breaks_clear_hold_at_api_boundary(self):
+        with running_explore() as (client, state, car):
+            generation = state.motion.generation
+            client.post('/explore/yield', json=dict(generation=generation, reason='person_path_crossing'))
+            clock = [0.]
+            original = state.obstacle_gate.decide
+            state.obstacle_gate.decide = lambda observation, now: original(observation, clock[0])
+            frames = [(1, 0., [], True), (2, .1, [], True), (3, .2, [], True),
+                      (4, 1.3, [dict(**{'class': 'person'}, position=None)], True),
+                      (5, 1.4, [], True), (6, 1.5, [], True), (7, 1.6, [], True),
+                      (8, 2.7, [], False)]
+            for frame, now, detections, expected in frames:
+                clock[0] = now
+                state.detection_view = (dict(session_id='TEST', map_epoch=1, frame_id=frame,
+                                            t_wall_ms=int(time.time()*1000), detections=detections), b'')
+                response = client.post('/explore/resume', json=dict(generation=generation))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['yielding'], expected, (frame, response.json()))
+                self.assertTrue(state.armed)
             self.assertEqual(state.motion.generation, generation)
 
     def test_stop_fault_and_old_generation_cannot_be_released_or_rearmed(self):

@@ -31,6 +31,7 @@ from backend.capture import CaptureBuffer
 from backend.capture_routes import register_capture_routes
 from backend.rich_capture import RichCapture
 from backend.frame_bundle import FrameValidationError, validate_rigid_transform, parse_frame_bundle
+from backend.explore_obstacle_gate import ExploreObstacleGate, PathObservation
 from backend.scan_pacing import CameraPose, ScanObservation, capture_observation
 from backend.mapping import (InsufficientDepth, MappingError, PointChunk, build_point_chunk, depth_to_points,
                              points_message, points_binary, floor_plane_points, POINTS_PROTOCOL, DENSE_MAX_POINTS)
@@ -317,6 +318,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.armed = False
         app.state.auto_requested = False  # explicit active Explore; faults never auto-rearm
         app.state.explore_yield = None
+        app.state.obstacle_gate = ExploreObstacleGate()
+        app.state.yield_path = []
         app.state.input_gap_since = None
         app.state.auto_arm_task = None
         app.state.auto_retry_at = 0.
@@ -501,6 +504,9 @@ def create_app(db_path: str | None = None, build_points=None,
         if pending is not None and pending is not asyncio.current_task():
             pending.cancel()
         app.state.explore_yield = None
+        if hasattr(app.state, 'obstacle_gate'):
+            app.state.obstacle_gate.reset()
+            app.state.yield_path = []
         app.state.input_gap_since = None
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
@@ -1124,10 +1130,62 @@ def create_app(db_path: str | None = None, build_points=None,
                 or generation != app.state.motion.generation):
             raise HTTPException(409, 'Explore stopped or generation changed; resume cannot arm')
 
+    def yield_observation():
+        """Fresh metric proof along the held route; labels without depth cannot clear it."""
+        snapshot, pose = map_snapshot(), rover_pose()
+        if snapshot is None or pose is None or map_problem(snapshot, nav_settings.map_max_age_s):
+            return PathObservation(False, False, frame_id=('invalid', time.monotonic()))
+        view = app.state.detection_view
+        message = view[0] if view is not None else None
+        frame = (snapshot.session, snapshot.accepted_at)
+        if message is not None:
+            frame = (snapshot.session, message.get('frame_id'))
+            if ((message.get('session_id'), message.get('map_epoch')) != app.state.session
+                    or not isinstance(message.get('t_wall_ms'), (int, float))
+                    or not 0 <= time.time()*1000-message['t_wall_ms'] <= DETECTOR_OK_S*1000):
+                return PathObservation(False, False, frame_id=frame)
+        # Keep a bounded prefix of the route that existed when yield began.
+        # If no plan existed yet, require fresh known floor in the facing corridor.
+        points = [(pose.x, pose.z)]
+        route = app.state.yield_path
+        if route:
+            closest = min(range(len(route)), key=lambda i: math.dist(route[i], points[0]))
+            route = route[closest:]
+        else:
+            route = [(pose.x + .8*math.sin(pose.yaw_rad), pose.z + .8*math.cos(pose.yaw_rad))]
+        remaining = .8
+        for target in route:
+            origin = points[-1]
+            length = math.dist(origin, target)
+            if length <= 1e-9:
+                continue
+            travel = min(length, remaining)
+            for distance in np.arange(snapshot.cell_m, travel + snapshot.cell_m, snapshot.cell_m):
+                fraction = min(distance, travel)/length
+                points.append((origin[0]+fraction*(target[0]-origin[0]), origin[1]+fraction*(target[1]-origin[1])))
+            remaining -= travel
+            if remaining <= 1e-9:
+                break
+        known = all(snapshot.cell(*point) == 1 for point in points)
+        blocked = any(not snapshot.traversable(*point) for point in points)
+        for detection in message.get('detections', ()) if message else ():
+            if detection.get('class') not in {'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck'}:
+                continue
+            position = detection.get('position')
+            if position is None:
+                known = False  # unresolved image label is not a proven poster or clearance
+            elif min(math.dist((position[0], position[2]), point) for point in points) <= snapshot.inflation_m:
+                blocked = True
+        return PathObservation(blocked, known, frame_id=frame)
+
     @app.post('/explore/yield')
     async def yield_explore(body: ExploreYield):
         check_explore_generation(body.generation)
         app.state.explore_yield = body.reason
+        app.state.yield_path = list(app.state.nav.path)
+        app.state.obstacle_gate.reset()
+        # Explicit yield means brake immediately; no image threshold is invented.
+        app.state.obstacle_gate.decide(PathObservation(True, True, imminent=True), time.monotonic())
         app.state.motion.desired = None
         if relay is not None:
             relay.command = None
@@ -1142,9 +1200,12 @@ def create_app(db_path: str | None = None, build_points=None,
         check_explore_generation(body.generation)
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
-        app.state.explore_yield = None
-        # The existing run replans from fresh pose/map under this same generation.
-        return health()
+        decision = app.state.obstacle_gate.decide(yield_observation(), time.monotonic())
+        if not decision.yielding:
+            app.state.explore_yield = None
+            app.state.yield_path = []
+        # 200 is an accepted observation, not permission to drive: read yielding.
+        return dict(health(), yielding=decision.yielding, resumed=decision.resumed_this_tick)
 
     @app.post('/mode')
     async def mode(body: Mode):

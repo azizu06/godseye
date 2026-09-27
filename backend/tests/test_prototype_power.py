@@ -7,9 +7,9 @@ from backend.motion import DriveCommand
 
 class PrototypePowerTests(unittest.TestCase):
     def test_every_relay_move_obeys_power_cap_including_forward_arcs(self):
-        for ceiling in (30, 60, 120, 180):
-            with self.subTest(ceiling=ceiling):
-                profile = PrototypeActuation(max_pwm=ceiling)
+        for ceiling, variable in ((cap, var) for cap in (30, 60, 120, 180) for var in (False, True)):
+            with self.subTest(ceiling=ceiling, variable=variable):
+                profile = PrototypeActuation(max_pwm=ceiling, variable_arc_pwm=variable)
                 car = RelayCar('TEST_KEY_NOT_REAL_01234567890123456789', profile, clock=lambda: 10.)
                 car.identity = lambda: ('capture', 1)
                 car.attach()
@@ -28,6 +28,10 @@ class PrototypePowerTests(unittest.TestCase):
                         self.assertLessEqual(packet['power'], ceiling)
                         self.assertGreaterEqual(packet['power'], 0)
                         self.assertEqual(packet['lease_ms'], 1500)
+                        if not variable:
+                            self.assertNotIn('inner_power', packet)
+                        elif 'inner_power' in packet:
+                            self.assertLessEqual(packet['inner_power'], ceiling)
                         if v == w == 0:
                             self.assertEqual((packet['direction'], packet['power']), (0, 0))
                         elif v and abs(w) >= .15:

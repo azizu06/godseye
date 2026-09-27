@@ -164,7 +164,7 @@ at zero awaiting new map evidence. It does not replace `stop_reason`.
 | POST | `/stop` | none | Latch the stop state (always accepted) |
 | GET | `/autonomy` | none | Readiness, active arm generation, exploration counters, yield/wait reason and prototype power ceiling |
 | POST | `/explore/yield` | `{ "generation": 1, "reason": "person_path_crossing" / "person_clearance_unknown" / "obstacle_wait" }` | Authenticated in-session zero-motion hold; requires armed Explore and matching generation |
-| POST | `/explore/resume` | `{ "generation": 1 }` | Authenticated release after clearance evidence and current readiness; replans in the same generation, cannot arm or release a Stop/fault |
+| POST | `/explore/resume` | `{ "generation": 1 }` | Authenticated clearance observation; returns `yielding`/`resumed`. Requires 3 distinct clear samples plus 1 s hold; unknown/stale breaks it. Replans in the same generation, cannot arm or release a Stop/fault |
 | POST | `/mode` | `{ "mode": "manual" / "navigate" / "explore" }` | Stops first, then switches |
 | POST | `/manual` | `{ "v_mps": 0.1, "yaw_rate_rps": 0.0 }` | Held-button driving. The dashboard resends every 100 ms; the car stops if these stop arriving |
 | POST | `/goal` | `{ "x": 1.2, "z": -0.8 }` | Drive to a clicked point |
