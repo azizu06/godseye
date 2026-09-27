@@ -6,6 +6,7 @@ export interface AutonomyReadiness {
   profile?: "prototype" | "measured";
   warnings?: string[];
   ready: boolean;
+  auto_requested?: boolean;
   blockers: string[];
 }
 

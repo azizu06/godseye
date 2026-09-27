@@ -11,7 +11,9 @@ slice covering many distinct cells that clearly outnumbers the slices 6-16 cm ab
 and below it (a wall covers every slice about equally). The lowest such slice is the
 floor; a table top or ceiling can only win when no floor has been seen. The estimate
 is recomputed from all evidence on every snapshot, so it settles as more floor
-appears; until a floor is found nothing is published.
+appears; until a floor is found nothing is published. For the explicit flat-terrain
+prototype, a same-frame plane below the phone camera takes precedence over an
+accumulated ceiling plane.
 
 Per cell, relative to that floor: hits within FLOOR_TOL_M are free evidence; hits
 from OBSTACLE_MIN_M (or a measured rover threshold less HEIGHT_MARGIN_M, see
@@ -68,9 +70,10 @@ class Evidence:
     """One frame's voxel hits, not yet part of any grid."""
     keys: np.ndarray  # sorted unique voxel keys, read-only
     outside: int  # points outside the grid bounds
+    camera_y: float | None = None  # same-frame ARKit camera height, when available
 
 
-def frame_evidence(positions) -> Evidence:
+def frame_evidence(positions, *, camera_y: float | None = None) -> Evidence:
     """Voxelize one frame's world points ((N, 3) ARKit meters); pure, so safe on any thread."""
     p = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     with np.errstate(invalid='ignore'):
@@ -82,7 +85,7 @@ def frame_evidence(positions) -> Evidence:
     keys = np.unique((ix[inside].astype(np.int64) * _SIDE + iz[inside].astype(np.int64)) * _LEVELS
                      + iy[inside].astype(np.int64))
     keys.setflags(write=False)
-    return Evidence(keys, int(len(p) - inside.sum()))
+    return Evidence(keys, int(len(p) - inside.sum()), camera_y)
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,7 @@ class OccupancyGrid:
         self._last_at = None
         self._last_picture = None
         self._floor_y = None  # Accepted floor in this AR map; reset with the grid.
+        self._camera_y = None
         self._lock = threading.Lock()
 
     @property
@@ -194,6 +198,15 @@ class OccupancyGrid:
         """
         keys = evidence.keys
         with self._lock:
+            if evidence.camera_y is not None and math.isfinite(evidence.camera_y):
+                self._camera_y = evidence.camera_y
+                # A flat-terrain rover's floor is below its camera. Prefer the
+                # plane in a fresh frame over a ceiling dominating old voxels.
+                if getattr(self.calibration, 'unknown_traversable', False):
+                    candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
+                    if candidate is not None and candidate < evidence.camera_y:
+                        if self._floor_y is None or candidate <= self._floor_y + .15:
+                            self._floor_y = candidate
             self.dropped += evidence.outside
             self.accepted_at = now
             if not len(keys):
@@ -216,6 +229,19 @@ class OccupancyGrid:
         # Looking toward walls must not erase a floor already observed in this
         # map. Prefer a fresh valid estimate (including a newly seen lower
         # floor); fall back to its last observed height, never old free cells.
+        with self._lock:
+            floor_y, camera_y = self._floor_y, self._camera_y
+        if getattr(self.calibration, 'unknown_traversable', False) and camera_y is not None:
+            if floor_y is not None:
+                return classify(keys, hits, self.obstacle_from_m, floor_y=floor_y)
+            candidate = estimate_floor(keys % _LEVELS) if len(keys) else None
+            if candidate is None or candidate >= camera_y:
+                return None
+            picture = classify(keys, hits, self.obstacle_from_m, floor_y=candidate)
+            if picture is not None:
+                with self._lock:
+                    self._floor_y = candidate
+            return picture
         picture = classify(keys, hits, self.obstacle_from_m)
         if picture is not None:
             with self._lock:

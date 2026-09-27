@@ -48,7 +48,9 @@ struct CaptureView: View {
     @State private var pairingNotice = ""
 
     private var captureOptions: CaptureOptions {
-        CaptureOptions(endpoint: endpoint, stream: stream, fullSensorUpload: fullSensorUpload,
+        // Autonomous control shares Wi-Fi with live RGB-D. Keep the complete
+        // local recording, but leave bulk laptop upload off in computer mode.
+        CaptureOptions(endpoint: endpoint, stream: stream, fullSensorUpload: fullSensorUpload && !computerMode,
                        record: record, mesh: mesh, losslessColor: lossless, frameHz: rate, archiveHz: archiveRate)
     }
 
@@ -136,11 +138,16 @@ struct CaptureView: View {
                             if stream {
                                 Text("Streams pose and RGB-depth bundles for the live map and drive health.")
                                     .font(.caption).foregroundStyle(.secondary)
-                                Toggle("Upload full sensor data", isOn: $fullSensorUpload)
-                                Text(fullSensorUpload
-                                     ? "Also uploads native RGB, lossless sensor data, scene geometry, and motion/location telemetry. The laptop records received full-capture packets. Turn off on busy Wi-Fi to keep the live stream fresh."
-                                     : "Only the live stream is sent. Full sensor data stays on the phone if recording is on.")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                if computerMode {
+                                    Text("Computer control sends the live RGB-depth feed and pose. When recording is on, full sensor data stays on the phone so bulk uploads cannot delay driving.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Toggle("Upload full sensor data", isOn: $fullSensorUpload)
+                                    Text(fullSensorUpload
+                                         ? "Also uploads native RGB, lossless sensor data, scene geometry, and motion/location telemetry. The laptop records received full-capture packets. Turn off on busy Wi-Fi to keep the live stream fresh."
+                                         : "Only the live stream is sent. Full sensor data stays on the phone if recording is on.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 TextField("ws://<laptop IP>:8765/phone", text: $endpoint)
                                     .textContentType(.URL).keyboardType(.URL)
                                     .textInputAutocapitalization(.never).autocorrectionDisabled()

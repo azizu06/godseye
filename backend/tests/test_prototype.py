@@ -1,6 +1,9 @@
 """Prototype bounds use synthetic dimensions, never hardware measurements."""
 import math
+import time
 import unittest
+from types import SimpleNamespace
+import numpy as np
 from pydantic import ValidationError
 from backend.prototype import PrototypeActuation, prototype_geometry
 from backend.calibration import RoverCalibration
@@ -40,6 +43,66 @@ class PrototypeTests(unittest.TestCase):
             self.assertEqual(client.post('/arm').status_code, 401)
             response = client.post('/arm', headers={'Authorization': 'Bearer ' + car.key})
             self.assertEqual(response.status_code, 409)
+
+    def test_explicit_stop_clears_latched_explore_request(self):
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        car = RelayCar('TEST_KEY_NOT_REAL_01234567890123456789', PrototypeActuation())
+        app = create_app(db_path=':memory:', car=car, calibration=prototype_geometry(.24, .14), capture_directory='')
+        with TestClient(app) as client:
+            client.app.state.auto_requested = True
+            client.app.state.mode = 'explore'
+            self.assertTrue(client.get('/autonomy').json()['auto_requested'])
+            self.assertEqual(client.post('/stop').status_code, 200)
+            self.assertFalse(client.get('/autonomy').json()['auto_requested'])
+
+    def test_latched_explore_rearms_after_a_recoverable_disconnect(self):
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        from backend.occupancy import OccupancySnapshot
+        from backend.tests.test_objects import FakeDetector
+        from backend.tests.test_map_transport import hello
+        from tools.car_rehearsal import wait_for
+        car = RelayCar('TEST_KEY_NOT_REAL_01234567890123456789', PrototypeActuation())
+        car.connected = True
+        car.health = lambda: 'ok'
+        car.blockers = lambda: []
+        async def prepare(session):
+            car.armed_session = session.upper()
+        car.prepare = prepare
+        app = create_app(db_path=':memory:', car=car, detector=FakeDetector(),
+                         calibration=prototype_geometry(.24, .14), capture_directory='')
+        with TestClient(app) as client, client.websocket_connect('/phone') as phone:
+            state = client.app.state
+            phone.send_json(hello(session='test'))
+            wait_for(lambda: state.session == ('test', 1))
+            snapshot = OccupancySnapshot(('test', 1), 1, time.monotonic(), (), .18,
+                                         (-1., -1.), .05, np.ones((40, 40), dtype=np.uint8), 0.)
+            state.occupancy = SimpleNamespace(session=state.session, map_snapshot=lambda: snapshot)
+            state.autonomy_map = snapshot
+            def pose(frame_id, tracking='normal', delay_ms=0):
+                return dict(version=1, type='pose', session_id='test', map_epoch=1,
+                    frame_id=frame_id, t_capture=float(frame_id),
+                    t_wall_ms=int(time.time()*1000) - delay_ms, tracking=tracking,
+                    transform=[1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.])
+            phone.send_json(pose(1))
+            wait_for(lambda: state.pose is not None)
+            state.detected_at = time.monotonic()
+            state.mode = 'explore'
+            state.auto_requested = True  # a previously armed Explore survived relay loss
+            self.assertEqual(client.get('/autonomy').json()['blockers'], [])
+            wait_for(lambda: state.armed, timeout=1.)
+            self.assertTrue(client.get('/autonomy').json()['auto_requested'])
+            phone.send_json(pose(2, delay_ms=1000))
+            time.sleep(.05)
+            self.assertTrue(state.armed, 'An old pose must not disarm persistent Explore')
+            phone.send_json(pose(3, tracking='limited'))
+            wait_for(lambda: state.pose.tracking == 'limited')
+            self.assertTrue(state.armed, 'Tracking loss pauses the motor without losing Explore')
+            phone.send_json(pose(4))
+            wait_for(lambda: state.pose.tracking == 'normal')
+            self.assertEqual(client.post('/stop').status_code, 200)
+            self.assertFalse(state.auto_requested)
 
     def test_fixed_power_no_reverse_arcs_or_rate_claims(self):
         profile = PrototypeActuation()

@@ -3,7 +3,8 @@ import Combine
 import SensorCore
 
 /// A small dedicated WebSocket, independent of RGB-D upload backpressure.
-/// Every failure requires another local enable. Stop never waits for Wi-Fi.
+/// A foreground computer-control preference can reconnect this link after loss.
+/// Movement still needs fresh capture and a fresh ESP permit. Stop never waits for Wi-Fi.
 @MainActor
 final class RoverAutonomyLink: ObservableObject {
     @Published private(set) var enabled = false
@@ -45,7 +46,8 @@ final class RoverAutonomyLink: ObservableObject {
         }
         self.rover = rover; self.capture = capture; identity = snapshot.identity
         capture.setControlPriority(true)
-        enabled = true; sequence = 0; lastServer = now; serverReady = false; armed = false
+        enabled = true; sequence = 0; lastServer = now
+        serverReady = false; armed = false
         status = "Connecting laptop control…"
         let token = generation
         rover.onAutonomyReply = { [weak self] reply in self?.feedback(reply) }
@@ -87,17 +89,21 @@ final class RoverAutonomyLink: ObservableObject {
 
     private func tick() {
         guard enabled else { return }
-        guard validCapture(), rover?.autonomyAvailable == true else {
-            disconnect(reason: "Stopped · capture, depth, tracking or rover feedback lost")
+        guard rover?.connected == true, rover?.verified == true, rover?.autonomyEnabled == true,
+              capture?.running == true else {
+            disconnect(reason: "Stopped · phone or rover link lost")
             return
+        }
+        if !validCapture() || rover?.autonomyAvailable != true {
+            status = "Paused · waiting for fresh capture and rover feedback"
         }
         // Connecting never authorizes movement. Wait for a server message
         // before sending feedback or applying the active transport deadlines.
         if !serverReady {
             if now - lastServer > 3 { disconnect(reason: "Stopped · laptop handshake timed out") }
-        } else if sending && now - busySince > (armed ? 0.2 : 1.5) {
+        } else if sending && now - busySince > (armed ? 5.0 : 1.5) {
             disconnect(reason: "Stopped · laptop send timed out")
-        } else if now - lastServer > (armed ? 0.5 : 3.0) {
+        } else if now - lastServer > (armed ? 5.0 : 3.0) {
             disconnect(reason: "Stopped · laptop heartbeat timed out")
         }
     }
@@ -125,15 +131,22 @@ final class RoverAutonomyLink: ObservableObject {
                         if !self.serverReady { self.status = "Connected · arm from laptop when ready" }
                     } else {
                         let command = try AutonomyCommand.decode(data)
-                        guard command.type == .stop || self.validCapture(),
-                              self.rover?.acceptAutonomy(command) == true else {
-                            throw AutonomyCommand.Error.invalidCommand
+                        if command.type == .command &&
+                            (!self.validCapture() || self.rover?.autonomyAvailable != true) {
+                            // Do not queue a movement through a sensor/permit gap.
+                            // Firmware brakes after 200 ms and a fresh command can resume.
+                            self.status = "Paused · waiting for fresh capture and rover feedback"
+                        } else {
+                            guard command.type == .stop || self.validCapture(),
+                                  self.rover?.acceptAutonomy(command) == true else {
+                                throw AutonomyCommand.Error.invalidCommand
+                            }
+                            if command.type == .arm { self.armed = true }
+                            if command.type == .stop { self.armed = false }
+                            self.status = command.type == .arm ? "Arming rover…" :
+                                command.type == .stop ? "Stopped · arm from laptop when ready" : "Laptop controlling rover"
                         }
-                        if command.type == .arm { self.armed = true }
-                        if command.type == .stop { self.armed = false }
                         self.lastServer = self.now
-                        self.status = command.type == .arm ? "Arming rover…" :
-                            command.type == .stop ? "Stopped · arm from laptop when ready" : "Laptop controlling rover"
                     }
                     self.serverReady = true
                     self.drain()

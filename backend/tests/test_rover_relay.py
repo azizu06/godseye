@@ -105,6 +105,17 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.car.send(self.drive(3))
         self.assertEqual(self.car.next_message()['seq'], 3)
 
+    async def test_brief_permit_gap_drops_queued_motion_without_retiring_arm(self):
+        await self.arm()
+        self.car.send(self.drive())
+        self.now += .21
+        self.assertIsNone(self.car.next_message())
+        self.assertEqual(self.car.armed_session, SESSION.upper())
+        self.assertEqual(self.losses, [])
+        self.feedback()
+        self.car.send(self.drive(2))
+        self.assertEqual(self.car.next_message()['seq'], 2)
+
     async def test_stale_feedback_wrong_capture_and_unmeasured_rates_refused(self):
         await self.arm()
         with self.assertRaises(ValueError): self.car.send(self.drive(yaw_rate_rps=.2))

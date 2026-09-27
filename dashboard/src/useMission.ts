@@ -469,7 +469,11 @@ export function useMission() {
   }, [mission.health?.armed]);
   // A reconnect can temporarily clear health. Unknown state is not disarm.
   const requiresStop =
-    unconfirmedMotion || lastKnownArmed || !!mission.health?.armed || !!pending;
+    unconfirmedMotion ||
+    lastKnownArmed ||
+    !!mission.health?.armed ||
+    !!pending ||
+    !!autonomy?.auto_requested;
   const unexpectedStop =
     mission.health?.armed === false &&
     mission.health.stop_reason !== null &&

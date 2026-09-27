@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from backend.app import MAP_MAX_AGE_S, create_app
 from backend.mapping import build_point_chunk
 from backend.occupancy import (CELL_M, FLOOR_TOL_M, HALF_EXTENT_M, OBSTACLE_MAX_M, OBSTACLE_MIN_M,
-                               PUBLISH_INTERVAL_S, OccupancyGrid)
+                               PUBLISH_INTERVAL_S, OccupancyGrid, frame_evidence)
 from backend.tests.test_map_transport import fresh, hello, next_of, wait_for
 from backend.tests.test_pose_freshness import pose
 from backend.tests.test_mapping import bundle
@@ -494,6 +494,19 @@ if __name__ == '__main__':
 
 
 class FloorPersistenceTests(unittest.TestCase):
+    def test_prototype_uses_same_frame_floor_below_camera_over_accumulated_ceiling(self):
+        from backend.prototype import prototype_geometry
+        grid = OccupancyGrid(SESSION, calibration=prototype_geometry(.2286, .127))
+        ceiling = plane(-1, 1, -1, 1, 2.35)
+        floor = plane(-.5, .5, -.5, .5, -.1)
+        for now in range(3):
+            grid.commit(frame_evidence(ceiling, camera_y=0.), float(now))
+        self.assertIn('no_floor', grid.map_snapshot().blockers)
+        for now in range(3, 6):
+            grid.commit(frame_evidence(floor, camera_y=0.), float(now))
+        self.assertAlmostEqual(grid.map_snapshot().floor_y, -.1, delta=.03)
+        self.assertEqual(grid.map_snapshot().cell(0, 0), 1)
+
     def test_observed_floor_survives_peak_loss_but_obstacles_and_freshness_still_update(self):
         grid = OccupancyGrid(SESSION)
         feed(grid, plane(-1, 1, -1, 1, FLOOR_Y))

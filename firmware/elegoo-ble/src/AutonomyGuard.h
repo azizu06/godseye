@@ -35,14 +35,21 @@ class AutonomyGuard {
     strcpy(driveSession, id);
     armed = true;
     lastSequence = 0;
+    brakeSequence = 0;
     return true;
   }
 
   bool accept(const char* id, uint32_t sequence, uint64_t token, uint32_t now) {
-    tick(now); // A new arrival cannot revive a lease that already expired.
+    tick(now); // A late arrival cannot extend the previous motor lease.
     if (!armed || !validID(id) || strcmp(id, driveSession) != 0 || !sequence ||
-        sequence <= lastSequence || !validPermit(token, now)) {
+        sequence <= lastSequence) {
       stop();
+      return false;
+    }
+    if (!validPermit(token, now)) {
+      // A delayed Wi-Fi/BLE packet cannot move the car, but may be followed
+      // by a fresh one. Consume its sequence without retiring the arm.
+      lastSequence = sequence;
       return false;
     }
     lastSequence = sequence;
@@ -51,7 +58,7 @@ class AutonomyGuard {
 
   bool canForward(const char* id, uint32_t sequence, uint64_t token, uint32_t now) const {
     return armed && validID(id) && strcmp(id, driveSession) == 0 && sequence &&
-      sequence == lastSequence && validPermit(token, now) &&
+      sequence == lastSequence && sequence > brakeSequence && validPermit(token, now) &&
       (!moving || uint32_t(now - lastDrive) < WATCHDOG_MS);
   }
 
@@ -61,10 +68,13 @@ class AutonomyGuard {
     lastDrive = now;
   }
 
-  // True requests an immediate Stop and notifies the client that rearm is needed.
+  void brake() { moving = false; brakeSequence = lastSequence; }
+
+  // True requests an immediate Stop; the Uno's 200 ms motor lease remains
+  // independent. A later fresh command may resume the explicitly armed run.
   bool tick(uint32_t now) {
     if (moving && uint32_t(now - lastDrive) >= WATCHDOG_MS) {
-      stop();
+      brake();
       return true;
     }
     return false;
@@ -88,7 +98,7 @@ class AutonomyGuard {
   size_t cursor = 0;
   bool online = false, armed = false, moving = false;
   char driveSession[33] = {};
-  uint32_t lastSequence = 0, lastDrive = 0;
+  uint32_t lastSequence = 0, brakeSequence = 0, lastDrive = 0;
 
   bool validPermit(uint64_t token, uint32_t now) const {
     if (!online || !token) return false;

@@ -97,12 +97,13 @@ class Navigator:
     def __init__(self, settings: NavSettings, *, pose: Callable[[], RoverPose | None],
                  occupancy: Callable[[], OccupancySnapshot | None], submit: Callable[[int, str, float, float], bool],
                  stop: Callable[[str], None], publish: Callable[[dict], None],
-                 armed_mode: Callable[[], str | None]):
+                 armed_mode: Callable[[], str | None], pause_reason: Callable[[], str | None] | None = None):
         """``armed_mode()`` is the current mode while armed, else None; a run whose mode
         it no longer matches stops at its next tick, even if ``halt()`` was missed."""
         self.settings = settings
         self._pose, self._occupancy, self._submit = pose, occupancy, submit
         self._stop, self._publish, self._armed_mode = stop, publish, armed_mode
+        self._pause_reason = pause_reason or (lambda: None)
         self._task: asyncio.Task | None = None
         self._shown = None  # points of the last published path, to publish only changes
         self.kind: str | None = None  # 'goal' or 'explore' while a run is active
@@ -223,6 +224,18 @@ class Navigator:
                 now = time.monotonic()
                 if self._armed_mode() != RUN_MODES[kind]:
                     return self._finish('disarmed')
+                if explore and (reason := self._pause_reason()) is not None:
+                    if follower is not None or snapshot is not None or job is not None or progress is not None:
+                        if job is not None:
+                            job.cancel()
+                            job = None
+                        snapshot = follower = progress = None
+                        goal, last_plan = None, -math.inf
+                        self._show([])
+                        if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                            return self._finish('command_stale')
+                    await asyncio.sleep(period)
+                    continue
                 pose = self._pose()
                 if pose is None or pose.age_s > s.pose_max_age_s:
                     return self._finish('pose_stale')
@@ -239,12 +252,33 @@ class Navigator:
                     job = None
                     outcome_kind, snapshot = outcome[0], outcome[1]
                     if outcome_kind == 'explore_complete':
-                        return self._finish('explore_complete')
+                        # A mapped area can have no frontier until more camera
+                        # evidence arrives. Stay in Explore at zero and check again.
+                        goal, follower, progress, last_plan = None, None, None, now
+                        self._show([])
+                        if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                            return self._finish('command_stale')
+                        await asyncio.sleep(period)
+                        continue
                     if outcome_kind == 'check' and outcome[2]:
+                        if explore and outcome[2] == 'path_blocked':
+                            goal, follower, progress, last_plan = None, None, None, now
+                            self._show([])
+                            if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                                return self._finish('command_stale')
+                            await asyncio.sleep(period)
+                            continue
                         return self._finish(outcome[2])
                     if outcome_kind == 'plan':
                         _, _, goal, result = outcome
                         if not result.ok:
+                            if explore and result.reason in {'no_path', 'start_blocked', 'search_limit'}:
+                                goal, follower, progress, last_plan = None, None, None, now
+                                self._show([])
+                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                                    return self._finish('command_stale')
+                                await asyncio.sleep(period)
+                                continue
                             return self._finish(PLAN_STOP_REASONS.get(result.reason, result.reason))
                         self.goal = goal
                         follower = (follower.replaced(result.points) if follower is not None
@@ -269,6 +303,13 @@ class Navigator:
                 v = w = 0.
                 if follower is not None and snapshot is not None:
                     if not snapshot.traversable(x, z):
+                        if explore:
+                            goal, follower, progress, last_plan = None, None, None, now
+                            self._show([])
+                            if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                                return self._finish('command_stale')
+                            await asyncio.sleep(period)
+                            continue
                         return self._finish('path_blocked')
                     command = follower.step(x, z, yaw)
                     if command.arrived:
@@ -286,6 +327,13 @@ class Navigator:
                         heading = yaw + w * period / 2
                         if not snapshot.traversable(x + v * math.sin(heading) * period,
                                                     z + v * math.cos(heading) * period):
+                            if explore:
+                                goal, follower, progress, last_plan = None, None, None, now
+                                self._show([])
+                                if not self._submit(generation, RUN_MODES[kind], 0., 0.):
+                                    return self._finish('command_stale')
+                                await asyncio.sleep(period)
+                                continue
                             return self._finish('path_blocked')
 
                 if v or w:

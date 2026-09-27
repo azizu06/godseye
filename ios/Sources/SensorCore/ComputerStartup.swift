@@ -1,7 +1,8 @@
 import Foundation
 
 /// One foreground setup attempt. There is deliberately no arm/drive action.
-/// Stop consumes the attempt; recovery cannot silently re-enable control.
+/// Stop consumes the attempt. The foreground computer-control preference may
+/// start a new attempt after a broken setup link; this never arms hardware.
 public struct ComputerStartup {
     public enum Action: Equatable {
         case startCapture, scanRover, selectRover(UUID), enableLaptop

@@ -13,6 +13,10 @@ Arm/setup path, followed a laptop-planned Explore route, and recorded about 0.24
 of ARKit position change before the updated map triggered `path_blocked`. Explicit
 Stop was acknowledged. This is a short physical demo, not measured motion calibration
 or evidence of sustained navigation reliability.
+After correcting the phone's upside-down mount, a three-second Explore run remained
+armed, published routes and measured about 0.182 m of ARKit displacement before an
+explicit Stop. A prior upright run exposed a delayed-pose disarm; prototype Explore
+now discards that old pose, brakes on stale feedback, and resumes on fresh data.
 
 The implementation provides:
 
@@ -41,8 +45,14 @@ small control messages to the iPhone while `/phone` continues carrying perceptio
 The phone remains the sole Bluetooth owner. Computer control is the default on
 foreground launch: remembered pairing starts setup, capture and the selected BLE rover,
 then enables the laptop link when sensing and Uno feedback are ready. It never arms.
-The operator can instead enable the link from the paired dashboard. Stop, app inactivity, capture identity changes,
-tracking loss or a lost transport revoke control; reconnect never resumes it.
+The operator can instead enable the link from the paired dashboard. In the explicitly
+armed uncalibrated prototype Explore mode, that choice stays latched until Stop,
+mode change, or a dashboard control-disable action. A sensing or permit gap clears
+pending movement and the ESP brakes after 200 ms; Explore waits for fresh data and
+replans. A real phone/rover disconnect retires the physical drive session, then
+foreground computer setup and the backend establish a fresh session when all live
+readiness checks recover. Backgrounding cannot capture or drive; foregrounding
+restarts setup. Measured navigation and manual control retain their stop behavior.
 
 Before forwarding autonomous movement, the ESP must independently check a fresh
 permit it generated, the active drive session and strictly increasing sequence.
@@ -56,7 +66,8 @@ The existing timed Uno command and ESP watchdog remain independent final stops.
 An explicit stopped/armed handshake must precede each new drive session; latest-only
 command replacement cannot discard the session-opening handshake. A zero within a
 live session means idle; an explicit Stop or failed moving lease retires the session.
-Only a new explicit arm can start another. Legacy manual control remains available.
+Only a new arm handshake can start another; prototype Explore may repeat that
+handshake under the operator's still-active Explore choice. Legacy manual control remains available.
 
 Hardware-free integration covers synthetic RGB-D → calibrated occupancy → `/goal` →
 real adapter wire commands → stale-sensing Stop. The actual Swift relay also runs
@@ -80,19 +91,21 @@ becomes the bounded stock `N=2` packet only when the session, sequence and permi
 are valid again at UART dispatch. `D1=0,D2=0` is an idle zero in the live session.
 The legacy `N=100` Stop always retires it. After the UART Stop handoff,
 `{Z<request H>}` acknowledges that specific Stop; use a unique request ID for an
-arm barrier. `{X}` reports watchdog expiry and invalid input. Manual movement while an autonomous session is
+arm barrier. `{X}` reports malformed input or a retired session. Manual movement while an autonomous session is
 active stops it; a separate explicit Stop is required before manual takeover.
 Other legacy commands retain their existing rules. No arbitrary UART passthrough
 or indefinite motor command is added.
 
-The 200 ms bridge watchdog retires a moving session on missed refresh; a late
-packet cannot revive it. The Uno still receives its own independent 200 ms timed
-command. Queue expiry, reconnect, malformed fragments and 32-bit clock wrap are
+The 200 ms bridge watchdog sends Stop on missed refresh. It keeps the already
+armed session so a later command with a new permit and sequence may resume;
+the late packet itself cannot revive the old motor lease. The Uno still receives
+its own independent 200 ms timed command. Invalid sessions, replay, explicit
+Stop and disconnect retire the arm. Queue expiry, reconnect, malformed fragments and 32-bit clock wrap are
 covered by `python3 firmware/elegoo-ble/test/run.py`. The server rejects movement older than 150 ms again at socket dispatch; the phone
 rechecks permit receipt age before its bounded BLE write.
 Expired movement samples are discarded without refreshing their timestamps or
 motor leases. A fresh successor may continue the current session; without one,
-the existing firmware watchdog retires it. Arm, Stop, invalid sessions and lost
+the firmware sends Stop at 200 ms. Arm, Stop, invalid sessions and lost
 feedback retain their separate checks.
 
 ## Measurements before driving
@@ -157,7 +170,8 @@ A missing detector stays down; the setup controls still work, but driving stays 
    has been saved, select **GodsEye-Rover-D022** there. After Stop or a control loss,
    click **Enable laptop control** in this panel; recovery does not silently restore
    the link. Stop also cancels startup while it is waiting for tracking or Bluetooth.
-   A fresh foreground launch may prepare control again, but always needs a new arm.
+   A fresh foreground launch may prepare control again; an active prototype Explore
+   choice can rearm only after the phone, rover, camera and map recover.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
    Explore starts planning upon explicit arm. Manual PWM driving stays on the phone;
@@ -171,9 +185,9 @@ and authenticated `POST /device/action`. Its allowlist only includes capture sta
 Bluetooth scan/selection/disconnect, laptop-control enable/disable and Stop. It never
 accepts motor packets or arms navigation. It supports one active phone, bounded
 requests, explicit acknowledgements and discards pending actions on disconnect.
-Setup can reconnect automatically after a network fault; it always stops the rover
-and retires laptop control first. It never resumes motion. The independent `/rover`
-link keeps its tighter freshness checks, even during camera startup.
+Setup can reconnect automatically after a network fault; it stops the old motor
+session first. The independent `/rover` link requires fresh capture and rover
+feedback for every movement packet, even while Explore remains requested.
 
 The `/rover` sender schedules heartbeats from the last outbound message. Incoming
 20 Hz ESP status must not reset that deadline; otherwise an idle, healthy phone
@@ -184,8 +198,10 @@ no movement was sent. This does not establish sustained network or driving readi
 
 The phone allows up to three seconds for the initial laptop handshake, withholding
 outbound feedback until the server responds and discarding permits accumulated
-during startup. Once connected, the existing 200 ms send deadline and 500 ms
-server-silence deadline apply. Capture and rover-feedback checks apply throughout.
+during startup. While armed, a five-second WebSocket send/server-silence deadline
+separates a broken link from a temporary permit gap; neither deadline authorizes
+movement without a fresh permit, capture, map and command. Capture and rover-feedback
+checks apply throughout.
 The loopback Swift test covers an 800 ms delayed server, a completely silent
 startup, and heartbeat loss after arming; those motor packets only reach fake BLE.
 Phone status distinguishes handshake, send and heartbeat timeouts.
@@ -254,9 +270,11 @@ Prototype occupancy includes medium-confidence LiDAR samples (common on carpet),
 with the existing repeated-frame free/obstacle evidence thresholds. Low-confidence
 samples remain excluded; displayed point clouds retain high-confidence sampling.
 
-The idle rover WebSocket tolerates up to three seconds of silence; active phone
-control retains its 500 ms server-heartbeat and 200 ms send deadlines. Backend
-feedback readiness remains 200 ms, independently of idle socket liveness.
+The idle rover WebSocket tolerates up to three seconds of silence; the armed link
+tolerates up to five seconds before retiring a broken transport. Backend feedback
+readiness remains 200 ms, independently of socket liveness. Prototype Explore
+waits at zero through longer sensor gaps and retries a new arm after an actual
+disconnect once fresh readiness returns; only explicit Stop clears that choice.
 
 ### One-click dashboard Arm
 

@@ -30,17 +30,20 @@ int main() {
     g.forwarded(242, true);
     assert(!g.tick(441));
     assert(g.tick(442));
-    assert(!g.active());
+    assert(g.active());
     assert(!g.canForward(A, 2, 3, 443));
     assert(g.issue(4, 444));
-    assert(!g.arm(A, 4, 445)); // Watchdog retired this session.
+    assert(g.accept(A, 3, 4, 445)); // Fresh command may resume after Stop.
+    g.stop();
     assert(g.issue(5, 446));
     assert(g.arm(B, 5, 447));
   }
   {
     AutonomyGuard g; arm(g);
     assert(!g.accept(A, 1, 1, 2)); // Arm barrier invalidates earlier permits.
-    assert(!g.active());
+    assert(g.active());
+    assert(g.issue(3, 3));
+    assert(g.accept(A, 2, 3, 4));
   }
   {
     AutonomyGuard g; arm(g);
@@ -59,8 +62,8 @@ int main() {
     g.forwarded(3, true);
     assert(g.issue(3, 202));
     assert(!g.canForward(A, 1, 2, 203));
-    assert(!g.accept(A, 2, 3, 203)); // Late refresh cannot bypass a delayed loop tick.
-    assert(!g.active());
+    assert(g.accept(A, 2, 3, 203)); // Old movement stopped; fresh command may resume.
+    assert(g.active());
   }
   {
     AutonomyGuard g; arm(g);
@@ -92,5 +95,5 @@ int main() {
     assert(g.issue(2, 2));
     assert(!g.arm(A, 2, 253));
   }
-  puts("Autonomy permits, session barrier, replay rejection, dispatch expiry and independent stop checks passed.");
+  puts("Autonomy permits, session barrier, replay rejection, timed braking and fresh resume checks passed.");
 }

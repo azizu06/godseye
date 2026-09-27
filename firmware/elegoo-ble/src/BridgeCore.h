@@ -48,14 +48,15 @@ class BridgeCore {
   }
 
   bool next(uint32_t now, Frame& out) {
-    if (autonomy.tick(now)) { ended = true; reject(); }
+    if (autonomy.tick(now)) { motion = Frame{}; stopPending = true; }
     // Incomplete writes cannot leave a previous motion alive indefinitely.
     if (used && uint32_t(now - fragmentAt) > 150) reject();
     if (motion.present && uint32_t(now - motion.received) > 100) {
-      reject();
+      if (motion.autonomous) brakeLateMotion();
+      else reject();
     }
     if (motion.present && motion.autonomous &&
-        !autonomy.canForward(motion.session, motion.sequence, motion.permit, now)) reject();
+        !autonomy.canForward(motion.session, motion.sequence, motion.permit, now)) brakeLateMotion();
     if (moving && uint32_t(now - lastDrive) >= 200) reject();
     if (stopPending) {
       stopPending = false;
@@ -106,6 +107,12 @@ class BridgeCore {
     used = 0; motion = Frame{}; stopPending = true;
   }
 
+  void brakeLateMotion() {
+    motion = Frame{};
+    autonomy.brake();
+    stopPending = true;
+  }
+
   static bool permitValue(JsonVariantConst value, uint64_t& result) {
     if (!value.is<const char*>()) return false;
     const char* text = value.as<const char*>();
@@ -144,7 +151,10 @@ class BridgeCore {
       reject(); return;
     }
     const uint32_t sequence = doc["S"];
-    if (!autonomy.accept(id, sequence, permit, now)) { ended = true; reject(); return; }
+    if (!autonomy.accept(id, sequence, permit, now)) {
+      if (autonomy.active()) return; // Expired permit: drop it without retiring the arm.
+      ended = true; reject(); return;
+    }
     motion = Frame{};
     motion.present = motion.autonomous = true;
     motion.nonzero = nonzero;

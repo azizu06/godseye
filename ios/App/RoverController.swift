@@ -26,6 +26,7 @@ final class RoverController: ObservableObject {
     private var autonomyPending: AutonomyCommand?
     private var lastPermit = -Double.infinity
     var unoAgeMS: Double { max(0, (now - lastReply) * 1000) }
+    var permitAgeMS: Double { lastPermit.isFinite ? max(0, (now - lastPermit) * 1000) : -1 }
     var autonomyAvailable: Bool {
         bluetooth != nil && connected && verified && unoAgeMS < 1500 && now - lastPermit < 0.2
     }
@@ -295,9 +296,13 @@ final class RoverController: ObservableObject {
 
     private func tick() {
         guard connected else { return }
-        if autonomyEnabled && (!verified || unoAgeMS >= 1500 || now - lastPermit >= 0.25) {
+        if autonomyEnabled && !verified {
             stop()
-            status = "Laptop control stopped · rover feedback expired"
+            status = "Laptop control stopped · rover disconnected"
+        } else if autonomyEnabled && now - lastPermit >= 0.25 {
+            // Never flush motion sampled before a permit gap. The ESP's motor
+            // lease brakes independently while this arm session waits to resume.
+            autonomyPending = nil
         }
         if busy {
             if now - busySince > 0.5 { disconnect(reason: "Rover send stalled · controls disabled") }

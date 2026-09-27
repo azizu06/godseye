@@ -106,13 +106,14 @@ class Rover:
 
 
 class Harness:
-    def __init__(self, rover, occupancy, mode='navigate', **settings):
+    def __init__(self, rover, occupancy, mode='navigate', pause_reason=None, **settings):
         self.rover, self.occupancy = rover, occupancy
         self.stops, self.paths, self.modes = [], [], set()
         self.armed, self.mode, self.generation = True, mode, 1
         self.nav = Navigator(NavSettings(**{**FAST, "follower": FollowerConfig(lookahead_m=.1), **settings}), pose=rover.pose,
                              occupancy=self.occupancy.snapshot, submit=self.submit, stop=self.stop,
-                             publish=self.publish, armed_mode=lambda: self.mode if self.armed else None)
+                             publish=self.publish, armed_mode=lambda: self.mode if self.armed else None,
+                             pause_reason=pause_reason)
 
     def submit(self, generation, mode, v, w):
         """Mirrors backend.motion.Motion.submit: only the armed generation reaches the car."""
@@ -252,6 +253,36 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         await h.finished()
         self.assert_stopped(h, 'pose_stale')
 
+    async def test_prototype_explore_pauses_then_replans_after_feedback_recovers(self):
+        occupancy = FakeOccupancy(cells(UNKNOWN))
+        occupancy.cells[5:25, 5:55] = FREE
+        rover = Rover(1.5, .75, 0., moves=False)
+        paused = [None]
+        h = Harness(rover, occupancy, mode='explore', pause_reason=lambda: paused[0],
+                    no_progress_s=10.)
+        self.addAsyncCleanup(h.nav.aclose)
+        h.nav.start_explore(h.generation)
+        await wait_until(lambda: any(v or w for v, w in rover.commands))
+        paused[0] = 'car_stale'
+        await wait_until(lambda: rover.commands[-1] == (0., 0.))
+        count = len(rover.commands)
+        await asyncio.sleep(.05)
+        self.assertEqual(h.stops, [])
+        self.assertEqual(rover.commands[count:], [])
+        paused[0] = None
+        await wait_until(lambda: any(v or w for v, w in rover.commands[count:]))
+        self.assertEqual(h.stops, [])
+
+    async def test_prototype_explore_remains_armed_through_a_long_pause(self):
+        h = Harness(Rover(.5, .5, 0.), FakeOccupancy(cells()), mode='explore',
+                    pause_reason=lambda: 'car_stale')
+        self.addAsyncCleanup(h.nav.aclose)
+        h.nav.start_explore(h.generation)
+        await asyncio.sleep(.15)
+        self.assertTrue(h.nav.active)
+        self.assertEqual(h.stops, [])
+        self.assertFalse(any(v or w for v, w in h.rover.commands))
+
     async def test_commanded_motion_without_pose_change_trips_the_no_progress_watchdog(self):
         occupancy = FakeOccupancy(cells())
         rover = Rover(.5, .5, math.pi / 2, moves=False)  # the logging-only car never moves
@@ -312,7 +343,7 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         self.assert_stopped(h, 'no_floor')
         self.assertFalse(any(v or w for v, w in h.rover.commands))
 
-    async def test_explore_visits_frontiers_and_stops_when_the_map_is_closed(self):
+    async def test_explore_visits_frontiers_and_idles_when_the_map_is_closed(self):
         await self.explore_visits_frontiers_and_closes()
 
     async def test_explore_advances_frontiers_when_every_tick_replans(self):
@@ -336,8 +367,9 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
                 row, col = grid.world_to_cell(*points[-1])
                 self.assertEqual(corridor[row, col], FREE)
         occupancy.set(enclosed())
-        await h.finished()
-        self.assert_stopped(h, 'explore_complete')
+        await wait_until(lambda: h.nav.path == [] and rover.commands[-1] == (0., 0.))
+        self.assertTrue(h.nav.active)
+        self.assertEqual(h.stops, [])
         self.assert_within_limits(rover.commands)
 
 

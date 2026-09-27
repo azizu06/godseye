@@ -62,6 +62,14 @@ Laptop rover control automatically reserves network bandwidth: live RGB-D target
 10 Hz while pose updates remain 30 Hz, and bulk v2 uploads pause until control is
 disconnected. Native local recording keeps its selected cadence and quality.
 This avoids competing bulk uploads delaying the short-lived ESP permits.
+Computer-control startup also leaves bulk laptop upload off before the rover connects;
+the complete sensor recording remains on the iPhone when recording is enabled. Turn off computer-control-on-launch
+if you need bulk laptop upload instead of rover control.
+In prototype Explore, a temporary depth, pose or ESP-permit gap pauses movement
+without losing the requested mode. The ESP brakes after 200 ms without a fresh
+command. A broken connection retires its drive session; foreground setup can
+reconnect, and the laptop only resumes after fresh capture, map and rover feedback.
+Dashboard Stop, Disable laptop control, and mode changes clear the request.
 
 Run from the repository root:
 

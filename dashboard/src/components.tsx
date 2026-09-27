@@ -598,12 +598,19 @@ export function OperatorControls({
         </div>
         <span className={`state-pill ${armed ? "" : "neutral"}`}>
           <i />
-          {!health ? "Waiting for status" : armed ? "Armed" : "Disarmed"}
+          {!health
+            ? "Waiting for status"
+            : armed
+              ? "Armed"
+              : autonomy?.auto_requested
+                ? "Explore resuming"
+                : "Disarmed"}
         </span>
       </div>
-      {!armed && health?.stop_reason && (
+      {!armed && health?.stop_reason && !autonomy?.auto_requested && (
         <p className="drawer-note" role="status">
-          Last stop: {health.stop_reason === "start_blocked"
+          Last stop:{" "}
+          {health.stop_reason === "start_blocked"
             ? "The map places an obstacle within the rover’s starting clearance. Move to clear floor and start a fresh scan."
             : health.stop_reason.replaceAll("_", " ")}
         </p>
@@ -625,7 +632,11 @@ export function OperatorControls({
             </p>
           )}
           <p>
-            {autonomy.ready ? "Ready for explicit arming." : "Before driving:"}
+            {autonomy.auto_requested && !armed
+              ? "Explore is still on. Motors are stopped while the phone, rover, and map recover."
+              : autonomy.ready
+                ? "Ready for explicit arming."
+                : "Before driving:"}
           </p>
           {!autonomy.ready && (
             <ul>

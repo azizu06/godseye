@@ -5,6 +5,7 @@
 constexpr auto ARM = "{\"N\":201,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000001\"}";
 constexpr auto DRIVE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":1,\"D1\":3,\"D2\":40,\"T\":200}";
 constexpr auto IDLE = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000002\",\"S\":2,\"D1\":0,\"D2\":0,\"T\":200}";
+constexpr auto RESUME = "{\"N\":202,\"H\":\"0123456789ABCDEF0123456789ABCDEF\",\"C\":\"0000000000000003\",\"S\":2,\"D1\":3,\"D2\":40,\"T\":200}";
 constexpr auto STOP = "{\"N\":100,\"H\":\"S\"}";
 constexpr auto MANUAL = "{\"N\":2,\"H\":\"M\",\"D1\":3,\"D2\":40,\"T\":200}";
 
@@ -40,15 +41,19 @@ int main() {
     assert(strcmp(out.bytes, "{\"H\":\"M\",\"N\":2,\"D1\":3,\"D2\":40,\"T\":200}") == 0);
     assert(!b.next(219, out));
     assert(b.next(220, out) && command(out) == 100);
-    assert(strcmp(out.notification, "{X}") == 0);
-    feed(b, DRIVE, 221);
-    assert(b.next(222, out) && command(out) == 100); // Closed session cannot revive.
+    assert(!out.notification[0]); // Stop on the existing 200 ms deadline.
+    assert(b.issuePermit(3, 221));
+    feed(b, RESUME, 222);
+    assert(b.next(223, out) && command(out) == 2); // Fresh command resumes that arm.
   }
   {
     BridgeCore b; arm(b);
     feed(b, DRIVE, 220); // Permit still valid at input.
     assert(b.next(255, out) && command(out) == 100); // But expired before UART.
-    assert(strcmp(out.notification, "{X}") == 0);
+    assert(!out.notification[0]);
+    assert(b.issuePermit(3, 256));
+    feed(b, RESUME, 257);
+    assert(b.next(258, out) && command(out) == 2);
   }
   {
     BridgeCore b; arm(b);
@@ -80,5 +85,5 @@ int main() {
     assert(b.next(6, out) && command(out) == 100);
     assert(strcmp(out.notification, "{X}") == 0);
   }
-  puts("Autonomous wire-to-UART framing, arm barrier, timed output and fail-closed checks passed.");
+  puts("Autonomous wire-to-UART framing, arm barrier, timed braking, resume and fail-closed checks passed.");
 }

@@ -207,6 +207,10 @@ class RelayCar:
         command, motor = self.command
         self.command = None
         age = round(self.clock() * 1000) - command.issued_at_ms
+        if self.connected and self.blockers() == ['rover_feedback_stale']:
+            # The ESP brakes on its own motor lease. A delayed permit must not
+            # dispatch a queued command or retire an otherwise recoverable arm.
+            return None
         if (self.health() != 'ok' or self.armed_session != command.session_id.upper() or age < 0):
             self.zero(DriveStop(None, 0, 0))
             self.on_loss('rover_dispatch_stale')
@@ -237,19 +241,19 @@ class RelayCar:
                         pass
                 self.wake.clear()
                 while (message := self.next_message()) is not None:
-                    await asyncio.wait_for(ws.send_json(message), .15)
+                    await asyncio.wait_for(ws.send_json(message), 1.)
                     last_sent = clock()
                 # Incoming permits wake the sender at 20 Hz. They are not
                 # outbound traffic and must never postpone the next heartbeat.
                 if clock() - last_sent >= .1:
-                    await asyncio.wait_for(ws.send_json(dict(version=1, type='heartbeat')), .15)
+                    await asyncio.wait_for(ws.send_json(dict(version=1, type='heartbeat')), 1.)
                     last_sent = clock()
 
         async def receiver():
             while True:
                 # Idle transport may survive Wi-Fi jitter. Motion still requires
                 # <200 ms feedback, fresh permits, and the existing arm barrier.
-                timeout = .4 if self.armed_session is not None else 3.
+                timeout = 5. if self.armed_session is not None else 3.
                 text = await asyncio.wait_for(ws.receive_text(), timeout)
                 if len(text) > 2048:
                     raise ValueError('Rover message too large')

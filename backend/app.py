@@ -274,6 +274,9 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.pose_at = None
         app.state.tracking_lost_capture = -1.0  # frames captured at or before this are untrusted
         app.state.armed = False
+        app.state.auto_requested = False  # the operator's latched prototype Explore choice
+        app.state.auto_arm_task = None
+        app.state.auto_retry_at = 0.
         app.state.arm_request_token = None
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
@@ -295,7 +298,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.nav = Navigator(nav_settings, pose=rover_pose,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
-                                  armed_mode=lambda: app.state.mode if app.state.armed else None)
+                                  armed_mode=lambda: app.state.mode if app.state.armed else None,
+                                  pause_reason=prototype_pause_reason)
         app.state.mover = MoveRunner(MoveSettings(), pose=rover_pose, submit=app.state.motion.submit, stop=nav_stop,
                                      armed_mode=lambda: app.state.mode if app.state.armed else None,
                                      speeds=move_speeds(), early_stop_m=getattr(
@@ -374,6 +378,9 @@ def create_app(db_path: str | None = None, build_points=None,
     async def device_action(body: DeviceAction):
         if device is None:
             raise HTTPException(409, 'The iPhone adapter is not configured')
+        if body.action in {'stop', 'control_disable', 'capture_stop', 'rover_disconnect'}:
+            app.state.arm_request_token = None
+            stop('operator_stop')
         return await device.action(body)
 
     def autonomy_blockers():
@@ -421,6 +428,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     profile='prototype' if relay and getattr(relay.actuation, 'prototype', False) else 'measured',
                     warnings=list(getattr(relay.actuation, 'warnings', ())) if relay else [],
                     blockers=list(dict.fromkeys(reasons)), ready=not reasons,
+                    auto_requested=app.state.auto_requested,
                     armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
                     car=current['car'], command_authorization_required=relay is not None)
 
@@ -428,6 +436,8 @@ def create_app(db_path: str | None = None, build_points=None,
         # Delayed pose bursts must not continually replace the pending Stop
         # acknowledgement. A new arm generation is active even while awaiting
         # its handshake, so the same hazard still cancels a new arm.
+        if reason in {'operator_stop', 'mode_change', 'shutdown'}:
+            app.state.auto_requested = False
         if not app.state.motion.active and app.state.stop_reason == reason:
             return
         app.state.armed = False
@@ -491,6 +501,25 @@ def create_app(db_path: str | None = None, build_points=None,
                 return f'{key}_{current[key]}'
         if relay is not None and (reasons := manual_blockers() if manual else autonomy_blockers()):
             return reasons[0]
+        return None
+
+    def persistent_explore():
+        return (relay is not None and getattr(relay.actuation, 'prototype', False)
+                and app.state.armed and app.state.mode == 'explore')
+
+    def prototype_pause_reason():
+        """Only explicit prototype Explore may wait for recoverable input gaps.
+
+        The motor lease still expires after 200 ms; this preserves the arm session,
+        not motion. Disconnect, capture mismatch and hard map obstacles still stop.
+        """
+        if not persistent_explore():
+            return None
+        reason = hazard()
+        if reason in {'phone_stale', 'detector_stale', 'sensing_stale', 'map_unknown', 'no_floor'}:
+            return reason
+        if reason == 'car_stale' and relay.blockers() == ['rover_feedback_stale']:
+            return reason
         return None
 
     def motion_check(command):
@@ -621,7 +650,7 @@ def create_app(db_path: str | None = None, build_points=None,
             evidence_points = candidates.positions
         evidence = None
         try:
-            evidence = frame_evidence(evidence_points)
+            evidence = frame_evidence(evidence_points, camera_y=frame.transform[1, 3] if custom_builder is None else None)
         except Exception:  # an occupancy bug must not cost the live points
             app.state.occupancy_stats['failed'] += 1
             logger.exception('occupancy evidence failed')
@@ -733,17 +762,38 @@ def create_app(db_path: str | None = None, build_points=None,
 
     async def watchdog():
         ticks = 0
+        paused = False
         while True:
             await asyncio.sleep(.05)
             if app.state.pose_at is not None and time.monotonic() - app.state.pose_at > .25:
-                if app.state.stop_reason != 'pose_stale':
+                if not prototype_pause_reason() and app.state.stop_reason != 'pose_stale':
                     stop('pose_stale')
-            if app.state.armed and (reason := hazard()) is not None:
+            pause_reason = prototype_pause_reason()
+            if app.state.armed and not pause_reason and (reason := hazard()) is not None:
                 stop(reason)
+            if pause_reason:
+                # Drop every queued movement before the 20 Hz pump can dispatch it.
+                # Fresh relay feedback allows an in-session zero; otherwise the ESP
+                # independently brakes when its 200 ms motor lease expires.
+                app.state.motion.desired = None
+                if relay is not None:
+                    relay.command = None
+                if not paused and car_health() == 'ok' and not app.state.motion.zero():
+                    stop('car_error')
+                paused = True
+            else:
+                paused = False
             # Explore runs whenever the rover is armed in explore mode, under the current generation.
             if app.state.armed and app.state.mode == 'explore' and not app.state.nav.active:
                 app.state.nav.start_explore(app.state.motion.generation)
-            app.state.motion.tick()  # the 20 Hz dispatch pump
+            if not pause_reason:
+                app.state.motion.tick()  # the 20 Hz dispatch pump
+            if (app.state.auto_requested and not app.state.armed and app.state.mode == 'explore'
+                    and app.state.arm_request_token is None and hazard() is None
+                    and time.monotonic() >= app.state.auto_retry_at
+                    and (app.state.auto_arm_task is None or app.state.auto_arm_task.done())):
+                app.state.auto_retry_at = time.monotonic() + 1.
+                app.state.auto_arm_task = asyncio.create_task(resume_explore())
             ticks += 1
             if ticks % 10 == 0:
                 publish(health())
@@ -899,7 +949,19 @@ def create_app(db_path: str | None = None, build_points=None,
                 raise HTTPException(409, str(error)) from error
         app.state.armed = True
         app.state.stop_reason = None
+        if relay is not None and getattr(relay.actuation, 'prototype', False) and app.state.mode == 'explore':
+            app.state.auto_requested = True
         return health()
+
+    async def resume_explore():
+        if not app.state.auto_requested or app.state.mode != 'explore':
+            return
+        try:
+            await arm(prepare=False)
+        except HTTPException as error:
+            logger.info('Explore still requested; waiting to rearm: %s', error.detail)
+        except Exception:
+            logger.exception('Explore rearm failed; will retry while requested')
 
     @app.post('/mode')
     async def mode(body: Mode):
@@ -1103,7 +1165,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 if abs(time.time()*1000 - pose.t_wall_ms) > 250:
                     if is_frame:
                         app.state.map_stats['discarded_wall_time'] += 1
-                    else:
+                    elif not persistent_explore():
                         stop('pose_stale')
                     continue
                 if is_frame:
@@ -1114,7 +1176,8 @@ def create_app(db_path: str | None = None, build_points=None,
                     last_frame_capture = pose.t_capture
                     app.state.map_stats['received'] += 1
                 elif pose.t_capture < last_capture:
-                    stop('pose_stale')  # a rewound pose is not progress
+                    if not persistent_explore():
+                        stop('pose_stale')  # a rewound pose is not progress
                     continue
                 elif pose.t_capture == last_capture:
                     continue  # repeat, or the pose half of a bundle already counted
@@ -1125,7 +1188,7 @@ def create_app(db_path: str | None = None, build_points=None,
                     last_capture = pose.t_capture
                     app.state.pose = pose
                     app.state.pose_at = time.monotonic()
-                    if pose.tracking != 'normal':
+                    if pose.tracking != 'normal' and not persistent_explore():
                         stop('tracking_lost')
                 app.state.db.execute(
                     'INSERT OR REPLACE INTO frames(session_id,map_epoch,frame_id,t_capture,t_wall_ms,transform_json,tracking,intrinsics_json) VALUES(?,?,?,?,?,?,?,?)',

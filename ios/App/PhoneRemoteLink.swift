@@ -26,6 +26,7 @@ final class PhoneRemoteLink: ObservableObject {
     private var replies: [[String: Any]] = []
     private var pendingStatus: [String: Any]?
     private var startup = ComputerStartup()
+    private var maintainControl = false
     private var serverReady = false
     private var now: Double { ProcessInfo.processInfo.systemUptime }
 
@@ -44,6 +45,7 @@ final class PhoneRemoteLink: ObservableObject {
         guard let address = url.url else { return }
         self.capture = capture; self.rover = rover; self.autonomy = autonomy
         self.options = options; self.key = key
+        maintainControl = automaticSetup
         if automaticSetup { startup.begin() }
         rover.onOperatorStop = { [weak self] in self?.cancelAutomaticSetup() }
         var request = URLRequest(url: address)
@@ -83,10 +85,11 @@ final class PhoneRemoteLink: ObservableObject {
     private func failed(_ reason: String) {
         guard enabled, let capture, let rover, let autonomy else { return }
         let options = self.options, key = self.key
-        let resumeSetup = startup.active
+        let resumeSetup = maintainControl
         disconnect(reason: reason)
-        // Reconnect setup/telemetry only. Every failure stops the rover, retires
-        // laptop control and discards all actions; no motion or arm is resumed.
+        // A broken socket stops the current motor session. The foreground
+        // computer-control preference restores the setup link; the backend
+        // separately decides whether Explore is still requested.
         enabled = true
         let token = generation
         Task { @MainActor [weak self] in
@@ -97,7 +100,7 @@ final class PhoneRemoteLink: ObservableObject {
         }
     }
 
-    func cancelAutomaticSetup() { startup.stop() }
+    func cancelAutomaticSetup() { maintainControl = false; startup.stop() }
 
     private func advanceStartup(capture: CaptureController, rover: RoverController, autonomy: RoverAutonomyLink) {
         if rover.verified, let id = rover.selectedBluetoothPeer,
@@ -105,6 +108,7 @@ final class PhoneRemoteLink: ObservableObject {
             UserDefaults.standard.set(id.uuidString, forKey: "preferredRoverIdentifier")
         }
         guard serverReady else { return }
+        if maintainControl && !startup.active && !autonomy.enabled { startup.begin() }
         let snapshot = capture.controlSnapshot()
         let fresh = snapshot.map { $0.ready && now >= $0.timestamp && now - $0.timestamp < 0.25 } ?? false
         let preferred = UserDefaults.standard.string(forKey: "preferredRoverIdentifier").flatMap(UUID.init(uuidString:))
@@ -210,7 +214,7 @@ final class PhoneRemoteLink: ObservableObject {
             autonomy.disconnect(); rover.disconnect()
             return (true, "Rover disconnected")
         case "control_enable":
-            cancelAutomaticSetup()
+            maintainControl = true
             guard !autonomy.enabled else { return (true, "Laptop control is already enabled") }
             autonomy.connect(rover: rover, capture: capture, key: key)
             return (autonomy.enabled, autonomy.status)
