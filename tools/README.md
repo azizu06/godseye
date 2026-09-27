@@ -129,6 +129,44 @@ introduces a hallway obstacle after driving starts and checks early steering,
 continued translation and nominal cruise through the pass. This benchmark does not emulate network timing
 or raw sensor reconstruction.
 
+## SIMULATED rover (dashboard rehearsal, no phone or car)
+
+```sh
+python -m tools.sim_rover --dashboard      # backend 127.0.0.1:8775, dashboard http://127.0.0.1:5175/
+```
+
+Without `--dashboard` it prints the Vite command to run yourself
+(`GODSEYE_BACKEND_URL=http://127.0.0.1:8775 GODSEYE_ROVER_KEY_FILE=<workdir>/pairing-key
+VITE_LIVE_URL=/live npx vite --host 127.0.0.1 --port 5175 --strictPort` in `dashboard/`).
+Ports 8765 and 5173 are refused. `--workdir DIR` keeps the DB, key and logs; the default
+is a new temp directory. Ctrl-C (or SIGTERM) stops the backend and Vite too.
+
+Real: the whole backend (prototype actuation with estimates 0.2413 m x 0.127 m, planner,
+Navigator, Explore, MoveRunner, `/rover` relay permit/session/seq gates, `/device` setup
+and `prepare_rover`, mapping, occupancy, object memory and localization) and the whole
+dashboard, including the operator pairing proxy. The backend is launched in-process with
+the same objects `tools.run_rover_backend --prototype` builds; it never reads `.env` and
+has no voice providers.
+
+Simulated, and labeled SIMULATED in every id and status string:
+- iPhone `/phone`: 30 Hz poses, 10 Hz v1 bundles ray-cast from the simulated pose in a
+  corridor (2.2 m wide, 0.7 m box, 1.4 m doorway, room with a chair-like block). Phone
+  22 cm above the floor, 0.3 rad pitch, forward-facing; tracking always normal.
+- iPhone `/device`: capture/rover already connected; laptop control (and the `/rover`
+  link) opens only on `control_enable`, which Arm's prepare step sends.
+- ESP/iPhone `/rover`: 20 Hz status with fresh 500 ms permits, Stop `Z` and Arm `A`
+  acknowledgements, session/seq/permit checks (violations answer `retired`), leases
+  capped at 1 s.
+- Motors: PWM 60 = 0.10 m/s, PWM 180 = 0.35 m/s (linear), pivots 0.6 rad/s at PWM 60,
+  arcs as a differential drive on a 0.127 m track (legacy arcs: inner wheel half power).
+  Synthetic, not a measurement. Motion into scene geometry is blocked and logged as a
+  COLLISION.
+- Detector: an oracle that projects the visible box ("suitcase") and chair into the frame;
+  the backend's own depth localization then places them. No YOLO weights are needed.
+
+Not simulated: Bluetooth, the ESP/Uno timing, wheel slip, ARKit drift or relocalization,
+LiDAR noise, mesh anchors, voice (no paid APIs are configured).
+
 ## Offline nav-log replay (no rover needed)
 
 ```sh

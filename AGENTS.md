@@ -7,6 +7,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The default car adapter is logging-only and reports the car down; never imply this backend can arm or drive hardware. Adapter seam, command generation/lease rules, per-arm session/seq Command/Stop envelopes and the navigation `submit` hook: `backend/README.md` (Drive commands).
 
 - Synthetic phone/live sources and offline validation commands: `tools/README.md`. Hardware-free car-ready regression smoke: `python -m tools.car_smoke`; deterministic real-packet driving comparison/replay: `python -m tools.scout_benchmark` (see tools/README.md).
+- Rover-less dashboard rehearsal against the real prototype backend (`python -m tools.sim_rover --dashboard`, ports 8775/5175, everything labeled SIMULATED): `tools/README.md` (SIMULATED rover).
 - Offline nav-log planner replay for teammates without rover access (`python -m tools.replay_nav_log`, hardware-free): `tools/README.md` (Offline nav-log replay). Recorded nav-log runs live at gitignored `backend/captures/nav-logs/<run>/`; the tool replays recorded pose/occupancy only, never sensor/motor physics.
 
 - Live `points`, `objects`, `detections` and `event` payloads, limits, object memory, the same-frame detection image and rescan/change-evidence rules, and hand-off/smoke checks: `backend/README.md` (Live map points, Live objects, Live detection overlay, Suggested approach route, Rescan and change events).

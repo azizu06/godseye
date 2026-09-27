@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """SIMULATED rover: rehearse the dashboard against the REAL backend with no phone or car.
 
-One command starts the real prototype backend (tools.run_rover_backend --prototype) on a
-loopback port with a temporary database, a temporary pairing key and the operator
-estimates 0.2413 m x 0.127 m, then plays three roles over the backend's real sockets:
+One command starts the real prototype backend (the same objects tools.run_rover_backend
+--prototype builds, plus an oracle detector) on a loopback port with a temporary database,
+a temporary pairing key and the operator estimates 0.2413 m x 0.127 m, then plays three
+roles over the backend's real sockets:
 
 * the iPhone sensor stream (/phone): ~30 Hz poses and ~10 Hz v1 frame bundles whose RGB,
   depth and confidence are ray-cast from the simulated pose against a synthetic corridor
@@ -45,6 +46,9 @@ RESERVED_PORTS = {8765, 5173}  # the live demo's backend and dashboard
 
 # Synthetic scene in ARKit world meters: +Y up, the rover starts at the origin facing +Z,
 # +X is to its left. Boxes are (x0, x1, y0, y1, z0, z1, (r, g, b)).
+# The prototype inflates obstacles by ~0.43 m (footprint bound + 0.15 m margin), so the box
+# leaves a ~1.5 m gap and the doorway is 1.4 m wide: narrower passages are correctly
+# refused by the planner and would make every rehearsal stall.
 FLOOR_Y = -.22  # phone lens 22 cm above the floor
 PITCH_RAD = .3  # phone tilted 0.3 rad below the horizon
 WALL_H = 1.0
@@ -53,9 +57,9 @@ SCENE = (
     (1.1, 1.2, FLOOR_Y, FLOOR_Y + WALL_H, -1.2, 6.0, WALL_RGB),     # corridor left wall (+X)
     (-1.2, -1.1, FLOOR_Y, FLOOR_Y + WALL_H, -1.2, 6.0, WALL_RGB),   # corridor right wall
     (-1.2, 1.2, FLOOR_Y, FLOOR_Y + WALL_H, -1.3, -1.2, WALL_RGB),   # back wall
-    (.45, 1.2, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, DOOR_RGB),      # front wall, left of doorway
-    (-1.2, -.45, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, DOOR_RGB),    # front wall, right of doorway
-    (-.1, .6, FLOOR_Y, FLOOR_Y + .7, 2.2, 2.9, BOX_RGB),            # 0.7 m box obstacle
+    (.7, 1.2, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, DOOR_RGB),       # front wall, left of 1.4 m doorway
+    (-1.2, -.7, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, DOOR_RGB),     # front wall, right of doorway
+    (.4, 1.1, FLOOR_Y, FLOOR_Y + .7, 2.2, 2.9, BOX_RGB),            # 0.7 m box against the left wall
     (1.2, 2.3, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, WALL_RGB),      # room front wall pieces
     (-2.3, -1.2, FLOOR_Y, FLOOR_Y + WALL_H, 6.0, 6.1, WALL_RGB),
     (2.2, 2.3, FLOOR_Y, FLOOR_Y + WALL_H, 6.1, 9.5, WALL_RGB),      # room side walls
@@ -437,6 +441,7 @@ class Phone:
 
 def port_free(port):
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # ignore TIME_WAIT from a restart
         try:
             sock.bind(('127.0.0.1', port))
             return True
