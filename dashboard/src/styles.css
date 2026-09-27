@@ -3528,3 +3528,20 @@ input[type="checkbox"] {
     width: auto;
   }
 }
+
+/* Explore reports backend evidence without adding another control surface. */
+.exploration-status {
+  padding: 10px 14px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.exploration-status > span {
+  color: #d5dee6;
+}
+.exploration-status p {
+  margin: 4px 0;
+}
+.exploration-status.warning > span {
+  color: #d4b187;
+}
