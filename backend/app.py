@@ -404,7 +404,7 @@ def create_app(db_path: str | None = None, build_points=None,
         events=app.state.changes.events(shown_session()),
         live=app.state.phone is not None and app.state.session is not None,
         scout=scout_position(rover_pose()), route=app.state.nav.path, classes=app.state.overlay_classes,
-        extras=lambda: scene_extras(app.state, shown_session(), time.time())))
+        extras=lambda: scene_extras(app.state, shown_session(), time.time())), stop=lambda: operator_halt())
     register_move_routes(app, lambda: app.state.mover, speak)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match", "Authorization"],
@@ -1052,14 +1052,18 @@ def create_app(db_path: str | None = None, build_points=None,
         set_session((str(uuid4()), 1))
         return dict(version=1, session_id=app.state.session[0], map_epoch=1)
 
-    @app.post('/stop')
-    async def operator_stop():
+    def operator_halt():
+        """The operator Stop, shared by `POST /stop` and a spoken stop (backend/VOICE.md)."""
         app.state.arm_request_token = None
         if device is not None:
             device.emergency_stop()
         stop('operator_stop')
         publish(health())
         return health()
+
+    @app.post('/stop')
+    async def operator_stop():
+        return operator_halt()
 
     @app.post('/arm')
     async def arm(prepare: bool = False, standard: bool = False):

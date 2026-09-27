@@ -4,9 +4,11 @@ Scout's voice answer may suggest driving the rover to a mapped object or point,
 exploring, stopping, or one short measured move (see Bounded moves). A suggestion is only a **proposal**: the model's output never
 arms, plans, selects a mode or sends a drive command. The backend validates it
 against the current map with the existing rover planner, the dashboard shows it as a
-confirmation card, and only a person's click starts the existing `/goal` or explore
-machinery, with every safeguard those already enforce (see [README](README.md)
-Navigation, Drive commands, Rover calibration, and [docs/AUTONOMY.md](../docs/AUTONOMY.md)).
+confirmation card, and only a person's click, or a spoken "go" that presses the same
+button (see Spoken confirmation), starts the existing `/goal` or explore machinery, with
+every safeguard those already enforce (see [README](README.md) Navigation, Drive
+commands, Rover calibration, and [docs/AUTONOMY.md](../docs/AUTONOMY.md)). A spoken stop
+is not a proposal: it runs the operator Stop at once ([VOICE.md](VOICE.md) Spoken commands).
 
 The default `LoggingCar` reports the car down and the iPhone relay needs measured
 geometry and actuation profiles, so real execution stays unavailable until those
@@ -25,15 +27,46 @@ matching objects get "Which one?".
 |---|---|
 | `propose_navigation` | `{"target": "object", "object_id", "class"}` or `{"target": "point", "x", "z"}` (finite, at most 50 m) |
 | `propose_exploration` | `{}` |
-| `stop_navigation` | `{}` |
+| `stop_navigation` | `{}` (from voice, carried out at once as the operator Stop, never a card) |
 | `propose_move` | `{"direction": "forward", "amount", "unit": "cm" \| "m" \| "in"}` or `{"direction": "left" \| "right", "amount", "unit": "deg"}` |
 
 The dashboard re-checks the entry (`dashboardActions.parseActions`, `navProposals.navAction`)
 and `useDashboardActions` hands it to `offerForMap` only when the reply's map is still
-the shown one; the spoken result says it is on screen and that nothing moves without
-confirmation. `offerNavigationActions({session_id, map_epoch, actions})` and a
+the shown one. Once the card's check finishes, the spoken result (`navProposals.voicePrompt`)
+names the next spoken step ("Move forward 20 centimeters is ready. Say go to arm for this
+move, or cancel."), what still blocks it, or why it is unavailable.
+`offerNavigationActions({session_id, map_epoch, actions})` and a
 `godseye:voice-actions` window event are equivalent entry points. Each action id is
 shown at most once.
+
+## Spoken confirmation
+
+The repository owner approved confirming by voice: a person must still confirm every
+movement, but may say it instead of clicking. The backend only classifies "go" and
+"cancel" ([VOICE.md](VOICE.md) Spoken commands); the dashboard owns the cards, so it
+applies them there, and nothing new can reach `/nav/confirm` or `/arm`:
+
+- Each `ProposalCard` registers what its buttons would do right now
+  (`navProposals.registerCard`); `voiceCommand` acts only when **exactly one** card on the
+  shown map (the reply's map, still shown) is live: checked, unexpired and unconfirmed,
+  or waiting at its spoken arm prompt. Zero, several, still checking, expired, voided (map
+  change, health drop, stop), already confirmed or blocked cards do nothing, and the reason
+  is spoken ("More than one suggestion is on screen...", "This suggestion expired...").
+- "go" presses exactly one button of that card, the one a click would press next: **Confirm**
+  (the card's own `confirm()`, so the same `/nav/confirm`, hand-off and backend checks), or
+  **Arm for this move** (`armForMove`, Standard then `/arm`) when the move card offers it.
+  A destination card has no arm step: "go" while disarmed says "Arm the rover first" and
+  does nothing.
+- Explore keeps its separate arm: after "go" selects Explore (disarmed), Scout says
+  "Explore mode is selected and the rover is disarmed. Say go to arm and start exploring,
+  or cancel." Only a later "go", within 30 s while Explore is still shown selected and
+  disarmed on the same map with no new stop, sends the same `/arm` as Rover controls' Arm
+  button, and only when that button would be enabled (`navProposals.armBlock`). Every
+  backend readiness gate still decides.
+- "cancel" dismisses every live card on the shown map through the card's own dismiss
+  (`/nav/cancel`); cancelling never moves anything.
+- Each result is spoken once via `/voice/confirm`, including "Say stop to stop." after
+  anything starts moving.
 
 ## Routes
 
@@ -79,7 +112,7 @@ geometry, only the manual prerequisites; it never falls back to a timed pulse.
   2.54 m, never 100 cm. Reverse, speed and repeats are not offered.
 - Limits (`moves.FORWARD_M`, `TURN_DEG`): forward 5-50 cm (0.05-0.5 m), turns 10-90
   degrees. Larger or smaller requests are refused (`move_out_of_range`), never clamped.
-- Arming: the card's **Arm for this move** is a separate deliberate click that selects
+- Arming: the card's **Arm for this move** is a separate deliberate click (or spoken "go") that selects
   Standard and arms (`POST /arm?prepare=true&standard=true` with phone setup, or plain
   `/arm` in manual). The iPhone adapter also supports generation-bound dashboard
   joystick gestures; a confirmed move retires any earlier gesture before starting.

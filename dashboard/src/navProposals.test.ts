@@ -1,13 +1,23 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  armBlock,
+  cardChanged,
   confirmBlock,
   currentOffers,
   navAction,
   offerNavigationActions,
   parseMove,
   parseProposal,
+  registerCard,
   resetOffers,
+  voiceCommand,
+  voicePrompt,
+  waitForCard,
   type CardContext,
+  type CardHandle,
+  type CardVoiceState,
+  type NavAction,
+  type NavActionName,
 } from "./navProposals";
 
 const map = { session_id: "s1", map_epoch: 1 };
@@ -270,6 +280,216 @@ describe("bounded moves", () => {
     expect(parseMove({ version: 1, move: null })).toBeNull();
     expect(
       parseMove({ version: 1, move: { ...base, status: "teleported" } }),
+    ).toBeNull();
+  });
+});
+
+describe("spoken go and cancel (voiceCommand)", () => {
+  beforeEach(resetOffers);
+  const shown = JSON.stringify(["s1", 1]);
+  const idle: CardVoiceState = {
+    checking: false,
+    live: false,
+    step: null,
+    blocked: null,
+    why: null,
+  };
+  /** A card whose buttons only record presses; the real card presses its own confirm/arm buttons. */
+  function card(
+    key: string,
+    state: Partial<CardVoiceState>,
+    mapKey = shown,
+    name: NavActionName = "propose_exploration",
+  ) {
+    const pressed: string[] = [];
+    const handle: CardHandle = {
+      key,
+      mapKey,
+      action: { id: key, name, args: {} },
+      state: () => ({ ...idle, ...state }),
+      go: async (step) => {
+        pressed.push(step);
+        return `pressed ${step}`;
+      },
+      cancel: () => {
+        pressed.push("cancel");
+        return "Cancelled. Nothing moved.";
+      },
+    };
+    const unregister = registerCard(handle);
+    return { pressed, unregister };
+  }
+
+  it("presses the one live card's own button, once", async () => {
+    const one = card("c1", { live: true, step: "confirm" });
+    expect(await voiceCommand("confirm", shown)).toBe("pressed confirm");
+    expect(one.pressed).toEqual(["confirm"]);
+  });
+
+  it("presses the arm step only where the card itself offers it", async () => {
+    const one = card("c1", { live: true, step: "arm" });
+    expect(await voiceCommand("confirm", shown)).toBe("pressed arm");
+    expect(one.pressed).toEqual(["arm"]);
+  });
+
+  it("does nothing with zero, two or only blocked cards, and says why", async () => {
+    expect(await voiceCommand("confirm", shown)).toBe(
+      "There is nothing to confirm. Nothing moved.",
+    );
+    const blocked = card("c1", {
+      live: true,
+      blocked: "Arm the rover first; confirming switches it to navigate.",
+    });
+    expect(await voiceCommand("confirm", shown)).toBe(
+      "Arm the rover first; confirming switches it to navigate. Nothing moved.",
+    );
+    const second = card("c2", { live: true, step: "confirm" });
+    expect(await voiceCommand("confirm", shown)).toContain(
+      "More than one suggestion",
+    );
+    expect([...blocked.pressed, ...second.pressed]).toEqual([]);
+  });
+
+  it("never acts on an expired, voided, checking or other-map card", async () => {
+    const expired = card("c1", {
+      why: "This suggestion expired. Ask again.",
+    });
+    expect(await voiceCommand("confirm", shown)).toBe(
+      "This suggestion expired. Ask again. Nothing moved.",
+    );
+    expired.unregister();
+    const checking = card("c2", { checking: true });
+    expect(await voiceCommand("confirm", shown)).toContain(
+      "still being checked",
+    );
+    checking.unregister();
+    const elsewhere = card(
+      "c3",
+      { live: true, step: "confirm" },
+      JSON.stringify(["s2", 1]),
+    );
+    expect(await voiceCommand("confirm", shown)).toContain("different map");
+    expect(await voiceCommand("confirm", null)).toContain("different map");
+    expect([...expired.pressed, ...elsewhere.pressed]).toEqual([]);
+  });
+
+  it("cancel dismisses every live card on the shown map and nothing else", async () => {
+    expect(await voiceCommand("cancel", shown)).toContain(
+      "no suggestion to cancel",
+    );
+    const one = card("c1", { live: true, step: "confirm" });
+    expect(await voiceCommand("cancel", shown)).toBe(
+      "Cancelled. Nothing moved.",
+    );
+    const two = card("c2", { live: true, blocked: "Rover health is not ok." });
+    const done = card("c3", { why: "That suggestion was already confirmed." });
+    const elsewhere = card(
+      "c4",
+      { live: true, step: "confirm" },
+      JSON.stringify(["s2", 1]),
+    );
+    expect(await voiceCommand("cancel", shown)).toBe(
+      "Cancelled 2 suggestions. Nothing moved.",
+    );
+    expect(one.pressed).toEqual(["cancel", "cancel"]);
+    expect(two.pressed).toEqual(["cancel"]);
+    expect([...done.pressed, ...elsewhere.pressed]).toEqual([]);
+  });
+
+  it("waits for a new card's check, then speaks how to confirm it", async () => {
+    let checking = true;
+    const handle: CardHandle = {
+      key: "k1",
+      mapKey: shown,
+      action: { id: "k1", name: "propose_exploration", args: {} },
+      state: () =>
+        checking
+          ? { ...idle, checking: true }
+          : { ...idle, live: true, step: "confirm" },
+      go: async () => "",
+      cancel: () => "",
+    };
+    const waiting = waitForCard("k1", 1000);
+    registerCard(handle);
+    checking = false;
+    cardChanged();
+    const found = await waiting;
+    expect(found).toBe(handle);
+    expect(voicePrompt(handle.action, found!.state())).toBe(
+      "Explore is ready. Say go to select Explore mode, or cancel.",
+    );
+    expect(await waitForCard("missing", 10)).toBeNull();
+  });
+
+  it("words each prompt so the next spoken step is explicit", () => {
+    const move: NavAction = {
+      id: "m",
+      name: "propose_move",
+      args: { direction: "forward", amount: 50, unit: "cm" },
+    };
+    const turn: NavAction = {
+      id: "t",
+      name: "propose_move",
+      args: { direction: "left", amount: 30, unit: "deg" },
+    };
+    const drive: NavAction = {
+      id: "d",
+      name: "propose_navigation",
+      args: { target: "object", object_id: "db-1", class: "backpack" },
+    };
+    expect(voicePrompt(move, { ...idle, live: true, step: "arm" })).toBe(
+      "Move forward 50 centimeters is ready. Say go to arm for this move, or cancel.",
+    );
+    expect(voicePrompt(turn, { ...idle, live: true, step: "confirm" })).toBe(
+      "Turn left 30 degrees is ready. Say go to move, or cancel.",
+    );
+    expect(
+      voicePrompt(drive, {
+        ...idle,
+        live: true,
+        blocked: "Arm the rover first; confirming switches it to navigate.",
+      }),
+    ).toBe(
+      "Drive to the backpack is on screen. Arm the rover first; confirming switches it to navigate. Say cancel to drop it.",
+    );
+    expect(
+      voicePrompt(drive, {
+        ...idle,
+        why: "No rover-clear path reaches it on mapped floor.",
+      }),
+    ).toBe(
+      "Drive to the backpack is not available. No rover-clear path reaches it on mapped floor. Nothing moved.",
+    );
+  });
+});
+
+describe("armBlock (Rover controls' Arm, shared with a spoken arm step)", () => {
+  const base = {
+    mission: {
+      health: { phone: "ok", car: "ok", detector: "ok", mode: "explore" },
+    },
+    config: { commands: true, roverKey: "", serverPaired: false },
+    autonomy: null,
+    stale: false,
+    pending: null,
+    requiresStop: false,
+  } as unknown as Parameters<typeof armBlock>[0];
+
+  it("allows it exactly when the Arm button is enabled", () => {
+    expect(armBlock(base)).toBeNull();
+    expect(armBlock({ ...base, requiresStop: true })).toContain("Say stop");
+    expect(armBlock({ ...base, pending: "/mode" })).toContain("in progress");
+    expect(
+      armBlock({ ...base, config: { ...base.config, commands: false } }),
+    ).toContain("telemetry only");
+    expect(armBlock({ ...base, stale: true })).toContain("healthy");
+    const phone = {
+      ...base,
+      autonomy: { adapter: "iphone", ready: false },
+    } as unknown as Parameters<typeof armBlock>[0];
+    expect(armBlock(phone)).toContain("pairing key");
+    expect(
+      armBlock({ ...phone, config: { ...base.config, serverPaired: true } }),
     ).toBeNull();
   });
 });

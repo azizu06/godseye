@@ -306,6 +306,35 @@ class ProposalTests(unittest.TestCase):
             self.assertTrue(client.get('/health').json()['armed'])  # the human presses Stop
             client.post('/stop')
 
+    def test_a_spoken_stop_stops_a_running_route_at_once_and_voids_every_suggestion(self):
+        from functools import partial
+        from unittest.mock import patch
+        from backend.app import create_app
+        from backend.tests.test_voice import CLIP, WEBM, FakeTranscriber, providers
+        voice = providers(FakeTranscriber('Stop, stop!'))
+        with patch('tools.car_rehearsal.create_app', partial(create_app, voice_providers=voice)), \
+                scene() as (client, car, source):
+            self.backpack = self.put(client, 'backpack', .8, .9)
+            arm(client, 'navigate')
+            self.assertEqual(self.confirm(client, self.propose(client).json()).status_code, 200)
+            wait_for(lambda: self.moved(car))
+            pending = self.propose(client, args=dict(target='point', x=0., z=.5)).json()
+            self.assertEqual(pending['status'], 'ready', pending)
+            # "go" is only handed to the dashboard's card: the backend confirms and consumes nothing.
+            voice.transcriber.text = 'go'
+            self.assertEqual(client.post('/voice/ask', content=CLIP, headers=WEBM).json()['command'], 'confirm')
+            self.assertEqual(client.app.state.nav.kind, 'goal')
+            voice.transcriber.text = 'Stop, stop!'
+            result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
+            self.assertEqual((result['command'], result['stopped']), ('stop', True))
+            health = client.get('/health').json()
+            self.assertEqual((health['armed'], health['stop_reason']), (False, 'operator_stop'))
+            self.assertFalse(client.app.state.nav.active)
+            kinds = [call[0] for call in car.calls]
+            self.assertGreater(len(kinds) - kinds[::-1].index('zero'), len(kinds) - kinds[::-1].index('send'))
+            self.assertEqual(self.confirm(client, pending).status_code, 404)  # voided like any operator Stop
+            self.assertEqual(voice.answerer.calls, [])
+
 
 class RelayAuthorizationTests(unittest.TestCase):
     def test_confirming_needs_the_rover_pairing_key_like_every_motion_route(self):

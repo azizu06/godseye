@@ -4,16 +4,22 @@ import type { MissionController } from "./useMission";
 import { sendCommand } from "./transport";
 import { parseSpeech } from "./VoiceAsk";
 import {
+  ARM_PROMPT_MS,
+  armBlock,
+  cardChanged,
   confirmBlock,
   currentOffers,
   dismissOffer,
   offerNavigationActions,
   parseMove,
   parseProposal,
+  registerCard,
   subscribeOffers,
+  type CardVoiceState,
   type MoveResult,
   type NavOffer,
   type NavProposal,
+  type VoiceStep,
 } from "./navProposals";
 
 type Phase =
@@ -21,8 +27,15 @@ type Phase =
   | { kind: "shown"; proposal: NavProposal; at: number }
   | { kind: "void"; reason: string; proposal: NavProposal | null }
   | { kind: "confirming"; proposal: NavProposal }
+  // Explore was selected (disarmed) and Scout said "say go to arm"; only then can "go" arm.
+  | { kind: "armPrompt"; proposal: NavProposal; at: number }
   | { kind: "moving"; proposal: NavProposal; result: MoveResult | null }
   | { kind: "done"; message: string; proposal: NavProposal };
+
+const EXPLORE_SELECTED =
+  "Explore mode selected. Arm the rover to start exploring.";
+const ARM_PROMPT =
+  "Explore mode is selected and the rover is disarmed. Say go to arm and start exploring, or cancel.";
 
 const MOVE_POLL_MS = 250;
 const MOVE_STATUS_LIMIT_MS = 30000;
@@ -67,7 +80,8 @@ function detail(proposal: NavProposal) {
 /**
  * Confirmation cards for rover actions suggested by a voice answer. A card
  * never acts by itself: the backend validates the suggestion, and only a
- * click here confirms it, once. Stop stays one click away on every card.
+ * click here, or a spoken "go" that presses the same button when this is the
+ * only live card, confirms it, once. Stop stays one click away on every card.
  */
 export function NavigationProposals({
   controller,
@@ -111,6 +125,13 @@ function ProposalCard({
     mission.health.detector === "ok";
   const isStop = offer.action.name === "stop_navigation";
   const pendingId = phase.kind === "shown" ? phase.proposal.proposalId : null;
+  // When the card offers "Arm for this move" (Standard, then arm) before its confirm.
+  const moveArmOffered =
+    phase.kind === "shown" &&
+    phase.proposal.kind === "move" &&
+    !canDrive &&
+    config.commands &&
+    mission.health?.mode !== "explore";
 
   useEffect(() => {
     if (asked.current || isStop) return;
@@ -216,8 +237,10 @@ function ProposalCard({
       });
   }, [phase, block?.void, block?.reason]);
 
-  const confirm = async () => {
-    if (phase.kind !== "shown" || block || !phase.proposal.proposalId) return;
+  /** The confirm button; a spoken "go" presses exactly this. Returns what happened, to be spoken. */
+  const confirm = async (): Promise<string> => {
+    if (phase.kind !== "shown" || block || !phase.proposal.proposalId)
+      return "That suggestion cannot be confirmed now. Nothing moved.";
     const proposal = phase.proposal;
     const [session_id, map_epoch] = JSON.parse(offer.mapKey);
     setPhase({ kind: "confirming", proposal }); // never re-enabled: a confirmation is sent once
@@ -228,17 +251,129 @@ function ProposalCard({
     });
     if (ok && proposal.kind === "move") {
       setPhase({ kind: "moving", proposal, result: null });
-      return;
+      return "Confirmed. Moving now. Say stop to stop.";
     }
-    setPhase({
-      kind: "done",
-      proposal,
-      message: ok
-        ? proposal.kind === "exploration"
-          ? "Explore mode selected. Arm the rover to start exploring."
-          : "Confirmed. The rover is following the planned route."
-        : "Not started. Ask again if you still want it.",
+    if (ok && proposal.kind === "exploration") {
+      // Selecting Explore disarms; starting it stays a separate, explicitly prompted arm.
+      stopAtReceipt.current = mission.health?.stop_reason;
+      exploreSeen.current = false;
+      setPhase({ kind: "armPrompt", proposal, at: Date.now() });
+      return ARM_PROMPT;
+    }
+    const message = ok
+      ? "Confirmed. The rover is following the planned route."
+      : "Not started. Ask again if you still want it.";
+    setPhase({ kind: "done", proposal, message });
+    return ok ? `${message} Say stop to stop.` : message;
+  };
+
+  // The spoken arm prompt holds only while Explore stays selected, disarmed, on this map and
+  // unstopped. Health may still show the old mode just after confirming, so a mode or arm change
+  // ends it only once Explore was seen selected and disarmed; until then "go" does nothing.
+  const exploreSeen = useRef(false);
+  const exploreSelected =
+    mission.health?.mode === "explore" && !mission.health.armed;
+  const promptEnded = (at: number, nowMs: number) =>
+    nowMs - at > ARM_PROMPT_MS ||
+    mission.mapKey !== offer.mapKey ||
+    (exploreSeen.current && !exploreSelected) ||
+    (!!mission.health?.stop_reason &&
+      mission.health.stop_reason !== "mode_change" &&
+      mission.health.stop_reason !== stopAtReceipt.current);
+  useEffect(() => {
+    if (phase.kind !== "armPrompt") return;
+    if (exploreSelected) exploreSeen.current = true;
+    if (promptEnded(phase.at, now))
+      setPhase({
+        kind: "done",
+        proposal: phase.proposal,
+        message: EXPLORE_SELECTED,
+      });
+  });
+
+  /** What a spoken command would do on this card right now (see navProposals.voiceCommand). */
+  const voiceState = (): CardVoiceState => {
+    const idle = { checking: false, live: false, step: null, blocked: null };
+    // A stop card only offers the Stop button; a spoken stop needs no card at all.
+    if (isStop) return { ...idle, why: null };
+    if (phase.kind === "checking")
+      return { ...idle, checking: true, why: null };
+    if (phase.kind === "void") return { ...idle, why: phase.reason };
+    if (phase.kind === "armPrompt") {
+      if (promptEnded(phase.at, Date.now()))
+        return {
+          ...idle,
+          why: "The prompt to arm for Explore ended. Use Arm in Rover controls.",
+        };
+      const blocked = exploreSelected
+        ? armBlock(controller)
+        : "Explore mode is not shown as selected and disarmed yet.";
+      return {
+        ...idle,
+        live: true,
+        step: blocked ? null : "arm",
+        blocked,
+        why: null,
+      };
+    }
+    if (phase.kind !== "shown")
+      return { ...idle, why: "That suggestion was already confirmed." };
+    const current = confirmBlock(offer, phase.proposal, phase.at, {
+      mapKey: mission.mapKey,
+      healthy,
+      canDrive,
+      mode: mission.health?.mode ?? null,
+      commands: config.commands,
+      now: Date.now(),
     });
+    if (current?.void) return { ...idle, why: current.reason };
+    if (moveArmOffered) {
+      // Exactly when the card shows "Arm for this move", and never while an arm may be under way.
+      const blocked = controller.pending
+        ? "Another rover command is in progress."
+        : controller.requiresStop
+          ? "The rover may already be armed or starting. Say stop, or wait."
+          : null;
+      return {
+        ...idle,
+        live: true,
+        step: blocked ? null : "arm",
+        blocked,
+        why: null,
+      };
+    }
+    return {
+      ...idle,
+      live: true,
+      step: current ? null : "confirm",
+      blocked: current?.reason ?? null,
+      why: null,
+    };
+  };
+  const armStep = async (): Promise<string> => {
+    if (phase.kind === "armPrompt") {
+      // The same request as Rover controls' Arm button in Explore mode.
+      const ok = await controller.command(
+        "/arm",
+        undefined,
+        mission.health?.mode === "manual",
+      );
+      setPhase({
+        kind: "done",
+        proposal: phase.proposal,
+        message: ok
+          ? "Arm requested. Explore starts when the rover is ready."
+          : EXPLORE_SELECTED,
+      });
+      return ok
+        ? "Arm requested. Explore starts when the rover is ready. Say stop to stop."
+        : "The rover did not arm, so nothing moves. The reason is on screen.";
+    }
+    // The card's "Arm for this move" button.
+    const ok = await controller.armForMove();
+    return ok
+      ? "Armed in Standard for this move. Say go to move, or cancel."
+      : "The rover did not arm for this move, so nothing moved.";
   };
 
   // A confirmed move reports only what the phone's pose measured, once it ended.
@@ -302,6 +437,33 @@ function ProposalCard({
     cancel();
     dismissOffer(offer.key);
   };
+
+  // Spoken commands reach this card only through these, the same functions as its buttons.
+  const voice = useRef({ voiceState, confirm, armStep, dismiss, phase });
+  voice.current = { voiceState, confirm, armStep, dismiss, phase };
+  useEffect(
+    () =>
+      registerCard({
+        key: offer.key,
+        mapKey: offer.mapKey,
+        action: offer.action,
+        state: () => voice.current.voiceState(),
+        go: (step: VoiceStep) =>
+          step === "confirm"
+            ? voice.current.confirm()
+            : voice.current.armStep(),
+        cancel: () => {
+          const prompt = voice.current.phase.kind === "armPrompt";
+          voice.current.dismiss();
+          return prompt
+            ? "Cancelled. Explore mode stays selected and the rover stays disarmed."
+            : "Cancelled. Nothing moved.";
+        },
+      }),
+    [offer],
+  );
+  useEffect(() => cardChanged(), [phase]);
+
   const execution =
     phase.kind === "shown" && !phase.proposal.execution.available
       ? phase.proposal.execution.message
@@ -340,6 +502,11 @@ function ProposalCard({
         </p>
       ) : phase.kind === "done" ? (
         <p data-testid="nav-proposal-result">{phase.message}</p>
+      ) : phase.kind === "armPrompt" ? (
+        <p data-testid="nav-proposal-result">
+          Explore mode selected, disarmed. Say go, or press Arm in Rover
+          controls, to start exploring.
+        </p>
       ) : phase.kind === "moving" ? (
         <p data-testid="nav-proposal-progress">
           {phase.result?.achieved != null
@@ -394,20 +561,16 @@ function ProposalCard({
           </button>
         ) : (
           <>
-            {phase.kind === "shown" &&
-              phase.proposal.kind === "move" &&
-              !controller.canDrive &&
-              config.commands &&
-              mission.health?.mode !== "explore" && (
-                <button
-                  className="button"
-                  disabled={!!controller.pending}
-                  title="Select Standard and arm for this one move; nothing moves until you confirm it"
-                  onClick={() => void controller.armForMove()}
-                >
-                  Arm for this move
-                </button>
-              )}
+            {moveArmOffered && (
+              <button
+                className="button"
+                disabled={!!controller.pending}
+                title="Select Standard and arm for this one move; nothing moves until you confirm it"
+                onClick={() => void controller.armForMove()}
+              >
+                Arm for this move
+              </button>
+            )}
             {(phase.kind === "shown" || phase.kind === "confirming") && (
               <button
                 className="button primary"

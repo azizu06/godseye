@@ -625,7 +625,11 @@ export default function App() {
             />
           )}
         </ApproachRouteCard>
-        <VoiceAsk config={config} onActions={actions.run}>
+        <VoiceAsk
+          config={config}
+          onActions={actions.run}
+          onCommand={actions.runCommand}
+        >
           {(controls.classes || !controls.boxes || !controls.labels) && (
             <div className="view-filter" data-testid="view-filter">
               <span>

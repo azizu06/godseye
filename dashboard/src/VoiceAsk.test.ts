@@ -21,6 +21,7 @@ describe("parseVoiceReply", () => {
       actions: [],
       scope: '["room",1]',
       confirm: null,
+      command: null,
     });
   });
   it("keeps the text answer when speech failed or is malformed", () => {
@@ -45,6 +46,7 @@ describe("parseVoiceReply", () => {
       actions: [],
       scope: null,
       confirm: null,
+      command: null,
     });
   });
   it("accepts typed actions without speech and rejects any invalid action whole", () => {
@@ -60,6 +62,56 @@ describe("parseVoiceReply", () => {
       "filter_classes",
     ])
       expect(parseVoiceReply({ ...ok, actions: bad })).toBeNull();
+  });
+  it("reads a spoken stop as an ordinary spoken answer the backend already acted on", () => {
+    expect(
+      parseVoiceReply({
+        ...ok,
+        question: "Stop the rover.",
+        answer:
+          "Stopped. The rover is disarmed and any route or move has ended.",
+        command: "stop",
+        stopped: true,
+      }),
+    ).toMatchObject({
+      command: "stop",
+      answer: "Stopped. The rover is disarmed and any route or move has ended.",
+      speech: { mime: "audio/wav", data: "UklGRg==" },
+      actions: [],
+      confirm: null,
+    });
+  });
+  it("hands a spoken go or cancel to the cards with its one-use result token", () => {
+    const go = {
+      ...ok,
+      question: "Yes, go.",
+      answer: null,
+      speech: null,
+      command: "confirm",
+      actions: [],
+      confirm: "t-1",
+    };
+    expect(parseVoiceReply(go)).toMatchObject({
+      command: "confirm",
+      answer: null,
+      speech: null,
+      speechFailed: false,
+      confirm: "t-1",
+    });
+    expect(
+      parseVoiceReply({ ...go, command: "cancel", question: "Cancel." }),
+    ).toMatchObject({ command: "cancel", confirm: "t-1" });
+    // A command never rides along with model actions, and unknown commands are not commands.
+    expect(
+      parseVoiceReply({
+        ...go,
+        actions: [{ id: "a1", name: "frame_room", args: {} }],
+      }),
+    ).toBeNull();
+    expect(parseVoiceReply({ ...go, command: "arm" })).toBeNull();
+    expect(parseVoiceReply({ ...ok, command: "arm" })).toMatchObject({
+      command: null,
+    });
   });
   it("rejects unversioned, incomplete or oversized replies", () => {
     for (const bad of [

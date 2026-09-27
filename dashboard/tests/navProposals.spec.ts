@@ -234,7 +234,10 @@ test("a suggested destination needs a deliberate arm and is confirmed exactly on
   expect(count(rover, "/nav/propose")).toBe(1);
   expect(count(rover, "/arm")).toBe(0);
 
-  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Arm rover", exact: true })
+    .first()
+    .click();
   await expect(page.locator(".operator-panel .state-pill").last()).toHaveText(
     "Armed",
   );
@@ -321,7 +324,10 @@ test("a stop suggestion only offers Stop, and a map change voids a pending sugge
   page,
 }) => {
   const rover = await fakeRover(page);
-  await page.getByRole("button", { name: "Arm rover", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Arm rover", exact: true })
+    .first()
+    .click();
   await expect(page.locator(".operator-panel .state-pill").last()).toHaveText(
     "Armed",
   );
@@ -389,12 +395,12 @@ test("a spoken request becomes a confirmation card, never a drive command", asyn
   await expect(
     card.getByRole("button", { name: "Confirm drive" }),
   ).toBeDisabled();
-  // The spoken result is what the dashboard did, never the model's claim that it is driving.
+  // The spoken result is the checked card, never the model's claim that it is driving.
   await expect
     .poll(() => rover.calls.find((c) => c.path === "/voice/confirm")?.body)
     .toEqual({
       token: "token-1",
-      text: "I put that suggestion on screen. Nothing moves unless you confirm it there.",
+      text: "Drive to the backpack is on screen. Arm the rover first; confirming switches it to navigate. Say cancel to drop it.",
     });
   expect(rover.calls.find((c) => c.path === "/nav/propose")!.body).toEqual({
     session_id: "nav-room",
@@ -526,7 +532,7 @@ test("a spoken move is armed for and confirmed by a person, then reports the mea
     .poll(() => rover.calls.find((c) => c.path === "/voice/confirm")?.body)
     .toEqual({
       token: "token-move",
-      text: "I put that suggestion on screen. Nothing moves unless you confirm it there.",
+      text: "Move forward 20 centimeters is ready. Say go to arm for this move, or cancel.",
     });
   for (const path of ["/arm", "/mode", "/nav/confirm", "/manual"])
     expect(count(rover, path)).toBe(0);
@@ -552,4 +558,234 @@ test("a spoken move is armed for and confirmed by a person, then reports the mea
   });
   expect(polls).toBeGreaterThanOrEqual(3);
   for (const path of ["/manual", "/goal"]) expect(count(rover, path)).toBe(0);
+});
+
+// A spoken "go" or "cancel" as the backend returns it: recognized without the answer model.
+const spoken = (command: "confirm" | "cancel", token: string) => ({
+  version: 1,
+  session_id: "nav-room",
+  map_epoch: 1,
+  status: "ok",
+  question: command === "confirm" ? "Go." : "Cancel.",
+  answer: null,
+  evidence: { objects: 0, changes: 0 },
+  speech: null,
+  command,
+  actions: [],
+  confirm: token,
+});
+async function say(page: Page) {
+  const ask = page.getByRole("button", { name: "Ask Scout", exact: true });
+  await expect(ask).toBeEnabled();
+  await ask.click();
+  await page.waitForTimeout(450);
+  await page.getByRole("button", { name: "Stop and send" }).click();
+}
+const spokenText = (
+  rover: { calls: { path: string; body: any }[] },
+  token: string,
+) =>
+  rover.calls.find((c) => c.path === "/voice/confirm" && c.body.token === token)
+    ?.body.text;
+
+test("a spoken move is armed for and confirmed by voice, one prompted step at a time", async ({
+  page,
+}) => {
+  const rover = await fakeRover(page, {
+    voice: [
+      {
+        version: 1,
+        session_id: "nav-room",
+        map_epoch: 1,
+        status: "ok",
+        question: "Move forward 20 centimeters",
+        answer: "Moving forward now.",
+        evidence: { objects: 0, changes: 0 },
+        speech: null,
+        actions: [
+          {
+            id: "srv-move",
+            name: "propose_move",
+            args: { direction: "forward", amount: 20, unit: "cm" },
+          },
+        ],
+        confirm: "t-offer",
+      },
+      spoken("confirm", "t-arm"),
+      spoken("confirm", "t-go"),
+    ],
+    propose: (body) => ({
+      version: 1,
+      proposal_id: "p-move",
+      action_id: body.action.id,
+      kind: "move",
+      session_id: body.session_id,
+      map_epoch: body.map_epoch,
+      status: "ready",
+      reason: null,
+      message: null,
+      move: { direction: "forward", label: "forward 20 cm (0.20 m)" },
+      expires_in_s: 30,
+      execution: {
+        available: false,
+        reason: "move_arm_required",
+        message: "Arm the rover to confirm.",
+      },
+    }),
+    extra: (path) => {
+      if (path === "/nav/move")
+        return {
+          version: 1,
+          move: {
+            move_id: "m-1",
+            proposal_id: "p-move",
+            status: "running",
+            requested_unit: "m",
+            achieved: null,
+            text: null,
+          },
+        };
+      if (path === "/nav/confirm")
+        return { version: 1, proposal_id: "p-move", move: null };
+      return undefined;
+    },
+  });
+  await closeWorkspace(page);
+  await say(page);
+  const card = page.getByTestId("nav-proposal");
+  await expect(card).toContainText("Move forward 20 cm");
+  await expect
+    .poll(() => spokenText(rover, "t-offer"))
+    .toBe(
+      "Move forward 20 centimeters is ready. Say go to arm for this move, or cancel.",
+    );
+  for (const path of ["/arm", "/mode", "/nav/confirm"])
+    expect(count(rover, path)).toBe(0);
+
+  // The first "go" presses only "Arm for this move": Standard, then arm. Nothing is confirmed.
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-arm"))
+    .toBe("Armed in Standard for this move. Say go to move, or cancel.");
+  expect(rover.armed).toBe(true);
+  expect(rover.mode).toBe("manual");
+  expect(count(rover, "/arm")).toBe(1);
+  expect(count(rover, "/nav/confirm")).toBe(0);
+  await expect(
+    card.getByRole("button", { name: "Confirm move" }),
+  ).toBeEnabled();
+
+  // The second "go" presses Confirm move: the same single /nav/confirm as a click.
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-go"))
+    .toBe("Confirmed. Moving now. Say stop to stop.");
+  expect(count(rover, "/nav/confirm")).toBe(1);
+  expect(rover.calls.find((c) => c.path === "/nav/confirm")!.body).toEqual({
+    proposal_id: "p-move",
+    session_id: "nav-room",
+    map_epoch: 1,
+  });
+  expect(count(rover, "/arm")).toBe(1);
+  for (const path of ["/manual", "/goal"]) expect(count(rover, path)).toBe(0);
+});
+
+test("spoken Explore selects the mode, then arms only after its explicit spoken prompt", async ({
+  page,
+}) => {
+  const state: { rover?: { mode: string; armed: boolean } } = {};
+  const rover = await fakeRover(page, {
+    voice: [
+      {
+        version: 1,
+        session_id: "nav-room",
+        map_epoch: 1,
+        status: "ok",
+        question: "Explore the area",
+        answer: "Exploring now.",
+        evidence: { objects: 0, changes: 0 },
+        speech: null,
+        actions: [{ id: "srv-x", name: "propose_exploration", args: {} }],
+        confirm: "t-offer",
+      },
+      spoken("confirm", "t-select"),
+      spoken("confirm", "t-arm"),
+    ],
+    extra: (path, body) => {
+      if (path !== "/nav/confirm") return undefined;
+      // Like the backend: selecting Explore stops and disarms; it never arms.
+      state.rover!.mode = "explore";
+      state.rover!.armed = false;
+      return {
+        version: 1,
+        mode: "explore",
+        armed: false,
+        next: "arm",
+        proposal_id: body.proposal_id,
+      };
+    },
+  });
+  state.rover = rover;
+  await closeWorkspace(page);
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-offer"))
+    .toBe("Explore is ready. Say go to select Explore mode, or cancel.");
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-select"))
+    .toBe(
+      "Explore mode is selected and the rover is disarmed. Say go to arm and start exploring, or cancel.",
+    );
+  expect(count(rover, "/nav/confirm")).toBe(1);
+  expect(count(rover, "/arm")).toBe(0);
+  expect(rover.armed).toBe(false);
+  await expect(page.getByTestId("nav-proposal-result")).toContainText(
+    "Say go, or press Arm",
+  );
+
+  // Only this later "go" arms, with the same request as Rover controls' Arm button.
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-arm"))
+    .toBe(
+      "Arm requested. Explore starts when the rover is ready. Say stop to stop.",
+    );
+  expect(count(rover, "/arm")).toBe(1);
+  expect(count(rover, "/nav/confirm")).toBe(1);
+  expect(rover.armed).toBe(true);
+});
+
+test("a spoken go with two cards on screen does nothing, and cancel drops both", async ({
+  page,
+}) => {
+  const rover = await fakeRover(page, {
+    voice: [spoken("confirm", "t-go"), spoken("cancel", "t-cancel")],
+  });
+  await closeWorkspace(page);
+  await offer(page, "propose_exploration", "a1");
+  await offer(page, "propose_navigation", "a2", "nav-room", {
+    target: "point",
+    x: 0.6,
+    z: 0.7,
+  });
+  await expect(page.getByTestId("nav-proposal")).toHaveCount(2);
+  await expect(
+    page.getByRole("button", { name: "Select Explore" }),
+  ).toBeEnabled();
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-go"))
+    .toBe(
+      "More than one suggestion is on screen. Press the one you want, or say cancel. Nothing moved.",
+    );
+  for (const path of ["/nav/confirm", "/arm", "/mode"])
+    expect(count(rover, path)).toBe(0);
+  await say(page);
+  await expect
+    .poll(() => spokenText(rover, "t-cancel"))
+    .toBe("Cancelled 2 suggestions. Nothing moved.");
+  await expect(page.getByTestId("nav-proposal")).toHaveCount(0);
+  expect(count(rover, "/nav/cancel")).toBe(2);
+  expect(count(rover, "/nav/confirm")).toBe(0);
 });
