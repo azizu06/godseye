@@ -18,6 +18,8 @@ final class RoverController: ObservableObject {
     @Published private(set) var bluetoothPeers: [RoverBLEPeer] = []
     @Published private(set) var connecting = false
     @Published private(set) var autonomyEnabled = false
+    private(set) var selectedBluetoothPeer: UUID?
+    var onOperatorStop: (() -> Void)?
     var onAutonomyReply: ((ElegooReply) -> Void)?
     var onAutonomyLoss: (() -> Void)?
     private var autonomyGate = AutonomyGate()
@@ -140,7 +142,11 @@ final class RoverController: ObservableObject {
         link.start()
     }
 
-    func selectBluetoothPeer(_ id: UUID) { bluetooth?.select(id) }
+    func selectBluetoothPeer(_ id: UUID) {
+        guard bluetoothPeers.contains(where: { $0.id == id }) else { return }
+        selectedBluetoothPeer = id
+        bluetooth?.select(id)
+    }
 
     private func prepareSession() {
         connecting = true
@@ -175,6 +181,7 @@ final class RoverController: ObservableObject {
     func enable() {
         guard !autonomyEnabled else { return }
         guard verified, now - lastReply < 2.5 else { return }
+        onOperatorStop?() // An explicit manual takeover cancels automatic setup.
         held = nil
         enabled = true
         status = "Manual controls enabled · hold a direction to move"
@@ -201,6 +208,11 @@ final class RoverController: ObservableObject {
         if verified { status = "Stopped · enable controls to drive again" }
     }
 
+    func operatorStop() {
+        onOperatorStop?()
+        stop()
+    }
+
     func disconnect(reason: String = "Rover disconnected") {
         endAutonomy()
         generation += 1
@@ -212,6 +224,7 @@ final class RoverController: ObservableObject {
         connected = false
         connecting = false
         bluetoothPeers = []
+        selectedBluetoothPeer = nil
         roundTripMS = nil
         let oldBluetooth = bluetooth
         bluetooth = nil

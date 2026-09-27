@@ -64,7 +64,7 @@ struct RoverControlView: View {
                     Button(rover.enabled ? "Disable controls" : "Enable manual controls") {
                         if rover.enabled { rover.stop() } else { rover.enable() }
                     }.buttonStyle(.bordered).disabled(!rover.verified || rover.autonomyEnabled)
-                    Button("STOP") { rover.stop() }
+                    Button("STOP") { rover.operatorStop() }
                         .buttonStyle(.borderedProminent).tint(.red).disabled(!rover.connected)
                 }
                 Text("Motor power: \(Int(Double(rover.power) / 255 * 100))%")
