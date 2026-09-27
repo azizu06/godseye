@@ -620,6 +620,10 @@ while the default car reports down, so runs are exercised by tests with
   replans retain that rejection; changed map, route or meaningful pose evidence
   permits another attempt. Health reports `navigation_wait_reason` while Explore
   waits, including `no_feasible_step` and `explore_complete`.
+  If a new wall makes the current implicit frontier unreachable (`no_path`),
+  Explore tries a different reachable frontier once on the same snapshot;
+  `search_limit` does not establish unreachability. Stationary Explore keeps
+  refreshing authoritative sensing while waiting for another route.
   `path` is published only when its points change, and new `/live` viewers get it.
 - **Stops:** every run ends through the same `stop(reason)` as `/stop` (disarm,
   zero drive, health event) and publishes an empty `path`; health reports the
@@ -899,3 +903,13 @@ Within an AR map, occupancy retains the last observed floor height when the
 height histogram temporarily loses its floor peak. Current obstacle/free evidence
 is reclassified at that height; sensing timestamps are not refreshed by this cache.
 A new valid estimate can update it, and a new map epoch starts without a cached floor.
+
+### Offline obstacle-replanning regression
+
+`python -m unittest backend.tests.test_obstacle_replanning backend.tests.test_corridor_navigation backend.tests.test_navigator -v`
+uses an actual `OccupancyGrid` and `Navigator` with a kinematic command sink. Its
+synthetic observed room is an ideal-visibility policy fixture, not a claim that a
+mounted phone observes the whole rover footprint. It covers a clear detour to the
+same frontier, a new wall disconnecting a still-free frontier, stationary fresh
+sensing versus real loss, current-mesh clearance recovery, and late plan rejection
+after Stop/reset/disconnect or an arm-generation change. It sends no hardware commands.

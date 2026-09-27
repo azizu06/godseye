@@ -274,14 +274,21 @@ class Navigator:
         if not (snapshot.traversable(*start) or
                 recoverable_start(snapshot, *start, self.settings.start_recovery_margin_m)):
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
+        heading = yaw if explore_yaw is None else explore_yaw
+
+        def next_frontier():
+            preferred = preferred_explore_frontier(grid, start, heading, config,
+                                                    allow_unknown=snapshot.unknown_traversable,
+                                                    excluded=excluded)
+            return (preferred if preferred is not None else
+                    nearest_frontier(grid, start, config,
+                                     allow_unknown=snapshot.unknown_traversable,
+                                     excluded=excluded))
+
         if explore:
-            heading = yaw if explore_yaw is None else explore_yaw
             if (goal is None or grid.world_to_cell(*goal) is None
                     or not snapshot.traversable(*goal)):
-                goal = preferred_explore_frontier(grid, start, heading, config,
-                                                  allow_unknown=snapshot.unknown_traversable, excluded=excluded)
-                if goal is None:
-                    goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable, excluded=excluded)
+                goal = next_frontier()
                 if goal is None:
                     return 'explore_complete', snapshot
             else:
@@ -296,6 +303,16 @@ class Navigator:
                     if dx * fx + dz * fz >= .75 and abs(dx * fz - dz * fx) <= .35:
                         goal = farther
         result = plan_path(grid, start, goal, config)
+        if explore and result.reason == 'no_path':
+            # A new wall can disconnect an otherwise free implicit frontier.
+            # First try its detour above; only proven unreachability permits a
+            # different reachable frontier, with one bounded retry on this map.
+            replacement = next_frontier()
+            if replacement is None:
+                return 'explore_complete', snapshot
+            if replacement != goal:
+                goal = replacement
+                result = plan_path(grid, start, goal, config)
         if explore and result.ok:
             corridor = corridor_alignment(grid, start, goal, yaw, config)
             centered = corridor is None
