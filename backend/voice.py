@@ -1,5 +1,9 @@
 """Push-to-talk Q&A: speech -> text -> grounded answer -> speech. Off unless providers are injected.
 
+The answer may also propose typed dashboard view actions (`resolve_actions`). They are validated
+here as a whole and applied only by the dashboard; nothing here executes them, and none can arm,
+drive or steer the car.
+
 Nothing is retained: the uploaded clip, transcript, answer and reply audio live only for one
 request. Nothing here logs question, answer or audio content, and provider errors are sanitized.
 """
@@ -8,6 +12,8 @@ import base64
 import json
 import math
 import os
+import re
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -29,6 +35,10 @@ MAX_EXTRAS = 4096
 MAX_FRAME_DETECTIONS = 16
 MAX_AGE_S = 7 * 24 * 3600  # older, or in the future, means a wrong phone clock
 MAX_APPROACH_POINTS = 16
+MAX_ACTIONS = 4
+MAX_CONFIRM = 400
+CONFIRM_S = 60  # the dashboard applies actions immediately; a later confirmation is refused
+MAX_FILTER_CLASSES = 8
 TRANSCRIBE_S, ANSWER_S, SPEAK_S = 15, 12, 15
 DEFAULT_BUDGET = 100  # paid questions per backend process (a new map does not reset it); never retried
 
@@ -140,17 +150,27 @@ def _extras(source):
     return None
 
 
-def grounding(session, objects, events, *, now, live, scout=None, route=None, extras=None) -> dict[str, Any]:
-    """The only scene knowledge the answer model receives: stored facts with ages, newest first."""
+def known_classes(objects, classes=()):
+    """Detector classes a view filter may name: configured overlay classes plus stored object classes."""
+    return sorted({*classes, *(o['class'] for o in objects)})
+
+
+def grounding(session, objects, events, *, now, live, scout=None, route=None, extras=None,
+              classes=()) -> dict[str, Any]:
+    """The only scene knowledge the answer model receives: stored facts with ages, newest first.
+
+    Objects carry a per-request `ref` ("o1", ...) for view actions instead of their stored id.
+    """
     names = {o['id']: o['class'] for o in objects}
     context = dict(
         map=dict(session_id=session[0] if session else None, map_epoch=session[1] if session else None,
                  live=bool(live), scout_position_m=scout),
-        objects=[{'class': o['class'],
+        known_classes=known_classes(objects, classes),
+        objects=[{'ref': f'o{i + 1}', 'class': o['class'],
                   **({'label': o['identity']['label']} if o.get('identity', {}).get('status') == 'labeled' else {}),
                   'position_m': o['position'], 'state': o['state'],
                   'last_seen_s_ago': _age(now, o['last_seen']), 'observations': o['observations'],
-                  'confidence': o['confidence']} for o in objects[:MAX_CONTEXT_OBJECTS]],
+                  'confidence': o['confidence']} for i, o in enumerate(objects[:MAX_CONTEXT_OBJECTS])],
         objects_total=len(objects),
         changes=[dict(kind=e['kind'], **{'class': names.get(e['object_id'], 'unknown')},
                       displacement_m=e['displacement_m'], new_position_m=e['new_position'],
@@ -171,10 +191,131 @@ def _clean(text, limit):
     return text if 0 < len(text) <= limit and not any(ord(c) < 32 for c in text) else None
 
 
+INVALID_ACTION = ("I couldn't do that on the dashboard. I can show only some objects, show everything, hide or "
+                  "show boxes or labels, focus an object, frame the room, switch 2D or 3D, or undo.")
+NO_CAR = "Voice can't drive, navigate or stop the car. Use Rover controls; press Stop there to stop it."
+NO_PHOTO = ("I can't take a new photo remotely. Use High-res photo on the phone, or ask me to save the latest "
+            "camera frame.")
+# Reserved for the navigation owner; until integrated they stay unsupported and never reach the car.
+UNSUPPORTED_ACTIONS = {'propose_navigation': NO_CAR, 'propose_exploration': NO_CAR, 'stop_navigation': NO_CAR,
+                       'take_photo': NO_PHOTO}
+
+
+class _Refusal(Exception):
+    def __init__(self, code, text=INVALID_ACTION):
+        super().__init__(code)
+        self.code, self.text = code, text
+
+
+def _args(args, *keys):
+    if not isinstance(args, dict) or set(args) != set(keys):
+        raise _Refusal('invalid')
+    return args
+
+
+def _plural(name):
+    return 'people' if name == 'person' else name if name.endswith('s') else name + 's'
+
+
+def _object(args, objects, classes):
+    """One stored object by per-request ref, or by class when exactly one matches."""
+    if isinstance(args, dict) and set(args) == {'ref'}:
+        match = re.fullmatch(r'o([1-9][0-9]?)', args['ref']) if isinstance(args['ref'], str) else None
+        index = int(match.group(1)) - 1 if match else MAX_CONTEXT_OBJECTS
+        if index >= min(len(objects), MAX_CONTEXT_OBJECTS):
+            raise _Refusal('invalid')
+        found = objects[index]
+    else:
+        name = _args(args, 'class')['class']
+        if not isinstance(name, str) or name.strip().lower() not in classes:
+            raise _Refusal('invalid')
+        name = name.strip().lower()
+        matches = [o for o in objects if o['class'] == name]
+        if not matches:
+            raise _Refusal('not_found', f"I haven't seen a {name} in this map.")
+        if len(matches) > 1:
+            raise _Refusal('ambiguous', f"I've seen {len(matches)} {_plural(name)}. Which one? For example, "
+                                        f"say the most recently seen {name}.")
+        found = matches[0]
+    return {'object_id': found['id'], 'class': found['class']}
+
+
+def _filter(args, objects, classes):
+    names = _args(args, 'classes')['classes']
+    if not isinstance(names, list) or not 1 <= len(names) <= MAX_FILTER_CLASSES or \
+            not all(isinstance(n, str) and n.strip().lower() in classes for n in names):
+        raise _Refusal('invalid')
+    return {'classes': list(dict.fromkeys(n.strip().lower() for n in names))}
+
+
+def _layer(args, objects, classes):
+    args = _args(args, 'layer', 'visible')
+    if args['layer'] not in ('boxes', 'labels') or not isinstance(args['visible'], bool):
+        raise _Refusal('invalid')
+    return {'layer': args['layer'], 'visible': args['visible']}
+
+
+def _view(args, objects, classes):
+    if _args(args, 'mode')['mode'] not in ('2d', '3d'):
+        raise _Refusal('invalid')
+    return {'mode': args['mode']}
+
+
+def _none(args, objects, classes):
+    _args(args)
+    return {}
+
+
+# Dashboard-only view actions and their strict argument schemas; anything else is refused whole.
+VIEW_ACTIONS = {'filter_classes': _filter, 'show_all_classes': _none, 'set_layer': _layer, 'set_view': _view,
+                'focus_object': _object, 'open_evidence': _object, 'frame_room': _none, 'undo': _none,
+                'download_view_snapshot': _none, 'save_camera_frame': _none}
+
+
+def resolve_actions(raw, objects, classes):
+    """Model-proposed actions -> (actions, None), or ([], (code, spoken reason)); all or nothing.
+
+    Each accepted action gets a fresh server id so the dashboard applies it at most once. Object
+    labels and model prose never widen this: names, classes and objects come only from the allowlist,
+    the detector classes and this map's stored objects.
+    """
+    if raw is None or raw == []:
+        return [], None
+    allowed = set(known_classes(objects, classes))
+    try:
+        if not isinstance(raw, list) or len(raw) > MAX_ACTIONS:
+            raise _Refusal('invalid')
+        names = [item.get('name') if isinstance(item, dict) else None for item in raw]
+        refused = next((UNSUPPORTED_ACTIONS[n] for n in names if n in UNSUPPORTED_ACTIONS), None)
+        if refused:
+            raise _Refusal('unsupported', refused)
+        if 'undo' in names and len(names) > 1:
+            raise _Refusal('invalid')
+        actions = []
+        for item, name in zip(raw, names):
+            if name not in VIEW_ACTIONS or not set(item) <= {'name', 'args'}:
+                raise _Refusal('invalid')
+            args = VIEW_ACTIONS[name](item.get('args') or {}, objects, allowed)
+            actions.append(dict(id=secrets.token_hex(6), name=name, args=args))
+        return actions, None
+    except _Refusal as refusal:
+        return [], (refusal.code, refusal.text)
+
+
 def register_voice_routes(app, providers, budget, evidence):
-    """`evidence()` -> dict(session, objects, events, live, scout, route, extras) of the shown map."""
+    """`evidence()` -> dict(session, objects, events, live, scout, route, extras, classes) of the shown map."""
     busy = asyncio.Lock()
     asked = 0
+    pending = {}  # one-use confirmation token -> monotonic expiry, one per action reply
+
+    async def speak(text):
+        try:
+            pcm = await asyncio.wait_for(providers.speaker.synthesize(text, limit=MAX_REPLY_PCM), SPEAK_S)
+            wav = wav_audio(pcm, MAX_REPLY_PCM)
+            return dict(status='ready', mime='audio/wav', duration_s=len(pcm) / (RATE * 2),
+                        data=base64.b64encode(wav).decode('ascii'))
+        except Exception:
+            return dict(status='error')
 
     @app.get('/voice')
     async def voice_status():
@@ -219,28 +360,68 @@ def register_voice_routes(app, providers, budget, evidence):
             if question is None:
                 return result
             result['question'] = question
+            classes = found.get('classes', ())
             context = grounding(session, found['objects'], found['events'], now=time.time(), live=found['live'],
-                                scout=found.get('scout'), route=found.get('route'), extras=found.get('extras'))
+                                scout=found.get('scout'), route=found.get('route'), extras=found.get('extras'),
+                                classes=classes)
             if await request.is_disconnected():
                 raise HTTPException(499, 'Question cancelled')
             try:
-                answer = _clean(await asyncio.wait_for(providers.answerer.answer(question, context), ANSWER_S),
-                                MAX_ANSWER)
+                reply = await asyncio.wait_for(providers.answerer.answer(question, context), ANSWER_S)
             except Exception:
-                answer = None
-            if answer is None:
+                reply = None
+            raw = reply.get('actions') if isinstance(reply, dict) else None
+            answer = _clean(reply.get('answer') if isinstance(reply, dict) else reply, MAX_ANSWER)
+            actions, refusal = resolve_actions(raw, found['objects'], classes)
+            if refusal:
+                result['action_error'], answer = refusal
+            if answer is None and not actions:
                 raise HTTPException(502, 'Answer unavailable')
             result.update(status='ok', answer=answer)
+            if actions:
+                # The dashboard applies these, then may have its actual result spoken once via /voice/confirm.
+                now = time.monotonic()
+                for token in [t for t, expiry in pending.items() if expiry < now]:
+                    del pending[token]
+                while len(pending) >= 8:
+                    pending.pop(next(iter(pending)))
+                result['confirm'] = secrets.token_urlsafe(16)
+                pending[result['confirm']] = now + CONFIRM_S
+                result['actions'] = actions
+                return result
             if await request.is_disconnected():
                 raise HTTPException(499, 'Question cancelled')
-            try:
-                pcm = await asyncio.wait_for(providers.speaker.synthesize(answer, limit=MAX_REPLY_PCM), SPEAK_S)
-                wav = wav_audio(pcm, MAX_REPLY_PCM)
-                result['speech'] = dict(status='ready', mime='audio/wav', duration_s=len(pcm) / (RATE * 2),
-                                        data=base64.b64encode(wav).decode('ascii'))
-            except Exception:
-                result['speech'] = dict(status='error')
+            result['speech'] = await speak(answer)
             return result
+
+    @app.post('/voice/confirm')
+    async def voice_confirm(request: Request):
+        """Speak the dashboard's actual action result in Scout's voice, once per action reply.
+
+        The text is what the dashboard applied, never model prose; the one-use token bounds it to one
+        speech request per paid question. Like questions, the text is neither logged nor stored.
+        """
+        if providers is None:
+            raise HTTPException(503, 'Voice Q&A unavailable')
+        declared = request.headers.get('content-length')
+        if declared and declared.isdigit() and int(declared) > 4096:
+            raise HTTPException(413, 'Confirmation too long')
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(422, 'Invalid confirmation') from None
+        token = body.get('token') if isinstance(body, dict) else None
+        text = _clean(body.get('text'), MAX_CONFIRM) if isinstance(body, dict) else None
+        if not isinstance(token, str) or token not in pending:
+            raise HTTPException(409, 'Confirmation expired or already used')
+        if text is None:
+            raise HTTPException(422, 'Invalid confirmation')
+        if busy.locked():
+            raise HTTPException(429, 'Voice question in progress; retry later')
+        if pending.pop(token) < time.monotonic():
+            raise HTTPException(409, 'Confirmation expired or already used')
+        async with busy:
+            return dict(version=1, status='ok', speech=await speak(text))
 
 
 def scout_position(pose, max_age_s=2.):

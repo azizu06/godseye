@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Mic, Send, Square } from "lucide-react";
 import type { ConnectionConfig } from "./transport";
+import { parseActions, type VoiceAction } from "./dashboardActions";
+import { mapKey } from "./protocol";
 
 export type VoicePhase =
   "off" | "unavailable" | "idle" | "listening" | "thinking" | "speaking";
@@ -10,11 +18,19 @@ export interface VoiceReply {
   answer: string | null;
   speech: { mime: string; data: string } | null;
   speechFailed: boolean;
+  /** Dashboard view actions; the model's answer is then never shown or spoken as their result. */
+  actions: VoiceAction[];
+  /** The map the reply was grounded on. */
+  scope: string | null;
+  /** One-use token to have the applied result spoken in Scout's voice. */
+  confirm: string | null;
 }
 
 const MAX_RECORD_MS = 15000;
 const MIN_RECORD_MS = 400;
 const MIN_BYTES = 1024;
+// A reply arriving later than this applies nothing, so a slow answer never surprises the operator.
+const ACTION_DEADLINE_MS = 30000;
 
 function text(value: unknown, limit: number): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= limit
@@ -27,24 +43,55 @@ export function parseVoiceReply(data: unknown): VoiceReply | null {
   if (!data || typeof data !== "object") return null;
   const value = data as Record<string, unknown>;
   if (value.version !== 1) return null;
+  const scope =
+    mapKey({
+      session_id: value.session_id as string | null | undefined,
+      map_epoch: value.map_epoch as number | null | undefined,
+    }) ?? null;
   if (value.status === "no_speech")
-    return { question: null, answer: null, speech: null, speechFailed: false };
+    return {
+      question: null,
+      answer: null,
+      speech: null,
+      speechFailed: false,
+      actions: [],
+      scope,
+      confirm: null,
+    };
   const question = text(value.question, 500);
   const answer = text(value.answer, 600);
-  if (value.status !== "ok" || !question || !answer) return null;
-  const speech = value.speech as Record<string, unknown> | null;
+  const actions = parseActions(value.actions);
+  if (
+    value.status !== "ok" ||
+    !question ||
+    !actions ||
+    (!answer && !actions.length)
+  )
+    return null;
+  const speech = parseSpeech(value.speech);
+  return {
+    question,
+    answer,
+    speech,
+    speechFailed: !speech && !actions.length,
+    actions,
+    scope,
+    confirm: actions.length ? text(value.confirm, 64) : null,
+  };
+}
+
+/** A ready spoken WAV reply, or null. */
+export function parseSpeech(
+  value: unknown,
+): { mime: string; data: string } | null {
+  const speech = value as Record<string, unknown> | null;
   const ready =
     !!speech &&
     speech.status === "ready" &&
     speech.mime === "audio/wav" &&
     typeof speech.data === "string" &&
     /^[A-Za-z0-9+/]+={0,2}$/.test(speech.data);
-  return {
-    question,
-    answer,
-    speech: ready ? { mime: "audio/wav", data: speech!.data as string } : null,
-    speechFailed: !ready,
-  };
+  return ready ? { mime: "audio/wav", data: speech!.data as string } : null;
 }
 
 function failure(status: number): string {
@@ -60,7 +107,16 @@ function failure(status: number): string {
  * microphone, the next click (or the 15 s cap) stops it and sends the clip;
  * every track is released immediately and nothing is stored.
  */
-export function VoiceAsk({ config }: { config: ConnectionConfig }) {
+export function VoiceAsk({
+  config,
+  onActions,
+  children,
+}: {
+  config: ConnectionConfig;
+  /** Applies validated view actions and returns what actually happened. */
+  onActions?: (actions: VoiceAction[], scope: string | null) => Promise<string>;
+  children?: ReactNode;
+}) {
   const enabled = config.source === "external" && config.commands;
   const api = config.apiUrl.replace(/\/$/, "");
   const [phase, setPhase] = useState<VoicePhase>("off");
@@ -132,6 +188,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
   async function send(clip: Blob) {
     const abort = new AbortController();
     request.current = abort;
+    const sent = performance.now();
     setPhase("thinking");
     setMessage("Thinking…");
     try {
@@ -149,42 +206,47 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
       const reply = parseVoiceReply(await response.json());
       if (abort.signal.aborted) return;
       if (!reply) throw new Error("invalid reply");
-      if (!reply.answer || !reply.question) {
+      if (!reply.question) {
         setPhase("idle");
         setMessage("No question heard. Click the microphone and speak.");
         return;
       }
-      setExchange({ q: reply.question, a: reply.answer });
-      if (!reply.speech) {
-        setPhase("idle");
-        setMessage("Spoken reply unavailable; the answer is shown.");
+      if (reply.actions.length) {
+        const result =
+          performance.now() - sent > ACTION_DEADLINE_MS
+            ? "Scout answered too late, so nothing changed. Ask again."
+            : !onActions
+              ? "Dashboard actions are unavailable here. Nothing changed."
+              : await onActions(reply.actions, reply.scope).catch(
+                  () => "The dashboard action failed.",
+                );
+        setExchange({ q: reply.question, a: result });
+        if (abort.signal.aborted) return;
+        // Only the applied result is spoken, after it happened, in Scout's own voice.
+        const spoken =
+          reply.confirm &&
+          (await fetch(`${api}/voice/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: reply.confirm, text: result }),
+            signal: abort.signal,
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => parseSpeech(data?.speech))
+            .catch(() => null));
+        if (abort.signal.aborted) return;
+        await play(
+          spoken || null,
+          "Spoken result unavailable; the result is shown.",
+        );
         return;
       }
-      const bytes = Uint8Array.from(atob(reply.speech.data), (c) =>
-        c.charCodeAt(0),
+      if (!reply.answer) throw new Error("invalid reply");
+      setExchange({ q: reply.question, a: reply.answer });
+      await play(
+        reply.speech,
+        "Spoken reply unavailable; the answer is shown.",
       );
-      const url = URL.createObjectURL(
-        new Blob([bytes], { type: reply.speech.mime }),
-      );
-      playbackUrl.current = url;
-      const audio = new Audio(url);
-      player.current = audio;
-      const done = () => {
-        if (player.current !== audio) return;
-        stopPlayback();
-        setPhase("idle");
-        setMessage("");
-      };
-      audio.onended = done;
-      audio.onerror = () => {
-        if (player.current !== audio) return;
-        stopPlayback();
-        setPhase("idle");
-        setMessage("Playback unavailable; the answer is shown.");
-      };
-      setPhase("speaking");
-      setMessage("Speaking…");
-      await audio.play().catch(() => audio.onerror?.(new Event("error")));
     } catch {
       if (abort.signal.aborted) return;
       setPhase("idle");
@@ -192,6 +254,37 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
     } finally {
       if (request.current === abort) request.current = null;
     }
+  }
+
+  async function play(
+    speech: { mime: string; data: string } | null,
+    unavailable: string,
+  ) {
+    if (!speech) {
+      setPhase("idle");
+      setMessage(unavailable);
+      return;
+    }
+    const bytes = Uint8Array.from(atob(speech.data), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: speech.mime }));
+    playbackUrl.current = url;
+    const audio = new Audio(url);
+    player.current = audio;
+    audio.onended = () => {
+      if (player.current !== audio) return;
+      stopPlayback();
+      setPhase("idle");
+      setMessage("");
+    };
+    audio.onerror = () => {
+      if (player.current !== audio) return;
+      stopPlayback();
+      setPhase("idle");
+      setMessage("Playback unavailable; the text is shown.");
+    };
+    setPhase("speaking");
+    setMessage("Speaking…");
+    await audio.play().catch(() => audio.onerror?.(new Event("error")));
   }
 
   async function begin() {
@@ -266,6 +359,7 @@ export function VoiceAsk({ config }: { config: ConnectionConfig }) {
           : message || "Click to ask Scout about what it has seen.";
   return (
     <section className={`voice-ask ${phase}`} aria-label="Ask Scout by voice">
+      {children}
       <div className="voice-row">
         <button
           className="voice-talk"
