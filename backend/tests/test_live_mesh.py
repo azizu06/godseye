@@ -3,12 +3,16 @@ import base64
 import unittest
 
 import numpy as np
+from fastapi.testclient import TestClient
 
+from backend.app import create_app
 from backend.frame_bundle import FrameValidationError, parse_frame_bundle
 from backend.mapping import floor_plane_points
 from backend.occupancy import FREE, OCCUPIED, OccupancyGrid, frame_evidence
 from backend.prototype import prototype_geometry
 from backend.tests.test_localization import bundle, fixture
+from backend.tests.test_map_transport import fresh, hello, wait_for
+from backend.tests.test_objects import FakeDetector, LEFT_CUP
 
 
 def mesh_bundle(points):
@@ -21,6 +25,28 @@ def mesh_bundle(points):
 
 
 class LiveMeshTests(unittest.TestCase):
+    def test_outlier_mesh_keeps_live_mapping_and_detection_fresh(self):
+        header, jpeg, depth, confidence = fixture()
+        header.update(version=3, mesh_voxels=base64.b64encode(
+            np.asarray([[20, 42, 60], [20, 73, 60]], '<i2').tobytes()).decode())
+        depth[:] = 2
+        confidence[:] = 2
+        payload = bundle(header, jpeg, depth, confidence)
+        with TestClient(create_app(':memory:', detector=FakeDetector(LEFT_CUP),
+                                   calibration=prototype_geometry(.2286, .127),
+                                   capture_directory='')) as client, \
+                client.websocket_connect('/phone') as phone:
+            phone.send_json(hello('synthetic', epoch=2))
+            phone.send_bytes(fresh(payload))
+            state = client.app.state
+            wait_for(lambda: state.occupancy is not None and
+                     state.occupancy.accepted_at is not None and state.detected_at is not None)
+            self.assertEqual(state.map_stats['rejected'], 0)
+            self.assertEqual(state.detect_stats['rejected'], 0)
+            self.assertGreater(state.occupancy.voxels, 0)
+            self.assertGreater(state.chunk_id, 0)
+            self.assertEqual(client.get('/health').json()['detector'], 'ok')
+
     def test_v3_decodes_bounded_world_voxels(self):
         frame = parse_frame_bundle(mesh_bundle([[20, 42, 60]]),
                                    session_id='synthetic', map_epoch=2)

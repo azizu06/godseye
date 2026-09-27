@@ -869,8 +869,11 @@ obstacle does not turn the next frontier search back toward explored floor; afte
 a completed long side leg, that leg sets the bearing for the next branch.
 In an open room, Explore favors reachable frontiers bordering larger unmapped
 areas; it keeps forward hallway priority only when both corridor walls are seen.
-If the rover drifts just inside the prototype's extra clearance beside a wall,
-it can follow a snapped route away while each step preserves obstacle clearance.
+If the prototype starts inside obstacle clearance, it can follow a snapped
+route outward from an unoccupied camera cell. Each sampled step must preserve
+or increase distance to every overlapping obstacle and enter no new obstacle
+clearance region. This also permits escape from retained body/mount mesh behind
+a front-mounted phone; no occupied geometry is deleted to enable the route.
 See [prototype setup and assumptions](../docs/AUTONOMY.md#uncalibrated-prototype-option).
 
 An explicit Explore arm latches mission intent before checking readiness; even a

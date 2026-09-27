@@ -202,7 +202,10 @@ class DetourFollowingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot.traversable(1.5, 1.))
         self.assertTrue(allowed(snapshot, 1.5, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
         self.assertFalse(allowed(snapshot, 1.5, 1., math.pi / 2, .15, 0., .1, .15, .1524))
-        self.assertFalse(allowed(snapshot, 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
+        self.assertTrue(allowed(snapshot, 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
+        self.assertFalse(allowed(snapshot, 1.7, 1., math.pi / 2, .15, 0., .1, .15, .1524))
+        self.assertFalse(allowed(replace(snapshot, unknown_traversable=False),
+                                 1.7, 1., -math.pi / 2, .15, 0., .1, .6, .1524))
 
     async def test_rejected_action_waits_across_identical_replans_then_retries_new_evidence(self):
         async with exploring() as (h, clock):

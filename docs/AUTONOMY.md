@@ -303,10 +303,12 @@ requests a detour without discarding the clear part of the current route.
 Routes prefer additional clearance where space permits, including through
 shortcutting, to leave room for steering around obstacle corners. Medium-or-high-confidence depth can clear a departed
 obstacle after two distinct views see through its former footprint.
-If a wall newly overlaps only the prototype's extra six-inch clearance around
-the camera point, Explore may snap a route toward nearby clear space and continue
-only while each step maintains or increases obstacle clearance. An obstacle
-inside the estimated chassis footprint still blocks this recovery.
+If the prototype starts inside obstacle clearance (including retained mesh of
+its own body behind a front-mounted phone), Explore may snap a route toward
+nearby clear space and move outward. Its camera cell must be unoccupied. Each
+sampled step must preserve or increase distance to every overlapping obstacle
+and enter no new obstacle clearance region. Geometry is retained, not cleared
+or labeled as the rover. Measured mode is unchanged.
 The prototype never invents reverse motion or synthetic speed curves. Commands
 update continuously with no added pauses or run duration limit. Each command
 uses the firmware's 1 s command-loss brake; straight and pivot commands also

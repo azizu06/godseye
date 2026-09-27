@@ -27,7 +27,7 @@ import numpy as np
 from backend.navigation import (FollowerConfig, Grid, PlannerConfig, PlanResult, PurePursuit,
                                 corridor_alignment, nearest_frontier,
                                 path_blocked, path_message, plan_path, preferred_explore_frontier)
-from backend.occupancy import OCCUPIED, OccupancySnapshot
+from backend.occupancy import FREE, OCCUPIED, OccupancySnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -117,21 +117,69 @@ def obstacle_clearance_m(snapshot, x, z):
 
 
 def recoverable_start(snapshot, x, z, extra_margin_m):
-    """Only the explicit prototype may drive away from a wall inside its extra margin."""
+    """A prototype already overlapping clearance may attempt an outward step.
+
+    The camera cell must remain unoccupied. The step check below, not an
+    assumed minimum starting clearance, decides whether an escape is possible.
+    """
     return bool(extra_margin_m > 0 and snapshot.ready and snapshot.unknown_traversable
-                and snapshot.cell(x, z) != OCCUPIED and snapshot.inflation_m is not None
-                and obstacle_clearance_m(snapshot, x, z) >= snapshot.inflation_m - extra_margin_m)
+                and snapshot.cells is not None and snapshot.inflation_m is not None
+                and math.isfinite(x) and math.isfinite(z) and snapshot.cell(x, z) != OCCUPIED)
 
 
 def recovery_step_allowed(snapshot, x, z, next_x, next_z, extra_margin_m):
-    if snapshot.traversable(next_x, next_z):
-        return True
-    if snapshot.traversable(x, z) or not recoverable_start(snapshot, x, z, extra_margin_m):
+    if not all(math.isfinite(v) for v in (x, z, next_x, next_z)):
         return False
-    before = obstacle_clearance_m(snapshot, x, z)
-    after = obstacle_clearance_m(snapshot, next_x, next_z)
-    return (snapshot.cell(next_x, next_z) != OCCUPIED and
-            after >= snapshot.inflation_m - extra_margin_m and after >= before)
+    if snapshot.traversable(x, z):
+        if not snapshot.traversable(next_x, next_z):
+            return False
+    elif not recoverable_start(snapshot, x, z, extra_margin_m):
+        return False
+    if snapshot.cell(next_x, next_z) == OCCUPIED:
+        return False
+    radius, cell = snapshot.inflation_m, snapshot.cell_m
+    r0, c0 = snapshot._index(min(x, next_x) - radius, min(z, next_z) - radius)
+    r1, c1 = snapshot._index(max(x, next_x) + radius, max(z, next_z) + radius)
+    height, width = snapshot.cells.shape
+    r0, c0 = min(height, max(0, r0)), min(width, max(0, c0))
+    r1, c1 = min(height, max(0, r1 + 1)), min(width, max(0, c1 + 1))
+    window = snapshot.cells[r0:r1, c0:c1]
+    rows, cols = np.where(window == OCCUPIED if snapshot.unknown_traversable else window != FREE)
+    left = snapshot.origin[0] + (cols + c0) * cell
+    top = snapshot.origin[1] + (rows + r0) * cell
+    def distances(px, pz):
+        dx = np.maximum(np.maximum(left - px, px - left - cell), 0.)
+        dz = np.maximum(np.maximum(top - pz, pz - top - cell), 0.)
+        return np.hypot(dx, dz)
+    before, after = distances(x, z), distances(next_x, next_z)
+    dx, dz = next_x - x, next_z - z
+    length2 = dx * dx + dz * dz
+    closest = np.minimum(before, after)
+    if length2:
+        # Segment-to-box distance: endpoints, box corners projected onto the
+        # segment, and intersections. Endpoints alone can cut across a corner.
+        cx = np.stack((left, left + cell, left, left + cell), axis=1)
+        cz = np.stack((top, top, top + cell, top + cell), axis=1)
+        t = np.clip(((cx - x) * dx + (cz - z) * dz) / length2, 0., 1.)
+        corners = np.hypot(cx - x - t * dx, cz - z - t * dz).min(axis=1)
+        closest = np.minimum(closest, corners)
+        enter, leave = np.zeros(len(left)), np.ones(len(left))
+        interior_line = np.ones(len(left), dtype=bool)
+        for origin, delta, low in ((x, dx, left), (z, dz, top)):
+            if delta:
+                a, b = (low - origin) / delta, (low + cell - origin) / delta
+                enter, leave = np.maximum(enter, np.minimum(a, b)), np.minimum(leave, np.maximum(a, b))
+            else:
+                enter = np.where((origin >= low) & (origin <= low + cell), enter, np.inf)
+                interior_line &= (origin > low) & (origin < low + cell)
+        # Zero-clearance starts still cannot pass through occupied interiors.
+        # An outward departure may touch a boundary only at the initial point.
+        if np.any(interior_line & (enter < leave)):
+            return False
+        closest = np.where(enter <= leave, 0., closest)
+    # Never deepen an existing overlap or enter another obstacle's clearance
+    # area. Checking only the nearest obstacle misses a second one ahead.
+    return bool(np.all(closest + 1e-9 >= np.minimum(before, radius)))
 
 
 def pursuit_step_allowed(snapshot, x, z, yaw, v, w, period, distance, extra_margin_m):
