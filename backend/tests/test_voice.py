@@ -406,13 +406,35 @@ class ActionTests(unittest.TestCase):
         actions, refusal = self.resolve([act('focus_object', **{'class': 'bottle'})])
         self.assertEqual((actions, refusal[0]), ([], 'not_found'))
         self.assertIn("haven't seen a bottle", refusal[1])
-        for name in ('propose_navigation', 'propose_exploration', 'stop_navigation'):
-            actions, refusal = self.resolve([act('set_view', mode='3d'), act(name, x=1, z=2)])
-            self.assertEqual((actions, refusal[0]), ([], 'unsupported'))
-            self.assertIn('Rover controls', refusal[1])
         actions, refusal = self.resolve([act('take_photo')])
         self.assertEqual((actions, refusal[0]), ([], 'unsupported'))
         self.assertIn('High-res photo', refusal[1])
+
+    def test_a_rover_suggestion_is_resolved_alone_and_never_more_than_a_suggestion(self):
+        # The stored id replaces the model's ref; the dashboard shows it for a person to confirm.
+        actions, refusal = self.resolve([act('propose_navigation', target='object', ref='o2')])
+        self.assertIsNone(refusal)
+        self.assertEqual([(a['name'], a['args']) for a in actions], [(
+            'propose_navigation', {'target': 'object', 'object_id': 'db-backpack-1', 'class': 'backpack'})])
+        actions, _ = self.resolve([act('propose_navigation', target='object', **{'class': 'backpack'})])
+        self.assertEqual(actions[0]['args']['object_id'], 'db-backpack-1')
+        for raw in ([act('propose_navigation', target='point', x=1.5, z=-2.)], [act('propose_exploration')],
+                    [act('stop_navigation')]):
+            actions, refusal = self.resolve(raw)
+            self.assertIsNone(refusal, raw)
+            self.assertEqual([(a['name'], a['args']) for a in actions], [(raw[0]['name'], raw[0]['args'])])
+        actions, refusal = self.resolve([act('propose_navigation', target='object', **{'class': 'chair'})])
+        self.assertEqual((actions, refusal[0]), ([], 'ambiguous'))
+        for raw in ([act('set_view', mode='3d'), act('propose_exploration')],  # never mixed with view changes
+                    [act('propose_exploration'), act('stop_navigation')],
+                    [act('propose_navigation', target='point', x=1, z=2, speed_mps=1)],
+                    [act('propose_navigation', target='point', x='1', z=2)],
+                    [act('propose_navigation', x=1, z=2)],
+                    [act('propose_exploration', arm=True)],
+                    [dict(act('stop_navigation'), id='model-chosen')]):
+            actions, refusal = self.resolve(raw)
+            self.assertEqual((actions, refusal[0]), ([], 'invalid'), raw)
+            self.assertIn('Nothing was suggested', refusal[1])
 
     def test_labels_are_data_and_cannot_grant_actions_or_classes(self):
         hostile = dict(stored(0, 'chair'), identity=dict(
@@ -489,11 +511,13 @@ class ActionRouteTests(unittest.TestCase):
     def test_rejected_actions_speak_the_fixed_reason_and_return_no_actions(self):
         with tempfile.TemporaryDirectory() as folder:
             answer = {'answer': 'Driving to the kitchen now.', 'actions': [act('propose_navigation', x=1, z=1)]}
+            # Not a valid suggestion (no target), so the fixed reason is spoken instead of the model's claim.
             voice = providers(answerer=FakeAnswerer(answer))
             with TestClient(create_app(seeded(folder), voice_providers=voice)) as client:
                 result = client.post('/voice/ask', content=CLIP, headers=WEBM).json()
             self.assertNotIn('actions', result)
-            self.assertEqual(result['action_error'], 'unsupported')
+            self.assertEqual(result['action_error'], 'invalid')
+            self.assertIn('Nothing was suggested', result['answer'])
             self.assertNotIn('kitchen', result['answer'])
             self.assertEqual(voice.speaker.texts, [result['answer']])
             self.assertEqual(result['speech']['status'], 'ready')

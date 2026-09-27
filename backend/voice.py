@@ -21,6 +21,7 @@ from typing import Any, Protocol
 from fastapi import HTTPException, Request
 
 from backend.audio import RATE, ElevenLabsProvider, wav_audio
+from backend.nav_actions import NAV_ACTION_NAMES, validate_nav_action
 
 MIN_AUDIO = 1024
 MAX_AUDIO = 2 * 1024 * 1024  # ~60 s of browser Opus; a push-to-talk question is far shorter
@@ -193,12 +194,11 @@ def _clean(text, limit):
 
 INVALID_ACTION = ("I couldn't do that on the dashboard. I can show only some objects, show everything, hide or "
                   "show boxes or labels, focus an object, frame the room, switch 2D or 3D, or undo.")
-NO_CAR = "Voice can't drive, navigate or stop the car. Use Rover controls; press Stop there to stop it."
+NO_NAV = ("I can only suggest one rover destination, exploring or stopping at a time, and only for an object "
+          "in this map or a point you name. Nothing was suggested.")
 NO_PHOTO = ("I can't take a new photo remotely. Use High-res photo on the phone, or ask me to save the latest "
             "camera frame.")
-# Reserved for the navigation owner; until integrated they stay unsupported and never reach the car.
-UNSUPPORTED_ACTIONS = {'propose_navigation': NO_CAR, 'propose_exploration': NO_CAR, 'stop_navigation': NO_CAR,
-                       'take_photo': NO_PHOTO}
+UNSUPPORTED_ACTIONS = {'take_photo': NO_PHOTO}
 
 
 class _Refusal(Exception):
@@ -272,6 +272,21 @@ VIEW_ACTIONS = {'filter_classes': _filter, 'show_all_classes': _none, 'set_layer
                 'download_view_snapshot': _none, 'save_camera_frame': _none}
 
 
+def _navigation(item, objects, classes):
+    """One rover suggestion (backend/nav_actions.py), with an object ref resolved to its stored id.
+
+    It only reaches the dashboard as a confirmation card; the backend validates it again against the
+    live map at /nav/propose, and only a person's confirmation can act on it.
+    """
+    args = item.get('args') if isinstance(item.get('args'), dict) else {}
+    if item['name'] == 'propose_navigation' and args.get('target') == 'object':
+        args = {'target': 'object', **_object({k: v for k, v in args.items() if k != 'target'}, objects, classes)}
+    action = validate_nav_action(dict(id=secrets.token_hex(6), name=item['name'], args=args))
+    if action is None:
+        raise _Refusal('invalid', NO_NAV)
+    return action
+
+
 def resolve_actions(raw, objects, classes):
     """Model-proposed actions -> (actions, None), or ([], (code, spoken reason)); all or nothing.
 
@@ -291,6 +306,10 @@ def resolve_actions(raw, objects, classes):
             raise _Refusal('unsupported', refused)
         if 'undo' in names and len(names) > 1:
             raise _Refusal('invalid')
+        if any(n in NAV_ACTION_NAMES for n in names):  # a rover suggestion stands alone
+            if len(raw) > 1 or not set(raw[0]) <= {'name', 'args'}:
+                raise _Refusal('invalid', NO_NAV)
+            return [_navigation(raw[0], objects, allowed)], None
         actions = []
         for item, name in zip(raw, names):
             if name not in VIEW_ACTIONS or not set(item) <= {'name', 'args'}:

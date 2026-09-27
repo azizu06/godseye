@@ -41,6 +41,7 @@ from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env,
 from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import Grid, path_message
 from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
+from backend.nav_actions import NavProposals, register_nav_action_routes
 from backend.rover_relay import RelayCar, relay_from_env
 from backend.device_relay import DeviceAction, DeviceRelay
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
@@ -236,6 +237,8 @@ def create_app(db_path: str | None = None, build_points=None,
     if relay is not None and not relay.actuation.blockers:
         nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower())
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
+    nav_settings = nav_settings or NavSettings()
+    proposals = NavProposals(nav_settings)  # voice navigation proposals awaiting a human confirmation
 
     @asynccontextmanager
     async def lifespan(app):
@@ -282,10 +285,12 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
         app.state.autonomy_map = None
         app.state.occupancy_stats = Counter()
-        app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
+        app.state.nav = Navigator(nav_settings, pose=rover_pose,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None)
+        proposals.invalidate()
+        app.state.nav_proposals = proposals
         app.state.labels = ObjectLabels(db, label_provider,
             lambda session: publish(objects_message(session)) if session == shown_session() else None,
             timeout_s=label_timeout_s)
@@ -329,7 +334,7 @@ def create_app(db_path: str | None = None, build_points=None,
     @app.middleware('http')
     async def authorize_rover_commands(request, call_next):
         # Reading the map and emergency Stop remain available without a key.
-        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/device/action'}
+        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/nav/confirm', '/device/action'}
                 and request.method == 'POST' and not relay.authorized(request.headers.get('authorization'))):
             return Response('Rover pairing key required', status_code=401)
         return await call_next(request)
@@ -396,6 +401,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
             app.state.nav.halt()  # end any goal/explore run and clear its path first
+        if reason != 'mode_change' and getattr(app.state, 'nav_proposals', None) is not None:
+            app.state.nav_proposals.invalidate()  # a stop, loss or reset voids every pending confirmation
         app.state.motion.halt()  # drops every held command, then an explicit zero
         session = app.state.session or (None, None)
         app.state.db.execute(
@@ -841,12 +848,16 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/goal')
     async def goal(body: Goal):
+        return await begin_goal(body.x, body.z)
+
+    async def begin_goal(x, z):
+        """/goal's plan-and-follow path, shared by confirmed voice proposals."""
         # No disarmed preview: a drawn path must mean the rover is about to follow it.
         if not app.state.armed or app.state.mode != 'navigate':
             raise HTTPException(409, 'Arm in navigate mode before choosing a goal')
         session = app.state.session
         generation = app.state.motion.generation  # before the await: a stop and re-arm meanwhile must not revive it
-        result = await app.state.nav.plan_once((body.x, body.z))
+        result = await app.state.nav.plan_once((x, z))
         if (not app.state.armed or app.state.mode != 'navigate' or app.state.session != session
                 or app.state.motion.generation != generation):
             raise HTTPException(409, 'Stopped while planning')
@@ -857,8 +868,27 @@ def create_app(db_path: str | None = None, build_points=None,
             reason = PLAN_STOP_REASONS.get(result.reason, result.reason)
             nav_stop(reason)
             raise HTTPException(409, reason)
-        app.state.nav.start_goal((body.x, body.z), result, generation)
-        return dict(version=1, goal=[body.x, body.z], points=result.points)
+        app.state.nav.start_goal((x, z), result, generation)
+        return dict(version=1, goal=[x, z], points=result.points)
+
+    def execution(kind):
+        """Why a proposal cannot be confirmed now: a health hazard, or no deliberate arm for a destination."""
+        if (reason := hazard()) is not None:
+            return reason
+        return 'arm_required' if kind == 'destination' and not app.state.armed else None
+
+    def select_explore():
+        stop('mode_change')
+        app.state.mode = 'explore'
+        publish(health())
+        return health()
+
+    register_nav_action_routes(
+        app, proposals, active_session=lambda: app.state.session,
+        snapshot=map_snapshot, pose=lambda: app.state.nav.fresh_pose(),
+        objects=lambda session: app.state.objects.snapshot(session, limit=None),
+        execution=execution, readiness=autonomy_blockers,
+        warnings=lambda: list(getattr(relay.actuation, 'warnings', ())) if relay else [], begin_goal=begin_goal, select_explore=select_explore)
 
     @app.post('/rescan')
     async def rescan():
