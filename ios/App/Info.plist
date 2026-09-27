@@ -27,10 +27,12 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Control your ELEGOO rover over Bluetooth while Wi-Fi streams camera and LiDAR data to your laptop.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Capture camera images and LiDAR depth to map the rover's surroundings.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Stream synchronized sensor data to your laptop on the demo network.</string>
+	<string>Stream sensor data to your laptop and connect to the ELEGOO rover over its local Wi-Fi network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Record position, heading, and accuracy alongside rover sensor data while capture is running.</string>
 	<key>NSMotionUsageDescription</key>

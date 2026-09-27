@@ -14,6 +14,7 @@ import {
 } from "./protocol";
 import { emptyMission, reduceMessage } from "./state";
 import { DirectionalSteering, type SteeringDirection } from "./steering";
+import { useAutonomy } from "./useAutonomy";
 import {
   initialConfig,
   updateFeedUrl,
@@ -45,6 +46,7 @@ export function useMission() {
     [],
   );
   const [config, setConfig] = useState<ConnectionConfig>(initialConfig);
+  const autonomy = useAutonomy(config.apiUrl);
   useEffect(() => updateFeedUrl(config), [config]);
   const [mission, setMission] = useState(emptyMission);
   const [connection, setConnection] = useState("connecting");
@@ -307,7 +309,7 @@ export function useMission() {
       body?: Record<string, unknown>,
       signal?: AbortSignal,
     ) => {
-      if (!config.commands)
+      if (!config.commands && path !== "/stop")
         throw Error(
           "This feed is telemetry only. Configure a REST API to send commands.",
         );
@@ -316,7 +318,13 @@ export function useMission() {
       if (path === "/arm" || path === "/stop") setUnconfirmedMotion(true);
       const gen = generation.current;
       const requestedMap = activeMap.current;
-      const result = await sendCommand(config.apiUrl, path, body, signal);
+      const result = await sendCommand(
+        config.apiUrl,
+        path,
+        body,
+        signal,
+        config.roverKey,
+      );
       if (gen !== generation.current) return result;
       if (path === "/stop") {
         setUnconfirmedMotion(false);
@@ -574,6 +582,12 @@ export function useMission() {
   );
   const steer = useCallback(
     (direction: SteeringDirection) => {
+      if (autonomy?.adapter === "iphone") {
+        notify(
+          "Use the phone for manual driving. Select a map destination for laptop navigation.",
+        );
+        return;
+      }
       if (heldDirection.current === direction) return;
       if (
         heldDirection.current &&
@@ -586,7 +600,7 @@ export function useMission() {
       }
       void handoff("manual", () => setSteeringDirection(direction), direction);
     },
-    [handoff, canDrive, mission.health?.mode],
+    [handoff, canDrive, mission.health?.mode, autonomy?.adapter, notify],
   );
   const navigate = useCallback(
     (x: number, z: number) => {
@@ -651,6 +665,7 @@ export function useMission() {
     rescanBaseline,
     historyStatus,
     config,
+    autonomy,
     setConfig,
     connection,
     mapConfirmed,

@@ -27,6 +27,23 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var thermalStatus = "Nominal"
     @Published private(set) var archiveStatus = "Recording off"
     @Published private(set) var canTakeStill = false
+    // Small independent snapshot for the control link; no 60 Hz UI publishing
+    // and no waiting behind image compression or full-sensor uploads.
+    struct ControlSnapshot {
+        let identity: CaptureIdentity
+        let endpoint: String
+        let timestamp: Double
+        let ready: Bool
+    }
+    private let controlLock = NSLock()
+    private var controlState: ControlSnapshot?
+    func controlSnapshot() -> ControlSnapshot? {
+        controlLock.lock(); defer { controlLock.unlock() }
+        return controlState
+    }
+    private func setControlSnapshot(_ value: ControlSnapshot?) {
+        controlLock.lock(); controlState = value; controlLock.unlock()
+    }
 
     private let captureQueue = DispatchQueue(label: "com.godseye.capture", qos: .userInitiated)
     private let encodingQueue = DispatchQueue(label: "com.godseye.encoding", qos: .utility)
@@ -113,6 +130,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func stop(reason: String = "Stopped by operator") {
+        setControlSnapshot(nil)
         requestToken = nil; running = false; canTakeStill = false; status = reason
         UIApplication.shared.isIdleTimerDisabled = false
         captureQueue.async { self.end(reason: reason) }
@@ -216,6 +234,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func end(reason: String) {
+        setControlSnapshot(nil)
         identity = nil
         telemetryTimer?.cancel(); telemetryTimer = nil
         session.pause(); sensors.stop(); stream.disconnect(); rich.stop()
@@ -233,6 +252,9 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         let pose = WireProtocol.pose(identity, frameID: id, capture: frame.timestamp,
             wallMS: Int64(Date().timeIntervalSince1970 * 1000),
             transform: floats(frame.camera.transform), tracking: tracking(frame.camera.trackingState))
+        setControlSnapshot(ControlSnapshot(identity: identity, endpoint: options.endpoint,
+            timestamp: frame.timestamp, ready: options.stream && frame.sceneDepth != nil
+                && tracking(frame.camera.trackingState) == "normal"))
         let thermal = ProcessInfo.processInfo.thermalState
         if thermal == .critical {
             publish { $0.stop(reason: "Capture paused: device temperature is critical. Let it cool, then start again.") }

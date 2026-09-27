@@ -3,7 +3,7 @@ import asyncio
 import base64
 from collections import Counter, deque
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 import json
 import logging
@@ -40,7 +40,9 @@ from backend.voice import (DEFAULT_BUDGET, providers_from_env as voice_from_env,
                            scout_position)
 from backend.occupancy import CELL_M, PUBLISH_INTERVAL_S as OCCUPANCY_INTERVAL_S, Evidence, OccupancyGrid, frame_evidence
 from backend.navigation import Grid, path_message
-from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform
+from backend.navigator import PLAN_STOP_REASONS, Navigator, NavSettings, RoverPose, pose_from_transform, map_problem
+from backend.rover_relay import RelayCar, relay_from_env
+from backend.device_relay import DeviceAction, DeviceRelay
 from backend.point_dedupe import NoNewPoints, PointSettings, VoxelMemory
 
 logger = logging.getLogger(__name__)
@@ -228,6 +230,10 @@ def create_app(db_path: str | None = None, build_points=None,
     custom_builder = build_points
     build_points = build_points or partial(build_point_chunk, max_points=point_settings.samples)
     car = LoggingCar() if car is None else car
+    relay = car if isinstance(car, RelayCar) else None
+    device = DeviceRelay(relay.authorized) if relay is not None else None
+    if relay is not None and not relay.actuation.blockers:
+        nav_settings = replace(nav_settings or NavSettings(), follower=relay.actuation.follower())
     detect_lock = threading.Lock()  # one inference at a time, even across phone reconnects
 
     @asynccontextmanager
@@ -261,6 +267,9 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.mode = 'manual'
         app.state.stop_reason = 'startup_disarmed'
         app.state.motion = Motion(car, motion_check, stop, limits=motion_limits or MotionLimits())
+        if relay is not None:
+            relay.identity = lambda: app.state.session
+            relay.on_loss = stop
         app.state.listeners = set()
         app.state.capture = CaptureBuffer()
         app.state.rich_capture = RichCapture(capture_directory if capture_directory is not None else
@@ -270,6 +279,7 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.point_memory = VoxelMemory(point_settings)
         app.state.map_stats = Counter()
         app.state.occupancy = None  # OccupancyGrid of the active session/epoch
+        app.state.autonomy_map = None
         app.state.occupancy_stats = Counter()
         app.state.nav = Navigator(nav_settings or NavSettings(), pose=rover_pose,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
@@ -280,6 +290,7 @@ def create_app(db_path: str | None = None, build_points=None,
             timeout_s=label_timeout_s)
         label_task = asyncio.create_task(app.state.labels.run())
         task = asyncio.create_task(watchdog())
+        readiness_task = asyncio.create_task(refresh_autonomy_map()) if relay is not None else None
         try:
             yield
         finally:
@@ -287,6 +298,10 @@ def create_app(db_path: str | None = None, build_points=None,
             with suppress(asyncio.CancelledError):
                 await label_task
             task.cancel()
+            if readiness_task is not None:
+                readiness_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await readiness_task
             try:
                 with suppress(asyncio.CancelledError):
                     await task
@@ -307,8 +322,71 @@ def create_app(db_path: str | None = None, build_points=None,
         scout=scout_position(rover_pose()), route=app.state.nav.path,
         extras=lambda: scene_extras(app.state, shown_session(), time.time())))
 
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match"],
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match", "Authorization"],
                        expose_headers=["ETag", "X-Capture-Age-Ms"])
+
+    @app.middleware('http')
+    async def authorize_rover_commands(request, call_next):
+        # Reading the map and emergency Stop remain available without a key.
+        if (relay is not None and request.url.path in {'/arm', '/mode', '/manual', '/goal', '/device/action'}
+                and request.method == 'POST' and not relay.authorized(request.headers.get('authorization'))):
+            return Response('Rover pairing key required', status_code=401)
+        return await call_next(request)
+
+    @app.websocket('/rover')
+    async def rover_socket(ws: WebSocket):
+        if relay is None:
+            await ws.close(code=1008)
+        else:
+            await relay.serve(ws)
+
+    @app.websocket('/device')
+    async def device_socket(ws: WebSocket):
+        if device is None:
+            await ws.close(code=1008)
+        else:
+            await device.serve(ws)
+
+    @app.get('/device')
+    async def device_status():
+        return device.snapshot() if device else dict(version=1, connected=False, phone=None, age_ms=None)
+
+    @app.post('/device/action')
+    async def device_action(body: DeviceAction):
+        if device is None:
+            raise HTTPException(409, 'The iPhone adapter is not configured')
+        return await device.action(body)
+
+    def autonomy_blockers():
+        if relay is None:
+            return ['logging_adapter_only']
+        reasons = list(relay.blockers())
+        if calibration is None:
+            reasons.append('rover_geometry_unmeasured')
+        else:
+            reasons.extend(calibration.blockers)
+            distance = relay.actuation.stopping_distance_m
+            margin = calibration.clearance_margin_m
+            if distance is not None and margin is not None:
+                # Cover measured stopping distance plus the full command-age
+                # allowance at this adapter's maximum forward speed.
+                speed = min(.15, relay.actuation.forward[-1].rate) if relay.actuation.forward else .15
+                if margin < distance + speed * .5:
+                    reasons.append('clearance_below_stopping_envelope')
+        problem = map_problem(app.state.autonomy_map, (nav_settings or NavSettings()).map_max_age_s)
+        if problem:
+            reasons.append(problem)
+        return list(dict.fromkeys(reasons))
+
+    @app.get('/autonomy')
+    async def autonomy_readiness():
+        reasons = autonomy_blockers()
+        current = health()
+        reasons.extend(f'{part}_{current[part]}' for part in ('phone', 'detector') if current[part] != 'ok')
+        return dict(version=1, adapter='iphone' if relay else 'logging',
+                    blockers=list(dict.fromkeys(reasons)), ready=not reasons,
+                    armed=current['armed'], mode=current['mode'], stop_reason=current['stop_reason'],
+                    car=current['car'], command_authorization_required=relay is not None)
 
     def stop(reason):
         app.state.armed = False
@@ -330,7 +408,8 @@ def create_app(db_path: str | None = None, build_points=None,
         pose = app.state.pose
         if pose is None or app.state.pose_at is None:
             return None
-        x, z, yaw = pose_from_transform(pose.transform)
+        mount_yaw = calibration.camera_yaw_rad if calibration is not None else None
+        x, z, yaw = pose_from_transform(pose.transform, mount_yaw if mount_yaw is not None else 0.)
         return RoverPose(x, z, yaw, time.monotonic() - app.state.pose_at, pose.tracking)
 
     def health():
@@ -361,6 +440,8 @@ def create_app(db_path: str | None = None, build_points=None,
         for key in ('phone', 'car', 'detector'):
             if current[key] != 'ok':
                 return f'{key}_{current[key]}'
+        if relay is not None and (reasons := autonomy_blockers()):
+            return reasons[0]
         return None
 
     def motion_check(command):
@@ -555,6 +636,21 @@ def create_app(db_path: str | None = None, build_points=None,
         grid = active_grid()
         return None if grid is None else grid.map_snapshot()
 
+    async def refresh_autonomy_map():
+        # Classification/copying must never block the 20 Hz motion pump or
+        # incoming permit acknowledgements. Freshness uses accepted sensing time,
+        # not the time this cached snapshot was produced.
+        while True:
+            session, grid = app.state.session, active_grid()
+            try:
+                snapshot = await asyncio.to_thread(map_snapshot)
+            except Exception:
+                logger.exception('autonomy readiness map failed')
+                snapshot = None
+            if app.state.session == session and active_grid() is grid:
+                app.state.autonomy_map = snapshot
+            await asyncio.sleep(.2)
+
     app.state.map_snapshot = map_snapshot
 
     def accept_objects(result):
@@ -596,6 +692,7 @@ def create_app(db_path: str | None = None, build_points=None,
 
     def set_session(session):
         stop('session_reset')
+        app.state.autonomy_map = None
         if app.state.session != session:
             app.state.chunk_id = 0
             app.state.occupancy = OccupancyGrid(session, calibration=calibration)
@@ -686,17 +783,32 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/stop')
     async def operator_stop():
+        if device is not None:
+            device.emergency_stop()
         stop('operator_stop')
         publish(health())
         return health()
 
     @app.post('/arm')
     async def arm():
-        if hazard() is not None:
-            raise HTTPException(409, 'Health must all be ok; the default logging car always reports down')
+        if (reason := hazard()) is not None:
+            raise HTTPException(409, reason)
+        if relay is not None and app.state.mode not in ('navigate', 'explore'):
+            raise HTTPException(409, 'Select navigate or explore; direct manual control stays on the phone')
+        app.state.armed = False
         app.state.nav.halt()  # a run from before this arm must not continue under it
-        if app.state.motion.begin() is None:  # a fresh generation: nothing from before this arm can move
+        generation = app.state.motion.begin()
+        if generation is None:  # a fresh generation: nothing from before this arm can move
             raise HTTPException(409, 'The car did not accept a zero command')
+        if relay is not None:
+            try:
+                await relay.prepare(app.state.motion.session_id)
+                if generation != app.state.motion.generation or hazard() is not None:
+                    raise ValueError('Stopped or lost readiness while arming')
+            except (ValueError, asyncio.TimeoutError) as error:
+                if generation == app.state.motion.generation:
+                    stop('rover_arm_failed')
+                raise HTTPException(409, str(error)) from error
         app.state.armed = True
         app.state.stop_reason = None
         return health()
@@ -966,4 +1078,4 @@ def create_app(db_path: str | None = None, build_points=None,
 
 
 app = create_app(weights=os.environ.get('GODSEYE_YOLO_WEIGHTS'), calibration=calibration_from_env(),
-                 label_provider=provider_from_env(), voice_providers=voice_from_env())
+                 car=relay_from_env(), label_provider=provider_from_env(), voice_providers=voice_from_env())

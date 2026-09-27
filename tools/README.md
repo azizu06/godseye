@@ -1,6 +1,6 @@
 # Synthetic development sources
 
-These tools implement [the frozen v1 contract](../docs/INTERFACES.md). All data
+The synthetic sources implement [the frozen v1 contract](../docs/INTERFACES.md). All data
 is made up; neither tool drives hardware. Python 3.10+ is required.
 
 ```sh
@@ -28,7 +28,30 @@ Each connection gets a new session UUID. Slow sends skip missed pose ticks rathe
 than flooding the backend. Connection errors exit visibly; restart to reconnect.
 Ctrl-C stops either tool.
 
+## Separate manual USB rover relay
+
+`rover_usb_relay.py` is a physical Uno manual-control tool, not a synthetic source or
+the backend navigation adapter. It lets the phone keep normal Wi-Fi while a laptop
+USB cable carries rover commands. It requires a verified non-motion Uno reply and
+a pairing code before accepting a controller. Setup, the Upload/Cam switch,
+timed-command limits and hardware test requirements are in [ios/ROVER.md](../ios/ROVER.md).
+The optional dependency is `requirements-rover.txt`. Hardware-free checks:
+`python3 -m unittest tools.tests.test_rover_usb_relay -v`.
+
 `tools/probe_live.py` connects to a backend `/live` (default `ws://localhost:8765/live`) and prints message counts, the latest `points` chunk, the latest objects and any change events, so the phone-to-map path can be checked without the dashboard; see `backend/README.md`.
+
+## Paired iPhone rover backend
+
+`python3 -m tools.run_rover_backend --init` creates a private local pairing key and
+all-null geometry/actuation profiles. Run without `--init` to serve the opt-in phone
+relay; pass `--weights /absolute/path/to/yolo11n.pt` for the detector. Unknown
+measurements prevent driving. See [autonomy setup](../docs/AUTONOMY.md).
+
+`python3 -m tools.probe_rover_ble --name GodsEye-Rover-D022 --samples 5 --autonomy`
+checks the real ESP/Uno with Stop, sensor queries, an arm barrier and idle zeros;
+it sends no nonzero motor command. Disconnect the phone's BLE connection first.
+`python3 ios/Tests/check_rover_autonomy.py` instead exercises the actual Swift relay
+over a loopback WebSocket with fake BLE, without hardware.
 
 ## Car-ready smoke (no car)
 

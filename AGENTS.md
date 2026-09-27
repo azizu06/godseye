@@ -17,6 +17,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Viewer display freshness, feed URL selection, dense points, compact previews, coverage retirement, shared relay and incremental rendering: `dashboard/VIEWER.md`; browser regression: `dashboard/tests/viewer.spec.ts`.
 
 - iPhone setup and Swift/backend validation: `ios/README.md`. Separate full-sensor v2 upload, archive format, storage limits and capture inspection: `docs/CAPTURE.md`.
+- Direct iPhone ELEGOO V4 manual control, timed PWM protocol and hardware-free loopback validation: `ios/ROVER.md`. This does not enable the backend's navigation adapter.
+- Autonomous rover integration status, measured actuation profiles and ESP permit/session protocol: `docs/AUTONOMY.md`. Never substitute test calibration values for real rover measurements.
 
 - Offline spoken change-event playback, provider approval gate and deterministic demo: `backend/AUDIO.md`.
 - Click-to-talk voice Q&A (ElevenLabs STT -> grounded Gemini -> ElevenLabs TTS), grounding bounds, `voice_extras` seam and live opt-in: `backend/VOICE.md`.

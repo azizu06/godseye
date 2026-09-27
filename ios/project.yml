@@ -28,7 +28,8 @@ targets:
       properties:
         CFBundleDisplayName: "God's Eye"
         NSCameraUsageDescription: "Capture camera images and LiDAR depth to map the rover's surroundings."
-        NSLocalNetworkUsageDescription: "Stream synchronized sensor data to your laptop on the demo network."
+        NSBluetoothAlwaysUsageDescription: "Control your ELEGOO rover over Bluetooth while Wi-Fi streams camera and LiDAR data to your laptop."
+        NSLocalNetworkUsageDescription: "Stream sensor data to your laptop and connect to the ELEGOO rover over its local Wi-Fi network."
         NSMotionUsageDescription: "Record motion measurements alongside camera and depth data."
         NSLocationWhenInUseUsageDescription: "Record position, heading, and accuracy alongside rover sensor data while capture is running."
         NSAppTransportSecurity:

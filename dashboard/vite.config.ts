@@ -23,6 +23,10 @@ export default defineConfig(({ mode }) => {
         "^/live(?:\\?|$)": { target, ws: true },
         "^/capture(?:/|\\?|$)": { target },
         "^/health(?:\\?|$)": { target },
+        "^/autonomy$": { target },
+        "^/device(?:/action)?$": { target },
+        // Motion endpoints still require explicit UI enable and backend pairing.
+        "^/(?:arm|stop|mode|manual|goal|session|rescan)$": { target },
         // Read-only suggested walking route; it cannot set a goal or move the rover.
         "^/route$": { target },
       }

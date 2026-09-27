@@ -248,8 +248,9 @@ keys).
   4 cm of the floor. Such a car needs better sensing, not a smaller number.
 - The footprint is covered by a disc around the camera's floor point (the v1
   rover position): radius `hypot(length / 2 + |forward|, width / 2 + |left|)`
-  plus the margin, so no heading or rover base frame is needed. `camera_yaw_rad`
-  is recorded for a future follower and not applied by the backend.
+  plus the margin, so no heading or rover base frame is needed for inflation.
+  Navigation subtracts `camera_yaw_rad` from camera heading to steer by chassis
+  heading; the live camera pose and v1 position coordinates remain unchanged.
 
 `app.state.map_snapshot()` is the navigation map handle: it classifies the active
 map's evidence (blocking; call it from a worker thread) and returns None without
@@ -527,8 +528,7 @@ while the default car reports down, so runs are exercised by tests with
 - **Unverified interface dependencies** (rover issue #6): positive
   `yaw_rate_rps` means increasing `yaw_rad`, a left (counterclockwise from above)
   turn with +Y up, and the car adapter must confirm that sign; heading is the
-  camera forward, so the phone must face the rover's direction of travel (no
-  mount calibration); turning in place assumes a skid- or differential-steer
+  camera forward corrected by the measured camera-to-chassis yaw; turning in place assumes a skid- or differential-steer
   base. Radius and margin now come from the explicit calibration; speeds and
   follower tolerances remain software limits, not measured car-response parameters. With a car that never moves (`FakeCar`), a live run ends with
   `no_progress` after 5 s.
@@ -558,8 +558,10 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 
 `drive(v_mps, yaw_rate_rps)` in `drive.py` only logs; it contains no network,
 serial, vendor, motor or credential integration. Startup is disarmed, and the
-default `LoggingCar` adapter reports the car down, so this backend cannot arm
-or drive the rover. See Drive commands for the fake-tested command boundary.
+default `LoggingCar` adapter reports the car down, so the default backend cannot arm
+or drive the rover. The opt-in iPhone/Bluetooth adapter is described in
+[Autonomous rover integration](../docs/AUTONOMY.md); its measured profiles and explicit
+arm/stop handshake are mandatory. Start it with `python3 -m tools.run_rover_backend`.
 
 ## Drive commands
 
@@ -570,8 +572,11 @@ described under Command envelopes below. `LoggingCar` (default) logs through
 `('zero',)`) and the full `envelopes`, and reports the health a test sets; it
 moves nothing. A real adapter may report `ok` only from verified car feedback,
 never from a successful write, must return promptly (its calls run on the
-event loop), and does not exist yet: the vendor protocol, acknowledgement and
-health semantics belong to [issue 6](https://github.com/azizu06/godseye/issues/6).
+event loop). `rover_relay.py` implements the opt-in authenticated `/rover` phone
+relay, with per-session acknowledgements, fresh ESP permits and matched Uno feedback.
+`device_relay.py` provides separate `/device` mounted-phone setup controls, which
+cannot arm or submit movement. `/autonomy` reports readiness blockers. Physical
+autonomous movement remains unverified; see [the validation record](../docs/AUTONOMY.md).
 
 `motion.py` holds at most one desired command per arm generation:
 
