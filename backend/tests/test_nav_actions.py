@@ -25,7 +25,9 @@ class ActionSeamTests(unittest.TestCase):
                                                                'class': 'backpack'}),
                 dict(id='a3', name='propose_navigation', args=dict(target='point', x=1.5, z=-2)),
                 dict(id='a4', name='propose_exploration', args={}),
-                dict(id='a5', name='stop_navigation', args={})):
+                dict(id='a5', name='stop_navigation', args={}),
+                dict(id='a6', name='propose_move', args=dict(direction='forward', amount=20., unit='cm')),
+                dict(id='a7', name='propose_move', args=dict(direction='right', amount=30., unit='deg'))):
             with self.subTest(entry=entry):
                 self.assertEqual(validate_nav_action(entry), entry)
 
@@ -57,7 +59,14 @@ class ActionSeamTests(unittest.TestCase):
                 dict(id='a', name='propose_navigation', args=dict(target='point', x=True, z=1.)),
                 dict(id='a', name='propose_navigation', args={'target': 'object', 'object_id': 'x', 'class': 'bag',
                                                               'speed_mps': 1.}),
-                dict(id='a', name='propose_navigation', args=dict(target='home'))):
+                dict(id='a', name='propose_navigation', args=dict(target='home')),
+                dict(id='a', name='propose_move', args=dict(direction='back', amount=20., unit='cm')),
+                dict(id='a', name='propose_move', args=dict(direction='forward', amount=20., unit='deg')),
+                dict(id='a', name='propose_move', args=dict(direction='left', amount=20., unit='in')),
+                dict(id='a', name='propose_move', args=dict(direction='forward', amount=0., unit='cm')),
+                dict(id='a', name='propose_move', args=dict(direction='forward', amount=True, unit='cm')),
+                dict(id='a', name='propose_move', args=dict(direction='forward', amount=20.)),
+                dict(id='a', name='propose_move', args=dict(direction='forward', amount=20., unit='cm', v_mps=.2))):
             with self.subTest(entry=entry):
                 self.assertIsNone(validate_nav_action(entry))
 

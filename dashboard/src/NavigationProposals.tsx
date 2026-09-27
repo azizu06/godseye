@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Compass, MapPin, Square, X } from "lucide-react";
+import { Compass, MapPin, Move, Square, X } from "lucide-react";
 import type { MissionController } from "./useMission";
 import { sendCommand } from "./transport";
+import { parseSpeech } from "./VoiceAsk";
 import {
   confirmBlock,
   currentOffers,
   dismissOffer,
   offerNavigationActions,
+  parseMove,
   parseProposal,
   subscribeOffers,
+  type MoveResult,
   type NavOffer,
   type NavProposal,
 } from "./navProposals";
@@ -18,7 +21,11 @@ type Phase =
   | { kind: "shown"; proposal: NavProposal; at: number }
   | { kind: "void"; reason: string; proposal: NavProposal | null }
   | { kind: "confirming"; proposal: NavProposal }
+  | { kind: "moving"; proposal: NavProposal; result: MoveResult | null }
   | { kind: "done"; message: string; proposal: NavProposal };
+
+const MOVE_POLL_MS = 250;
+const MOVE_STATUS_LIMIT_MS = 30000;
 
 const round = (v: number) => (Math.round(v * 10) / 10).toFixed(1);
 
@@ -27,12 +34,21 @@ function title(offer: NavOffer) {
   if (offer.action.name === "stop_navigation") return "Stop the rover";
   if (offer.action.name === "propose_exploration")
     return "Explore unmapped floor";
+  if (offer.action.name === "propose_move")
+    return args.direction === "forward"
+      ? `Move forward ${Number(args.amount)} ${String(args.unit)}`
+      : `Turn ${String(args.direction)} ${Number(args.amount)}°`;
   if (args.target === "point")
     return `Drive to (${round(Number(args.x))}, ${round(Number(args.z))}) m`;
   return `Drive to the ${String(args.class)}`;
 }
 
 function detail(proposal: NavProposal) {
+  if (proposal.kind === "move" && proposal.move)
+    return (
+      `One ${proposal.move.label} move in Standard, measured by the phone's tracking; it stops early on ` +
+      "stale tracking, a wrong direction or no progress. No obstacle check: watch the rover and keep Stop ready."
+    );
   if (proposal.kind === "exploration")
     return "Selects Explore mode, disarmed. Arm afterwards to start the frontier planner.";
   if (!proposal.destination || proposal.lengthM === null) return null;
@@ -210,6 +226,10 @@ function ProposalCard({
       session_id,
       map_epoch,
     });
+    if (ok && proposal.kind === "move") {
+      setPhase({ kind: "moving", proposal, result: null });
+      return;
+    }
     setPhase({
       kind: "done",
       proposal,
@@ -220,6 +240,63 @@ function ProposalCard({
         : "Not started. Ask again if you still want it.",
     });
   };
+
+  // A confirmed move reports only what the phone's pose measured, once it ended.
+  const movingId = phase.kind === "moving" ? phase.proposal.proposalId : null;
+  useEffect(() => {
+    if (!movingId || phase.kind !== "moving") return;
+    const proposal = phase.proposal;
+    const started = Date.now();
+    let live = true;
+    const api = config.apiUrl.replace(/\/$/, "");
+    const finish = (message: string, result: MoveResult | null) => {
+      if (!live) return;
+      live = false;
+      setPhase({ kind: "done", proposal, message });
+      if (!result) return;
+      // Scout's voice speaks the backend's own measured sentence, once, after the move ended.
+      void sendCommand(api, "/nav/move/speak", { move_id: result.moveId })
+        .then((data) => {
+          const speech = parseSpeech(data.speech);
+          if (!speech) return;
+          const bytes = Uint8Array.from(atob(speech.data), (c) =>
+            c.charCodeAt(0),
+          );
+          const url = URL.createObjectURL(
+            new Blob([bytes], { type: speech.mime }),
+          );
+          const audio = new Audio(url);
+          audio.onended = audio.onerror = () => URL.revokeObjectURL(url);
+          void audio.play().catch(() => URL.revokeObjectURL(url));
+        })
+        .catch(() => {});
+    };
+    const poll = async () => {
+      while (live) {
+        const result = await fetch(`${api}/nav/move`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : null))
+          .then(parseMove)
+          .catch(() => null);
+        if (!live) return;
+        if (result && result.proposalId === movingId) {
+          if (result.status !== "running")
+            return finish(result.text ?? "The move ended.", result);
+          setPhase((now) => (now.kind === "moving" ? { ...now, result } : now));
+        }
+        if (Date.now() - started > MOVE_STATUS_LIMIT_MS)
+          return finish(
+            "Move status is unavailable. Check the rover and press Stop if it is moving.",
+            null,
+          );
+        await new Promise((r) => setTimeout(r, MOVE_POLL_MS));
+      }
+    };
+    void poll();
+    return () => {
+      live = false;
+    };
+    // Poll once per confirmed move; progress updates must not restart it.
+  }, [movingId, config.apiUrl]);
 
   const dismiss = () => {
     cancel();
@@ -240,6 +317,8 @@ function ProposalCard({
           <Square size={13} />
         ) : offer.action.name === "propose_exploration" ? (
           <Compass size={14} />
+        ) : offer.action.name === "propose_move" ? (
+          <Move size={14} />
         ) : (
           <MapPin size={14} />
         )}
@@ -261,6 +340,12 @@ function ProposalCard({
         </p>
       ) : phase.kind === "done" ? (
         <p data-testid="nav-proposal-result">{phase.message}</p>
+      ) : phase.kind === "moving" ? (
+        <p data-testid="nav-proposal-progress">
+          {phase.result?.achieved != null
+            ? `Moving… measured ${phase.result.unit === "deg" ? `${Math.round(phase.result.achieved)}°` : `${phase.result.achieved.toFixed(2)} m`} so far.`
+            : "Moving… waiting for the phone's measurement."}
+        </p>
       ) : (
         <>
           <p>{detail(phase.proposal)}</p>
@@ -309,6 +394,20 @@ function ProposalCard({
           </button>
         ) : (
           <>
+            {phase.kind === "shown" &&
+              phase.proposal.kind === "move" &&
+              !controller.canDrive &&
+              config.commands &&
+              mission.health?.mode !== "explore" && (
+                <button
+                  className="button"
+                  disabled={!!controller.pending}
+                  title="Select Standard and arm for this one move; nothing moves until you confirm it"
+                  onClick={() => void controller.armForMove()}
+                >
+                  Arm for this move
+                </button>
+              )}
             {(phase.kind === "shown" || phase.kind === "confirming") && (
               <button
                 className="button primary"
@@ -318,7 +417,9 @@ function ProposalCard({
               >
                 {phase.proposal.kind === "exploration"
                   ? "Select Explore"
-                  : "Confirm drive"}
+                  : phase.proposal.kind === "move"
+                    ? "Confirm move"
+                    : "Confirm drive"}
               </button>
             )}
             {controller.requiresStop && (

@@ -154,7 +154,9 @@ A missing detector stays down; the setup controls still work, but driving stays 
    A fresh foreground launch may prepare control again, but always needs a new arm.
 4. Complete the measured profiles and restart the backend. Readiness must have no
    blockers. Select Navigate, explicitly Arm, then select a mapped destination.
-   Explore starts planning upon explicit arm. Manual PWM driving stays on the phone.
+   Explore starts planning upon explicit arm. Manual PWM driving stays on the phone;
+   the laptop arms Standard only for one confirmed, pose-measured voice move
+   ([backend/NAV_ACTIONS.md](../backend/NAV_ACTIONS.md), Bounded moves).
 5. **STOP ROVER** stops the backend and sends an independent phone-side Stop through
    the setup channel. Stop remains available without REST enable or a pairing key.
 

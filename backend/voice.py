@@ -21,6 +21,7 @@ from typing import Any, Protocol
 from fastapi import HTTPException, Request
 
 from backend.audio import RATE, ElevenLabsProvider, wav_audio
+from backend.moves import LIMITS_TEXT, MoveRequest, heard_problem, request_problem
 from backend.nav_actions import NAV_ACTION_NAMES, validate_nav_action
 
 MIN_AUDIO = 1024
@@ -198,6 +199,11 @@ NO_NAV = ("I can only suggest one rover destination, exploring or stopping at a 
           "in this map or a point you name. Nothing was suggested.")
 NO_PHOTO = ("I can't take a new photo remotely. Use High-res photo on the phone, or ask me to save the latest "
             "camera frame.")
+NO_MOVE = ("I can suggest " + LIMITS_TEXT + ", said with a unit; reversing is not supported. "
+           "Nothing was suggested.")
+MOVE_UNCLEAR = ("Say one move with its number and unit, like forward 20 centimeters or turn left 30 degrees. "
+                "Nothing was suggested.")
+MOVE_RANGE = "That is outside what I can suggest: " + LIMITS_TEXT + ". Nothing was suggested."
 UNSUPPORTED_ACTIONS = {'take_photo': NO_PHOTO}
 
 
@@ -272,22 +278,29 @@ VIEW_ACTIONS = {'filter_classes': _filter, 'show_all_classes': _none, 'set_layer
                 'download_view_snapshot': _none, 'save_camera_frame': _none}
 
 
-def _navigation(item, objects, classes):
+def _navigation(item, objects, classes, heard=None):
     """One rover suggestion (backend/nav_actions.py), with an object ref resolved to its stored id.
 
     It only reaches the dashboard as a confirmation card; the backend validates it again against the
-    live map at /nav/propose, and only a person's confirmation can act on it.
+    live map at /nav/propose, and only a person's confirmation can act on it. A move must match the
+    transcript `heard`: its number and its one unit were said, never guessed or converted.
     """
     args = item.get('args') if isinstance(item.get('args'), dict) else {}
     if item['name'] == 'propose_navigation' and args.get('target') == 'object':
         args = {'target': 'object', **_object({k: v for k, v in args.items() if k != 'target'}, objects, classes)}
     action = validate_nav_action(dict(id=secrets.token_hex(6), name=item['name'], args=args))
+    move = item['name'] == 'propose_move'
     if action is None:
-        raise _Refusal('invalid', NO_NAV)
+        raise _Refusal('invalid', NO_MOVE if move else NO_NAV)
+    if move:
+        if heard_problem(heard, action['args']['amount'], action['args']['unit']):
+            raise _Refusal('ambiguous', MOVE_UNCLEAR)
+        if request_problem(MoveRequest(**action['args'])):
+            raise _Refusal('invalid', MOVE_RANGE)
     return action
 
 
-def resolve_actions(raw, objects, classes):
+def resolve_actions(raw, objects, classes, heard=None):
     """Model-proposed actions -> (actions, None), or ([], (code, spoken reason)); all or nothing.
 
     Each accepted action gets a fresh server id so the dashboard applies it at most once. Object
@@ -309,7 +322,7 @@ def resolve_actions(raw, objects, classes):
         if any(n in NAV_ACTION_NAMES for n in names):  # a rover suggestion stands alone
             if len(raw) > 1 or not set(raw[0]) <= {'name', 'args'}:
                 raise _Refusal('invalid', NO_NAV)
-            return [_navigation(raw[0], objects, allowed)], None
+            return [_navigation(raw[0], objects, allowed, heard)], None
         actions = []
         for item, name in zip(raw, names):
             if name not in VIEW_ACTIONS or not set(item) <= {'name', 'args'}:
@@ -391,7 +404,7 @@ def register_voice_routes(app, providers, budget, evidence):
                 reply = None
             raw = reply.get('actions') if isinstance(reply, dict) else None
             answer = _clean(reply.get('answer') if isinstance(reply, dict) else reply, MAX_ANSWER)
-            actions, refusal = resolve_actions(raw, found['objects'], classes)
+            actions, refusal = resolve_actions(raw, found['objects'], classes, heard=question)
             if refusal:
                 result['action_error'], answer = refusal
             if answer is None and not actions:
@@ -441,6 +454,8 @@ def register_voice_routes(app, providers, budget, evidence):
             raise HTTPException(409, 'Confirmation expired or already used')
         async with busy:
             return dict(version=1, status='ok', speech=await speak(text))
+
+    return None if providers is None else speak
 
 
 def scout_position(pose, max_age_s=2.):

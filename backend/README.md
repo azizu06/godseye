@@ -547,7 +547,7 @@ All successful responses carry `version: 1`. Errors use FastAPI's standard
 | POST `/arm` | 409 while any health component is not ok (the default logging car always reports down); opens a fresh command generation |
 | POST `/stop` | Always accepted; latch operator stop, end any navigation run and send an explicit zero |
 | POST `/mode` | Stop first, then select manual/navigate/explore |
-| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed or not in manual mode; otherwise hold the command for a 250 ms lease and return health |
+| POST `/manual` | Validate finite bounds (±0.20 m/s, ±0.5 rad/s); 409 when disarmed, not in manual mode, or on the iPhone adapter (manual arming there only serves confirmed voice moves, NAV_ACTIONS.md); otherwise hold the command for a 250 ms lease and return health |
 | POST `/goal` | Validate x/z; 409 unless armed in navigate mode; plan and follow (see Navigation) |
 | POST `/rescan` | Freeze a baseline of the active map and start the revisit; 409 without a map or any stored frame |
 | POST `/ask` | Search saved class/identity facts for the shown map; return grounded matches and positions |

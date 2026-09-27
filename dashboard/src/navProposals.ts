@@ -1,13 +1,15 @@
 /**
  * Voice-suggested rover actions as confirmation cards. A voice reply can only
  * offer them: validation happens on the backend (`/nav/propose`), and only a
- * person's click on a card sends `/nav/confirm`, once. See backend/NAV_ACTIONS.md.
+ * person's click on a card sends `/nav/confirm`, once. A confirmed move is then
+ * measured by the phone's pose (`GET /nav/move`). See backend/NAV_ACTIONS.md.
  */
 
 export const NAV_ACTION_NAMES = [
   "propose_navigation",
   "propose_exploration",
   "stop_navigation",
+  "propose_move",
 ] as const;
 export type NavActionName = (typeof NAV_ACTION_NAMES)[number];
 
@@ -23,9 +25,15 @@ export interface NavOffer {
   action: NavAction;
 }
 
+export interface MoveSummary {
+  direction: "forward" | "left" | "right";
+  label: string;
+  limits: string | null;
+}
+
 export interface NavProposal {
   proposalId: string | null;
-  kind: "destination" | "exploration" | "stop";
+  kind: "destination" | "exploration" | "stop" | "move";
   status: "ready" | "unavailable";
   reason: string | null;
   message: string | null;
@@ -38,6 +46,7 @@ export interface NavProposal {
   } | null;
   destination: [number, number] | null;
   lengthM: number | null;
+  move: MoveSummary | null;
   execution: {
     available: boolean;
     reason: string | null;
@@ -62,6 +71,18 @@ const exactly = (args: Record<string, unknown>, ...keys: string[]) =>
 
 /** Arguments exactly as the backend resolves them (`backend/nav_actions.py`). */
 function navArgs(name: NavActionName, args: Record<string, unknown>) {
+  if (name === "propose_move")
+    return (
+      exactly(args, "direction", "amount", "unit") &&
+      typeof args.amount === "number" &&
+      Number.isFinite(args.amount) &&
+      args.amount > 0 &&
+      args.amount <= 1000 &&
+      (args.direction === "forward"
+        ? ["cm", "m", "in"].includes(args.unit as string)
+        : ["left", "right"].includes(args.direction as string) &&
+          args.unit === "deg")
+    );
   if (name !== "propose_navigation") return exactly(args);
   if (args.target === "point")
     return (
@@ -99,7 +120,9 @@ export function parseProposal(data: unknown): NavProposal | null {
   if (!data || typeof data !== "object") return null;
   const v = data as Record<string, unknown>;
   if (v.version !== 1) return null;
-  if (!["destination", "exploration", "stop"].includes(v.kind as string))
+  if (
+    !["destination", "exploration", "stop", "move"].includes(v.kind as string)
+  )
     return null;
   if (v.status !== "ready" && v.status !== "unavailable") return null;
   const proposalId = text(v.proposal_id, 64);
@@ -110,6 +133,18 @@ export function parseProposal(data: unknown): NavProposal | null {
   const destination = isPair(v.destination) ? v.destination : null;
   if (v.status === "ready" && v.kind === "destination" && !destination)
     return null;
+  const move = v.move as Record<string, unknown> | undefined;
+  const moveSummary =
+    move &&
+    ["forward", "left", "right"].includes(move.direction as string) &&
+    text(move.label, 80)
+      ? {
+          direction: move.direction as MoveSummary["direction"],
+          label: text(move.label, 80)!,
+          limits: text(move.limits),
+        }
+      : null;
+  if (v.kind === "move" && !moveSummary) return null;
   return {
     proposalId: v.status === "ready" ? proposalId : null,
     kind: v.kind as NavProposal["kind"],
@@ -128,6 +163,7 @@ export function parseProposal(data: unknown): NavProposal | null {
         : null,
     destination,
     lengthM: Number.isFinite(v.length_m) ? (v.length_m as number) : null,
+    move: moveSummary,
     execution: {
       available: execution.available,
       reason: text(execution.reason, 64),
@@ -188,19 +224,65 @@ export function confirmBlock(
           : "Rover health is not ok.",
       void: false,
     };
-  if (proposal.kind === "destination") {
+  if (proposal.kind === "destination" || proposal.kind === "move") {
+    const move = proposal.kind === "move";
     if (ctx.mode === "explore")
       return {
-        reason: "Leave Explore mode to drive to a destination.",
+        reason: move
+          ? "Leave Explore mode to make a manual move."
+          : "Leave Explore mode to drive to a destination.",
         void: false,
       };
     if (!ctx.canDrive)
       return {
-        reason: "Arm the rover first; confirming switches it to navigate.",
+        reason: move
+          ? "Arm for this move first; it selects Standard. Nothing moves until you confirm."
+          : "Arm the rover first; confirming switches it to navigate.",
         void: false,
       };
   }
   return null;
+}
+
+export interface MoveResult {
+  moveId: string;
+  proposalId: string | null;
+  status: "running" | "completed" | "stopped" | "failed";
+  reason: string | null;
+  /** The backend's measured result sentence; null while running. */
+  text: string | null;
+  /** Meters forward or degrees turned, from the phone's tracked pose; null before any measurement. */
+  achieved: number | null;
+  unit: "m" | "deg";
+}
+
+/** `GET /nav/move`'s latest move, or null when absent or malformed. */
+export function parseMove(data: unknown): MoveResult | null {
+  const move = (data as Record<string, unknown> | null)?.move as
+    Record<string, unknown> | null | undefined;
+  if ((data as Record<string, unknown> | null)?.version !== 1 || !move)
+    return null;
+  const moveId = text(move.move_id, 64);
+  if (
+    !moveId ||
+    !["running", "completed", "stopped", "failed"].includes(
+      move.status as string,
+    ) ||
+    !["m", "deg"].includes(move.requested_unit as string)
+  )
+    return null;
+  const done = move.status !== "running";
+  const result = text(move.text, 400);
+  if (done && !result) return null;
+  return {
+    moveId,
+    proposalId: text(move.proposal_id, 64),
+    status: move.status as MoveResult["status"],
+    reason: text(move.reason, 64),
+    text: done ? result : null,
+    achieved: Number.isFinite(move.achieved) ? (move.achieved as number) : null,
+    unit: move.requested_unit as MoveResult["unit"],
+  };
 }
 
 type Listener = () => void;

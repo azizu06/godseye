@@ -361,6 +361,7 @@ export function useMission() {
       path: string,
       body?: Record<string, unknown>,
       signal?: AbortSignal,
+      standard = false,
     ) => {
       if (!config.commands && path !== "/stop")
         throw Error(
@@ -371,13 +372,15 @@ export function useMission() {
       if (path === "/arm" || path === "/stop") setUnconfirmedMotion(true);
       const gen = generation.current;
       const requestedMap = activeMap.current;
+      const preparing = path === "/arm" && config.serverPaired;
       const result = await sendCommand(
         config.apiUrl,
-        path === "/arm" && config.serverPaired ? "/arm?prepare=true" : path,
+        // Phone setup defaults to Explore; `standard` keeps Standard for one confirmed voice move.
+        preparing
+          ? `/arm?prepare=true${standard ? "&standard=true" : ""}`
+          : path,
         body,
-        path === "/arm" && config.serverPaired
-          ? AbortSignal.timeout(18000)
-          : signal,
+        preparing ? AbortSignal.timeout(18000) : signal,
         config.roverKey,
       );
       if (gen !== generation.current) return result;
@@ -491,7 +494,7 @@ export function useMission() {
     else directional.current?.stop();
   }, [canDrive, mission.health?.mode, steeringDirection]);
   const command = useCallback(
-    async (path: string, body?: Record<string, unknown>) => {
+    async (path: string, body?: Record<string, unknown>, standard = false) => {
       cancelControl();
       controlBusy.current = null;
       if (path === "/arm") armSetupPending.current = true;
@@ -503,7 +506,7 @@ export function useMission() {
       const requestMap = activeMap.current;
       if (path !== "/stop") setPending(path);
       try {
-        const result = await send(path, body);
+        const result = await send(path, body, undefined, standard);
         if (
           path === "/rescan" &&
           config.source === "external" &&
@@ -602,7 +605,9 @@ export function useMission() {
           latchStop(true);
           await send("/mode", { mode });
           if (!valid()) return false;
-          await send("/arm");
+          // A Standard arm on the iPhone adapter only serves a confirmed voice move;
+          // direct steering stays refused there.
+          await send("/arm", undefined, undefined, mode === "manual");
           if (!valid()) {
             // The request can complete after release, Stop, or a source switch.
             // Reassert Stop against the endpoint captured by this operation.
@@ -673,6 +678,9 @@ export function useMission() {
       // deliberate arm first, and the backend then plans it exactly like /goal.
       if (kind === "destination")
         return handoff("navigate", () => send("/nav/confirm", body));
+      // One measured move: the same hand-off into Standard, then the backend runs it once.
+      if (kind === "move")
+        return handoff("manual", () => send("/nav/confirm", body));
       // Exploration only selects explore mode, which stops and disarms; arming
       // to start it stays a separate deliberate click.
       stopEpoch.current++;
@@ -681,6 +689,16 @@ export function useMission() {
     },
     [handoff, send, command, latchStop],
   );
+  /** A deliberate click on a move card: select Standard, then arm (with phone setup) for that move. */
+  const armForMove = useCallback(async () => {
+    if (mission.health?.mode === "explore") return false;
+    if (
+      mission.health?.mode !== "manual" &&
+      !(await command("/mode", { mode: "manual" }))
+    )
+      return false;
+    return command("/arm", undefined, true);
+  }, [command, mission.health?.mode]);
   const keyboard = useRef({ steer, releaseSteering });
   keyboard.current = { steer, releaseSteering };
   useEffect(() => {
@@ -755,6 +773,7 @@ export function useMission() {
     releaseSteering,
     navigate,
     confirmProposal,
+    armForMove,
     release: cancelControl,
   };
 }

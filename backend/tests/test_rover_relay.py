@@ -264,6 +264,95 @@ class RelayHTTPTests(unittest.TestCase):
         from backend.prototype import PrototypeActuation, prototype_geometry
         self.rehearse_rgbd(PrototypeActuation(), prototype_geometry(.24, .14))
 
+    def test_measured_manual_move_needs_no_map_or_geometry_but_unmeasured_power_blocks_it(self):
+        """A voice move under the real adapter: manual prerequisites only, with no rover geometry and
+        no surveyed map. The firmware stand-in advances the synthetic phone on each forward packet."""
+        headers = {'Authorization': 'Bearer ' + KEY}
+        from backend.prototype import PrototypeActuation
+        for actuation, blocker in ((fixture(forward=None), 'actuation_forward_unmeasured'), (fixture(), None),
+                                   (PrototypeActuation(), None)):
+            car = RelayCar(KEY, actuation)
+            app = create_app(db_path=':memory:', car=car, calibration=None, detector=EmptyDetector(),
+                             capture_directory='')
+            with self.subTest(actuation=type(actuation).__name__, blocker=blocker), TestClient(app) as client, \
+                    client.websocket_connect('/phone') as phone:
+                source = PhoneScene(client, phone, session='relay-move')
+                source.start()
+                try:
+                    with client.websocket_connect('/rover', headers=headers) as ws:
+                        packets, errors, done = [], [], threading.Event()
+
+                        def firmware():
+                            seq = 0
+                            try:
+                                while not done.is_set():
+                                    message = ws.receive_json()
+                                    packets.append(message)
+                                    if message['type'] in ('stop', 'arm'):
+                                        ws.send_json(dict(version=1, type='ack', id=(
+                                            'Z' + message['id']) if message['type'] == 'stop' else 'A' + message['session']))
+                                    if message['type'] == 'command' and message['direction'] == 3:
+                                        x, y, z = source.position
+                                        source.position = (x, y, z + .01)
+                                    seq += 1
+                                    ws.send_json(dict(version=1, type='status', seq=seq, session_id=source.session,
+                                                      map_epoch=1, permit=f'{seq:016X}', uno_age_ms=100., enabled=True))
+                            except Exception as error:
+                                if not done.is_set():
+                                    errors.append(error)
+                        worker = threading.Thread(target=firmware, daemon=True)
+                        worker.start()
+                        try:
+                            wait_for(lambda: car.status is not None)
+                            autonomy = client.get('/autonomy').json()
+                            self.assertFalse(autonomy['ready'])
+                            self.assertIn('rover_geometry_unmeasured', autonomy['blockers'])
+                            self.assertEqual(client.post('/mode', json={'mode': 'explore'}, headers=headers).status_code, 200)
+                            refused = client.post('/arm?prepare=true&standard=true', headers=headers)
+                            self.assertEqual(refused.status_code, 409)  # never a way into Explore
+                            self.assertEqual(client.post('/mode', json={'mode': 'manual'}, headers=headers).status_code, 200)
+                            action = dict(id='m1', name='propose_move', args=dict(direction='forward', amount=10, unit='cm'))
+                            proposal = client.post('/nav/propose', json=dict(session_id='relay-move', map_epoch=1,
+                                                                              action=action)).json()
+                            self.assertEqual(proposal['status'], 'ready', proposal)
+                            # The dashboard's "Arm for this move": phone setup, but Standard stays selected.
+                            armed = client.post('/arm' if blocker else '/arm?prepare=true&standard=true', headers=headers)
+                            if blocker:
+                                self.assertEqual(proposal['execution']['reason'], blocker)
+                                self.assertIn(blocker, proposal['execution']['autonomy_blockers'])
+                                self.assertEqual((armed.status_code, armed.json()['detail']), (409, blocker))
+                                self.assertFalse(any(p['type'] == 'command' for p in packets))
+                                continue
+                            self.assertEqual(proposal['execution']['reason'], 'move_arm_required')
+                            self.assertEqual(armed.status_code, 200, armed.text)
+                            self.assertEqual((armed.json()['mode'], armed.json()['armed']), ('manual', True))
+                            manual = client.post('/manual', json={'v_mps': .1, 'yaw_rate_rps': 0.}, headers=headers)
+                            self.assertEqual(manual.status_code, 409)  # no free-throttle driving from the laptop
+                            confirm = client.post('/nav/confirm', json=dict(session_id='relay-move', map_epoch=1,
+                                                                            proposal_id=proposal['proposal_id']))
+                            self.assertEqual(confirm.status_code, 401)  # the pairing key, like every motion route
+                            confirm = client.post('/nav/confirm', headers=headers, json=dict(
+                                session_id='relay-move', map_epoch=1, proposal_id=proposal['proposal_id']))
+                            self.assertEqual(confirm.status_code, 200, confirm.text)  # 401 never consumed it
+                            wait_for(lambda: client.get('/nav/move').json()['move']['status'] != 'running', 10.)
+                            move = client.get('/nav/move').json()['move']
+                            self.assertEqual((move['status'], move['reason']), ('completed', 'move_complete'), move)
+                            self.assertGreaterEqual(move['achieved'], .1 - .02)  # measured stopping distance allowance
+                            commands = [p for p in packets if p['type'] == 'command' and p['power']]
+                            # The slowest measured forward power (the prototype's fixed PWM 60, whose speed is
+                            # unknown), straight only, each on the 200 ms lease. Distance comes from the pose.
+                            power = 60 if getattr(actuation, 'prototype', False) else 20
+                            self.assertTrue(commands and all((p['direction'], p['power'], p['lease_ms']) == (3, power, 200)
+                                                             for p in commands))
+                            self.assertFalse(app.state.armed)
+                            self.assertIsNone(car.armed_session)
+                        finally:
+                            done.set()
+                            worker.join(1)
+                        self.assertEqual(errors, [])
+                finally:
+                    source.close()
+
     def rehearse_rgbd(self, actuation, geometry):
         car = RelayCar(KEY, actuation)
         app = create_app(db_path=':memory:', car=car, calibration=geometry,

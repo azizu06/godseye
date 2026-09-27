@@ -92,6 +92,7 @@ export function parseActions(raw: unknown): VoiceAction[] | null {
       case "propose_navigation":
       case "propose_exploration":
       case "stop_navigation":
+      case "propose_move":
         return raw.length === 1 && navAction(item) !== null;
       default:
         return false;

@@ -40,6 +40,7 @@ class PhoneScene:
         self.base = synthetic_sensors()
         self.index = 0
         self.position = (0., 0., 0.)
+        self.yaw = 0.
         self.frames = True
         self.done = threading.Event()
         self.error = None
@@ -51,7 +52,8 @@ class PhoneScene:
     def message(self, position=None, pitch=.6):
         self.index += 1
         return look_pose(self.index, float(self.index), time.time_ns() // 1_000_000, self.session,
-                         position=position or self.position, yaw=0., pitch=pitch)
+                         position=position or self.position, yaw=self.yaw if position is None else 0.,
+                         pitch=pitch)
 
     def survey(self):
         # Survey from behind the starting pose so its entire footprint is observed.

@@ -33,6 +33,7 @@ from backend.frame_bundle import FrameValidationError, validate_rigid_transform,
 from backend.mapping import (MappingError, PointChunk, build_point_chunk, depth_to_points, points_message,
                              points_binary, POINTS_PROTOCOL, DENSE_MAX_POINTS)
 from backend.motion import CarAdapter, Motion, MotionLimits
+from backend.moves import MoveRunner, MoveSettings, register_move_routes
 from backend.detections import classes_from_env, detections_message, overlay_classes
 from backend.objects import ObjectMemory, detect_objects
 from backend.labels import ObjectLabels, answer_from_objects, provider_from_env
@@ -290,6 +291,10 @@ def create_app(db_path: str | None = None, build_points=None,
                                   occupancy=map_snapshot, submit=app.state.motion.submit,
                                   stop=nav_stop, publish=publish,
                                   armed_mode=lambda: app.state.mode if app.state.armed else None)
+        app.state.mover = MoveRunner(MoveSettings(), pose=rover_pose, submit=app.state.motion.submit, stop=nav_stop,
+                                     armed_mode=lambda: app.state.mode if app.state.armed else None,
+                                     speeds=move_speeds(), early_stop_m=getattr(
+                                         relay.actuation if relay else None, 'stopping_distance_m', None) or 0.)
         proposals.invalidate()
         app.state.nav_proposals = proposals
         app.state.labels = ObjectLabels(db, label_provider,
@@ -313,6 +318,7 @@ def create_app(db_path: str | None = None, build_points=None,
                 with suppress(asyncio.CancelledError):
                     await task
                 await app.state.nav.aclose()
+                await app.state.mover.aclose()
             finally:  # zero even if the watchdog or a navigation run died with an error
                 stop('shutdown')
                 db.close()
@@ -322,12 +328,13 @@ def create_app(db_path: str | None = None, build_points=None,
     register_audio_routes(app, audio_provider)
     # Live extras come from app.state.detection_view (newest detection frame) and
     # app.state.approach_view (last /route response); each is absent until its producer sets it.
-    register_voice_routes(app, voice_providers, voice_budget, lambda: dict(
+    speak = register_voice_routes(app, voice_providers, voice_budget, lambda: dict(
         session=shown_session(), objects=app.state.objects.snapshot(shown_session(), limit=None),
         events=app.state.changes.events(shown_session()),
         live=app.state.phone is not None and app.state.session is not None,
         scout=scout_position(rover_pose()), route=app.state.nav.path, classes=app.state.overlay_classes,
         extras=lambda: scene_extras(app.state, shown_session(), time.time())))
+    register_move_routes(app, lambda: app.state.mover, speak)
 
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "If-None-Match", "Authorization"],
                        expose_headers=["ETag", "X-Capture-Age-Ms"])
@@ -385,6 +392,21 @@ def create_app(db_path: str | None = None, build_points=None,
             reasons.append(problem)
         return list(dict.fromkeys(reasons))
 
+    def manual_blockers():
+        """What a bounded manual move needs from the adapter: its link, fresh car feedback and a
+        profile that can turn a velocity into motor power. Map, route and footprint readiness are
+        autonomy-only: a move follows no route and its progress comes from the phone's pose."""
+        return list(dict.fromkeys(relay.blockers())) if relay is not None else []
+
+    def move_speeds():
+        """The slowest measured forward and turn rates, else the follower's (the prototype maps any
+        nonzero request to its fixed PWM, so its rate is nominal, never a claimed speed)."""
+        actuation = relay.actuation if relay is not None else None
+        if getattr(actuation, 'forward', None) and actuation.left and actuation.right:
+            return actuation.forward[0].rate, max(actuation.left[0].rate, actuation.right[0].rate)
+        follower = (nav_settings or NavSettings()).follower
+        return follower.min_mps, follower.max_yaw_rate_rps
+
     @app.get('/autonomy')
     async def autonomy_readiness():
         reasons = autonomy_blockers()
@@ -402,6 +424,8 @@ def create_app(db_path: str | None = None, build_points=None,
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:
             app.state.nav.halt()  # end any goal/explore run and clear its path first
+        if getattr(app.state, 'mover', None) is not None:
+            app.state.mover.halt(reason)  # a running voice move reports this reason and its measured result
         if reason != 'mode_change' and getattr(app.state, 'nav_proposals', None) is not None:
             app.state.nav_proposals.invalidate()  # a stop, loss or reset voids every pending confirmation
         app.state.motion.halt()  # drops every held command, then an explicit zero
@@ -445,13 +469,17 @@ def create_app(db_path: str | None = None, build_points=None,
             return 'down'
         return state if state in ('ok', 'stale', 'down') else 'down'
 
-    def hazard():
-        """Why the rover must not move now, e.g. 'car_stale'; None when phone, car and detector are ok."""
+    def hazard(mode=None):
+        """Why the rover must not move now in `mode` (default the current one), e.g. 'car_stale';
+        None when phone, car and detector are ok and the adapter is ready for that mode."""
         current = health()
+        manual = (mode or app.state.mode) == 'manual'
         for key in ('phone', 'car', 'detector'):
             if current[key] != 'ok':
+                if key == 'car' and manual and (reasons := manual_blockers()):
+                    return reasons[0]  # name the relay's precise blocker, e.g. an unmeasured profile
                 return f'{key}_{current[key]}'
-        if relay is not None and (reasons := autonomy_blockers()):
+        if relay is not None and (reasons := manual_blockers() if manual else autonomy_blockers()):
             return reasons[0]
         return None
 
@@ -812,14 +840,18 @@ def create_app(db_path: str | None = None, build_points=None,
         return health()
 
     @app.post('/arm')
-    async def arm(prepare: bool = False):
+    async def arm(prepare: bool = False, standard: bool = False):
+        """`standard` keeps manual mode for one confirmed voice move (backend/moves.py) instead of
+        prepare's Explore default; it needs only the manual prerequisites, never a route or map."""
+        if standard and app.state.mode != 'manual':
+            raise HTTPException(409, 'Select Standard before arming for a move')
         if prepare and relay is not None:
             if app.state.arm_request_token is not None:
                 raise HTTPException(409, 'Rover startup is already in progress')
             token = object()
             app.state.arm_request_token = token
             try:
-                if app.state.mode not in ('navigate', 'explore'):
+                if app.state.mode not in ('navigate', 'explore') and not standard:
                     app.state.mode = 'explore'
                 if hazard() is not None:
                     if not device.snapshot()['connected']:
@@ -831,7 +863,8 @@ def create_app(db_path: str | None = None, build_points=None,
                         if app.state.arm_request_token is not token:
                             raise HTTPException(409, 'Rover startup cancelled by Stop or a mode change')
                         if time.monotonic() >= deadline:
-                            raise HTTPException(409, 'Rover startup: ' + ', '.join(autonomy_blockers()))
+                            raise HTTPException(409, 'Rover startup: ' + ', '.join(
+                                manual_blockers() if standard else autonomy_blockers()))
                         await asyncio.sleep(.05)
                 if app.state.arm_request_token is not token:
                     raise HTTPException(409, 'Rover startup cancelled')
@@ -840,8 +873,6 @@ def create_app(db_path: str | None = None, build_points=None,
                     app.state.arm_request_token = None
         if (reason := hazard()) is not None:
             raise HTTPException(409, reason)
-        if relay is not None and app.state.mode not in ('navigate', 'explore'):
-            raise HTTPException(409, 'Select navigate or explore; direct manual control stays on the phone')
         app.state.armed = False
         app.state.nav.halt()  # a run from before this arm must not continue under it
         generation = app.state.motion.begin()
@@ -869,6 +900,8 @@ def create_app(db_path: str | None = None, build_points=None,
 
     @app.post('/manual')
     async def manual(body: Manual):
+        if relay is not None:  # arming manual here only serves confirmed, measured voice moves
+            raise HTTPException(409, 'Direct manual driving stays on the phone')
         motion = app.state.motion
         if (not app.state.armed or app.state.mode != 'manual'
                 or not motion.submit(motion.generation, 'manual', body.v_mps, body.yaw_rate_rps)):
@@ -901,10 +934,24 @@ def create_app(db_path: str | None = None, build_points=None,
         return dict(version=1, goal=[x, z], points=result.points)
 
     def execution(kind):
-        """Why a proposal cannot be confirmed now: a health hazard, or no deliberate arm for a destination."""
-        if (reason := hazard()) is not None:
+        """Why a proposal cannot be confirmed now: a health hazard, or no deliberate arm for a destination
+        or move. A move is checked against the manual prerequisites only."""
+        if (reason := hazard('manual' if kind == 'move' else None)) is not None:
             return reason
+        if kind == 'move' and not app.state.armed:
+            return 'move_arm_required'
         return 'arm_required' if kind == 'destination' and not app.state.armed else None
+
+    def begin_move(request, proposal_id):
+        """Start one confirmed move under the current arm; the dashboard's hand-off armed it in manual."""
+        if not app.state.armed or app.state.mode != 'manual':
+            raise HTTPException(409, 'move_arm_required')
+        if app.state.mover.active:
+            raise HTTPException(409, 'move_in_progress')
+        pose = app.state.nav.fresh_pose()
+        if pose is None or pose.tracking != 'normal':
+            raise HTTPException(409, 'pose_stale' if pose is None else 'tracking_lost')
+        return app.state.mover.start(request, app.state.motion.generation, proposal_id)
 
     def select_explore():
         stop('mode_change')
@@ -916,8 +963,9 @@ def create_app(db_path: str | None = None, build_points=None,
         app, proposals, active_session=lambda: app.state.session,
         snapshot=map_snapshot, pose=lambda: app.state.nav.fresh_pose(),
         objects=lambda session: app.state.objects.snapshot(session, limit=None),
-        execution=execution, readiness=autonomy_blockers,
-        warnings=lambda: list(getattr(relay.actuation, 'warnings', ())) if relay else [], begin_goal=begin_goal, select_explore=select_explore)
+        execution=execution, readiness=lambda kind: manual_blockers() if kind == 'move' else autonomy_blockers(),
+        warnings=lambda: list(getattr(relay.actuation, 'warnings', ())) if relay else [], begin_goal=begin_goal,
+        select_explore=select_explore, begin_move=begin_move)
 
     @app.post('/rescan')
     async def rescan():
