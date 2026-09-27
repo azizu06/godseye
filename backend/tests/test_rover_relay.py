@@ -97,11 +97,13 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.car.send(self.drive())
         self.now += .151
         self.feedback()
-        self.assertEqual(self.car.next_message()['type'], 'stop')
-        self.assertEqual(self.losses, ['rover_dispatch_stale'])
-        self.assertIsNone(self.car.armed_session)
-        with self.assertRaises(ValueError):
-            self.car.send(self.drive(2, issued_at_ms=10000))
+        self.assertIsNone(self.car.next_message(), 'Expired sample must never be sent')
+        self.assertEqual(self.losses, [])
+        self.assertEqual(self.car.armed_session, SESSION.upper())
+        self.car.send(self.drive(2, issued_at_ms=10000))
+        self.assertIsNone(self.car.next_message(), 'Dropping must not renew the old command')
+        self.car.send(self.drive(3))
+        self.assertEqual(self.car.next_message()['seq'], 3)
 
     async def test_stale_feedback_wrong_capture_and_unmeasured_rates_refused(self):
         await self.arm()

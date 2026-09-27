@@ -1,15 +1,18 @@
 # Autonomous rover integration
 
-Work is on `codex/autonomous-driving`, based on GitHub main through `905b198`.
-The working manual iPhone/Bluetooth implementation is preserved in `9539d8a`.
+The manual iPhone/Bluetooth implementation and opt-in autonomous prototype are on main.
 
 ## Current evidence
 
 The iPhone's Bluetooth link to the real ESP32-S3 and Uno, manual movement, and
 simultaneous RGB-D streaming over normal Wi-Fi are verified in [ios/ROVER.md](../ios/ROVER.md).
 The opt-in autonomous relay now connects the laptop through that phone. The ordinary
-backend command still defaults to a logging adapter that reports down. Real autonomous
-movement has not been validated: physical calibration is still missing.
+backend command still defaults to a logging adapter that reports down.
+On 2026-09-27, a supervised mounted-phone prototype run completed the dashboard's
+Arm/setup path, followed a laptop-planned Explore route, and recorded about 0.243 m
+of ARKit position change before the updated map triggered `path_blocked`. Explicit
+Stop was acknowledged. This is a short physical demo, not measured motion calibration
+or evidence of sustained navigation reliability.
 
 The implementation provides:
 
@@ -58,8 +61,7 @@ Only a new explicit arm can start another. Legacy manual control remains availab
 Hardware-free integration covers synthetic RGB-D → calibrated occupancy → `/goal` →
 real adapter wire commands → stale-sensing Stop. The actual Swift relay also runs
 against a loopback WebSocket and fake BLE, including local tracking-loss Stop.
-The phone build is installed; physical geometry, response curves and a supervised
-route remain unverified.
+The phone build is installed; physical geometry and response curves remain unmeasured.
 
 ### ESP protocol
 
@@ -88,6 +90,10 @@ packet cannot revive it. The Uno still receives its own independent 200 ms timed
 command. Queue expiry, reconnect, malformed fragments and 32-bit clock wrap are
 covered by `python3 firmware/elegoo-ble/test/run.py`. The server rejects movement older than 150 ms again at socket dispatch; the phone
 rechecks permit receipt age before its bounded BLE write.
+Expired movement samples are discarded without refreshing their timestamps or
+motor leases. A fresh successor may continue the current session; without one,
+the existing firmware watchdog retires it. Arm, Stop, invalid sessions and lost
+feedback retain their separate checks.
 
 ## Measurements before driving
 
@@ -224,7 +230,12 @@ python -m tools.run_rover_backend --prototype \
 Those dimensions are this operator's **9 × 5 inch estimate**, not project defaults.
 Both dimensions are required. The profile assumes a forward-facing rear camera and
 vendor left/right directions. Inflation covers a camera anywhere inside the estimated
-rectangle plus 30 cm; the obstacle threshold is 6.5 cm, not measured traversability.
+rectangle plus the operator-requested 6 inch (0.1524 m) edge clearance;
+the obstacle threshold is 6.5 cm, not measured traversability.
+On the operator's flat-terrain assumption, this profile can traverse unknown floor
+around the mounted camera's blind spot, including just outside the cropped map.
+Explore still chooses an observed-floor frontier, and observed obstacles retain
+the full footprint clearance. Measured mode still requires known-clear floor.
 Actual motor speed, yaw sign and stopping distance remain unverified. This is only
 for supervised tests in open space, not a claim of accurate autonomous driving.
 

@@ -601,6 +601,13 @@ export function OperatorControls({
           {!health ? "Waiting for status" : armed ? "Armed" : "Disarmed"}
         </span>
       </div>
+      {!armed && health?.stop_reason && (
+        <p className="drawer-note" role="status">
+          Last stop: {health.stop_reason === "start_blocked"
+            ? "The map places an obstacle within the rover’s starting clearance. Move to clear floor and start a fresh scan."
+            : health.stop_reason.replaceAll("_", " ")}
+        </p>
+      )}
       {!compact && autonomy && (
         <div className="drawer-note" aria-label="Autonomy readiness">
           <strong>

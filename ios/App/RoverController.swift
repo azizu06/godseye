@@ -277,6 +277,11 @@ final class RoverController: ObservableObject {
     }
 
     func acceptAutonomy(_ command: AutonomyCommand) -> Bool {
+        if autonomyEnabled, connected, autonomyAvailable,
+           autonomyGate.discardExpiredMovement(command, now: now) {
+            autonomyPending = nil
+            return true // Dropped, never sent to BLE and never renews a motor lease.
+        }
         guard autonomyEnabled, connected,
               (command.type == .stop || autonomyAvailable),
               autonomyGate.accept(command, now: now) else { return false }
@@ -310,7 +315,9 @@ final class RoverController: ObservableObject {
             } else if autonomyEnabled, let command = autonomyPending {
                 autonomyPending = nil
                 guard command.type == .stop || autonomyGate.fresh(command, now: now) else {
-                    stop()
+                    // A superseded movement may age while a BLE write finishes.
+                    // Drop it; the firmware owns the unchanged 200 ms timeout.
+                    if command.type != .command { stop() }
                     return
                 }
                 packet.append(try command.packet)

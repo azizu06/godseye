@@ -84,6 +84,23 @@ final class AutonomyWireTests: XCTestCase {
         XCTAssertNil(gate.armedSession)
     }
 
+    func testExpiredMovementIsDroppedWithoutRetiringHealthySession() throws {
+        var gate = AutonomyGate()
+        gate.sawPermit(permit, now: 40)
+        XCTAssertTrue(gate.accept(try arm(), now: 40))
+        XCTAssertTrue(gate.armed(session))
+        gate.sawPermit(permit, now: 40.01)
+        XCTAssertTrue(gate.discardExpiredMovement(try drive(), now: 40.22))
+        XCTAssertEqual(gate.armedSession, session)
+        XCTAssertFalse(gate.discardExpiredMovement(try drive(), now: 40.23), "No replays")
+        XCTAssertFalse(gate.discardExpiredMovement(try arm(), now: 40.23), "Never bypass arm freshness")
+        let next = "AAAAAAAAAAAAAAAA"
+        gate.sawPermit(next, now: 40.24)
+        XCTAssertTrue(gate.accept(try drive(["seq": 2, "permit": next]), now: 40.25))
+        gate.stop()
+        XCTAssertFalse(gate.discardExpiredMovement(try drive(["seq": 3]), now: 40.5))
+    }
+
     func testBLEFeedbackFragmentationKeepsManualProbeAndFirmwareAcksSeparate() {
         var decoder = ElegooReplyDecoder()
         let wire = "boot{P\(permit)}{A\(session)}{Z0123ABCD}{X}{GE12_100}{ok}"

@@ -14,7 +14,7 @@ class PrototypeTests(unittest.TestCase):
         self.assertIsNone(geometry.measured_by)
         self.assertEqual(geometry.basis, 'operator_estimate')
         self.assertEqual(geometry.blockers, ())
-        self.assertAlmostEqual(geometry.inflation_m, math.hypot(.24, .14) + .30)
+        self.assertAlmostEqual(geometry.inflation_m, math.hypot(.24, .14) + .1524)
         # Normal calibration still blocks without evidence; prototype cannot be
         # loaded as a measured file, because its basis is an extra field.
         with self.assertRaises(ValidationError):

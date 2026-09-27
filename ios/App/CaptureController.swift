@@ -74,7 +74,24 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     private var frameID = 0
     private var options = CaptureOptions()
     private var uploads: LaptopUploads {
-        LaptopUploads(streamToLaptop: options.stream, fullSensorUpload: options.fullSensorUpload)
+        LaptopUploads(streamToLaptop: options.stream, fullSensorUpload: options.fullSensorUpload,
+                      controlPriority: controlPriority)
+    }
+    private var controlPriority = false // Capture queue only.
+
+    func setControlPriority(_ enabled: Bool) {
+        captureQueue.async { [self] in
+            guard controlPriority != enabled else { return }
+            controlPriority = enabled
+            // Cancel the bulk request too: it already shares the Wi-Fi uplink.
+            rich.stop()
+            if enabled {
+                publish { $0.fullCaptureStatus = "Rover control priority · bulk upload paused; local recording continues" }
+            } else if identity != nil, uploads.fullSensor,
+                      let url = try? WireProtocol.endpoint(options.endpoint) {
+                rich.start(phoneURL: url)
+            }
+        }
     }
     private var archive: CaptureArchive?
     private var encoding = false
@@ -269,7 +286,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
             sensors.recordPose(pose, timestamp: frame.timestamp)
         }
         let cadence = CaptureCadence(liveHz: options.frameHz, archiveHz: options.archiveHz,
-                                     seriousThermal: thermal == .serious)
+                                     seriousThermal: thermal == .serious, controlPriority: controlPriority)
         let normal = tracking(frame.camera.trackingState) == "normal"
         let wantBundle = options.stream && normal && frame.sceneDepth != nil && frame.timestamp - lastBundle >= 1 / cadence.liveHz - 0.001
         let archiveInterval = 1 / cadence.archiveHz
@@ -426,7 +443,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func upload(_ packet: Data, kind: String, identity: CaptureIdentity) {
         captureQueue.async {
-            guard self.identity == identity else { return }
+            guard self.identity == identity, self.uploads.fullSensor else { return }
             self.rich.offer(packet, kind: kind)
         }
     }

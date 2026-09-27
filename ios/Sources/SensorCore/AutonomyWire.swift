@@ -97,6 +97,17 @@ public struct AutonomyGate {
         return now >= received && now - received < 0.2
     }
 
+    /// Consume an expired movement's sequence without forwarding it or
+    /// refreshing any lease. Fresh successors may still reach the firmware;
+    /// its independent motor watchdog stops if they do not arrive in time.
+    public mutating func discardExpiredMovement(_ command: AutonomyCommand, now: Double) -> Bool {
+        guard command.type == .command, let session = armedSession,
+              command.session == session, let seq = command.seq, seq > sequence,
+              !fresh(command, now: now) else { return false }
+        sequence = seq
+        return true
+    }
+
     public mutating func accept(_ command: AutonomyCommand, now: Double) -> Bool {
         if command.type == .stop { stop(); return true }
         guard fresh(command, now: now) else { return false }

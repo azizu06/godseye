@@ -3,6 +3,15 @@ import XCTest
 @testable import SensorCore
 
 final class SensorCoreTests: XCTestCase {
+    func testControlPriorityReservesNetworkWithoutStoppingLocalCapture() {
+        let budget = CaptureCadence(liveHz: 30, archiveHz: 2, seriousThermal: false, controlPriority: true)
+        XCTAssertEqual(budget.liveHz, 10)
+        XCTAssertEqual(budget.archiveHz, 2)
+        let uploads = LaptopUploads(streamToLaptop: true, fullSensorUpload: true, controlPriority: true)
+        XCTAssertTrue(uploads.live)
+        XCTAssertFalse(uploads.fullSensor)
+        XCTAssertTrue(LaptopUploads(streamToLaptop: true, fullSensorUpload: true).fullSensor)
+    }
     func testWarmDeviceKeepsTemporalCoverageAndReducesBackgroundWorkFirst() {
         let normal = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: false)
         let warm = CaptureCadence(liveHz: 30, archiveHz: 10, seriousThermal: true)

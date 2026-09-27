@@ -11,8 +11,8 @@ public struct LaptopUploads: Equatable {
     /// v2 `POST /capture/ingest`. Its endpoint comes from the stream URL, so it needs `live`.
     public let fullSensor: Bool
 
-    public init(streamToLaptop: Bool, fullSensorUpload: Bool) {
+    public init(streamToLaptop: Bool, fullSensorUpload: Bool, controlPriority: Bool = false) {
         live = streamToLaptop
-        fullSensor = streamToLaptop && fullSensorUpload
+        fullSensor = streamToLaptop && fullSensorUpload && !controlPriority
     }
 }

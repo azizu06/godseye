@@ -44,6 +44,7 @@ final class RoverAutonomyLink: ObservableObject {
             return
         }
         self.rover = rover; self.capture = capture; identity = snapshot.identity
+        capture.setControlPriority(true)
         enabled = true; sequence = 0; lastServer = now; serverReady = false; armed = false
         status = "Connecting laptop control…"
         let token = generation
@@ -66,6 +67,7 @@ final class RoverAutonomyLink: ObservableObject {
     }
 
     func disconnect(reason: String = "Laptop control disabled") {
+        capture?.setControlPriority(false)
         enabled = false
         generation = UUID()
         timer?.invalidate(); timer = nil

@@ -159,8 +159,8 @@ def traversable_mask(grid: Grid, config: PlannerConfig = PlannerConfig()) -> np.
         # Outside is unknown too. Padding handles even grids smaller than the footprint.
         offsets = _disk(grid, config)
         pad = max(max(abs(dr), abs(dc)) for dr, dc in offsets)
-        unsafe = grid.cells != FREE
-        padded = np.pad(unsafe, pad, constant_values=True)
+        unsafe = grid.cells == OCCUPIED if config.unknown_traversable else grid.cells != FREE
+        padded = np.pad(unsafe, pad, constant_values=not config.unknown_traversable)
         blocked = unsafe.copy()
         h, w = unsafe.shape
         for dr, dc in offsets:
@@ -412,16 +412,18 @@ def path_blocked(grid: Grid, points, config: PlannerConfig = PlannerConfig(), st
     inside = (rows >= 0) & (rows < grid.height) & (cols >= 0) & (cols < grid.width)
     if not config.unknown_traversable and (not inside.all() or (grid.cells[rows, cols] == UNKNOWN).any()):
         return True
-    rows, cols = rows[inside], cols[inside]
     if config.footprint_clearance:
         # Same all-points policy as A*; include off-grid neighbors in the footprint.
         for dr, dc in _disk(grid, config):
             rr, cc = rows + dr, cols + dc
-            if ((rr < 0) | (rr >= grid.height) | (cc < 0) | (cc >= grid.width)).any():
+            ok = (rr >= 0) & (rr < grid.height) & (cc >= 0) & (cc < grid.width)
+            if not config.unknown_traversable and not ok.all():
                 return True
-            if (grid.cells[rr, cc] != FREE).any():
+            cells = grid.cells[rr[ok], cc[ok]]
+            if ((cells == OCCUPIED) if config.unknown_traversable else (cells != FREE)).any():
                 return True
         return False
+    rows, cols = rows[inside], cols[inside]
     occupied = grid.cells == OCCUPIED
     for dr, dc in _disk(grid, config):
         rr, cc = rows + dr, cols + dc
@@ -438,7 +440,7 @@ def _frontier_cells(grid: Grid) -> np.ndarray:
 
 
 def _safe_frontiers(grid: Grid, config: PlannerConfig) -> np.ndarray:
-    if not config.footprint_clearance:
+    if not config.footprint_clearance or config.unknown_traversable:
         return _frontier_cells(grid)
     # Explore the boundary of footprint-clear known floor, staying inside sensing.
     known = Grid.from_array(np.where(grid.cells == UNKNOWN, UNKNOWN, FREE),
@@ -455,21 +457,25 @@ def is_frontier(grid: Grid, xz, config: PlannerConfig = PlannerConfig()) -> bool
     return cell is not None and bool((_safe_frontiers(grid, config) & traversable_mask(grid, config))[cell])
 
 
-def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig()):
+def nearest_frontier(grid: Grid, start_xz, config: PlannerConfig = PlannerConfig(), *, allow_unknown=False):
     """World (x, z) of the nearest reachable frontier, or None.
 
     A frontier is a free, traversable cell with an unknown 4-neighbor; space outside the
     grid counts as unknown, since the published grid is cropped to the mapped area. Reachability is
     an 8-connected breadth-first search over known-free traversable cells (unknown is
-    always blocked here, whatever the config says), bounded by
+    blocked unless the flat-terrain caller explicitly passes allow_unknown), bounded by
     ``config.max_expansions``; frontiers closer than ``config.frontier_min_distance_m``
     to the start are skipped so the rover does not chase the unmapped floor under itself.
     """
     sx, sz = (float(v) for v in start_xz)
+    if allow_unknown:
+        grid = _fit(grid, [(sx, sz)], config)
+        if grid is None:
+            return None
     start_cell = grid.world_to_cell(sx, sz)
     if start_cell is None:
         return None
-    mask = traversable_mask(grid, dataclasses.replace(config, unknown_traversable=False))
+    mask = traversable_mask(grid, dataclasses.replace(config, unknown_traversable=allow_unknown))
     start = _snap(grid, mask, start_cell, sx, sz, config.start_snap_radius_m)
     if start is None:
         return None

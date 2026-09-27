@@ -20,6 +20,8 @@ final class CaptureController {
     }
     var running = true
     var ready = true
+    var controlPriority = false
+    func setControlPriority(_ enabled: Bool) { controlPriority = enabled }
     var identity = CaptureIdentity(sessionID: "relay-capture", epoch: 1)
     func controlSnapshot() -> ControlSnapshot? {
         ControlSnapshot(identity: identity, endpoint: CommandLine.arguments[1],
@@ -47,6 +49,7 @@ final class CaptureController {
                 try await until { rover.autonomyAvailable }
                 relay.connect(rover: rover, capture: capture, key: CommandLine.arguments[2])
                 precondition(relay.enabled)
+                precondition(capture.controlPriority, "Control must reserve upload bandwidth")
                 if CommandLine.arguments.count > 3 && CommandLine.arguments[3] == "handshake-loss" {
                     try await until { !relay.enabled }
                     precondition(relay.status == "Stopped · laptop handshake timed out", relay.status)
@@ -63,6 +66,7 @@ final class CaptureController {
                 // the phone still sends healthy, unsolicited BLE feedback.
                 if !heartbeatLoss { capture.ready = false }
                 try await until { !relay.enabled && !rover.autonomyEnabled }
+                precondition(!capture.controlPriority, "Disconnect must restore capture uploads")
                 if heartbeatLoss {
                     precondition(relay.status == "Stopped · laptop heartbeat timed out", relay.status)
                 }

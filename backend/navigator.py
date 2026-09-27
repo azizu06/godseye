@@ -88,7 +88,7 @@ def map_problem(snapshot: OccupancySnapshot | None, max_age_s: float) -> str | N
 def planning_grid(snapshot, settings):
     grid = Grid.from_array(snapshot.cells, origin=snapshot.origin, cell_m=snapshot.cell_m)
     config = replace(settings.planner, robot_radius_m=snapshot.inflation_m, margin_m=0.,
-                     unknown_traversable=False, footprint_clearance=True,
+                     unknown_traversable=snapshot.unknown_traversable, footprint_clearance=True,
                      snap_radius_m=0., start_snap_radius_m=0.)
     return grid, config
 
@@ -137,7 +137,7 @@ class Navigator:
             return 'plan', snapshot, goal, PlanResult([], 'start_blocked')
         if explore:
             if goal is None or not is_frontier(grid, goal, config):
-                goal = nearest_frontier(grid, start, config)
+                goal = nearest_frontier(grid, start, config, allow_unknown=snapshot.unknown_traversable)
                 if goal is None:
                     return 'explore_complete', snapshot
         result = plan_path(grid, start, goal, config)

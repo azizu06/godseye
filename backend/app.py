@@ -244,6 +244,11 @@ def create_app(db_path: str | None = None, build_points=None,
     @asynccontextmanager
     async def lifespan(app):
         db = sqlite3.connect(db_path)
+        # Telemetry must not fsync a rollback journal on every 30 Hz pose.
+        # WAL/NORMAL retains transactional consistency; recent telemetry may
+        # be lost on power failure, but disk flushes no longer gate control.
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('PRAGMA synchronous=NORMAL')
         db.executescript(Path(__file__).with_name('schema.sql').read_text())
         app.state.db = db
         app.state.objects = ObjectMemory(db)
@@ -420,6 +425,11 @@ def create_app(db_path: str | None = None, build_points=None,
                     car=current['car'], command_authorization_required=relay is not None)
 
     def stop(reason):
+        # Delayed pose bursts must not continually replace the pending Stop
+        # acknowledgement. A new arm generation is active even while awaiting
+        # its handshake, so the same hazard still cancels a new arm.
+        if not app.state.motion.active and app.state.stop_reason == reason:
+            return
         app.state.armed = False
         app.state.stop_reason = reason
         if getattr(app.state, 'nav', None) is not None:

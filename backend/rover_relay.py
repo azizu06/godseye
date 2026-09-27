@@ -142,8 +142,14 @@ class RelayCar:
                 or not 0 < command.seq <= 0xFFFFFFFF or command.seq <= self.last_command_seq):
             raise ValueError('Rover is not armed for this command')
         age = round(self.clock() * 1000) - command.issued_at_ms
-        if not 0 <= age <= min(MAX_DISPATCH_AGE_MS, command.valid_for_ms):
-            raise ValueError('Rover command expired before handoff')
+        if age < 0:
+            raise ValueError('Rover command timestamp is in the future')
+        if age > min(MAX_DISPATCH_AGE_MS, command.valid_for_ms):
+            # Never forward or renew an expired sample. A newer desired value
+            # may follow; the firmware still stops without timely fresh input.
+            self.command = None
+            self.last_command_seq = command.seq
+            return
         motor = self.actuation.command(command.v_mps, command.yaw_rate_rps)
         self.command = (command, motor)
         self.last_command_seq = command.seq
@@ -201,11 +207,12 @@ class RelayCar:
         command, motor = self.command
         self.command = None
         age = round(self.clock() * 1000) - command.issued_at_ms
-        if (self.health() != 'ok' or self.armed_session != command.session_id.upper()
-                or not 0 <= age <= min(MAX_DISPATCH_AGE_MS, command.valid_for_ms)):
+        if (self.health() != 'ok' or self.armed_session != command.session_id.upper() or age < 0):
             self.zero(DriveStop(None, 0, 0))
             self.on_loss('rover_dispatch_stale')
             return self.next_message()
+        if age > min(MAX_DISPATCH_AGE_MS, command.valid_for_ms):
+            return None
         return dict(version=1, type='command', session=self.armed_session,
                     seq=command.seq, permit=self.status.permit,
                     direction=motor.direction if motor else 0, power=motor.pwm if motor else 0,

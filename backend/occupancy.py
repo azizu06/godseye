@@ -102,6 +102,7 @@ class OccupancySnapshot:
     cell_m: float
     cells: np.ndarray | None
     floor_y: float | None
+    unknown_traversable: bool = False  # Explicit flat-terrain prototype only.
 
     @property
     def ready(self) -> bool:
@@ -122,8 +123,11 @@ class OccupancySnapshot:
     def traversable(self, x: float, z: float) -> bool:
         """Whether the rover may stand at world (x, z): only on a motion-ready map, and
         only when every cell with any part within `inflation_m` of (x, z) is known free.
-        Unknown, occupied and off-grid cells all block."""
-        if not self.ready or self.cell(x, z) != FREE:
+        Unknown and off-grid cells block except in the explicit flat-terrain
+        prototype. Observed obstacles always block the entire footprint."""
+        if not self.ready or not (math.isfinite(x) and math.isfinite(z)):
+            return False
+        if self.cell(x, z) != FREE and not self.unknown_traversable:
             return False
         row, col = self._index(x, z)
         reach = math.ceil(self.inflation_m / self.cell_m)
@@ -137,8 +141,10 @@ class OccupancySnapshot:
         window = np.full(near.shape, UNKNOWN, np.uint8)  # off-grid cells stay unknown
         r0, r1 = max(rows[0], 0), min(rows[-1] + 1, height)
         c0, c1 = max(cols[0], 0), min(cols[-1] + 1, width)
-        window[r0 - rows[0]:r1 - rows[0], c0 - cols[0]:c1 - cols[0]] = self.cells[r0:r1, c0:c1]
-        return bool(np.all(window[near] == FREE))
+        if r0 < r1 and c0 < c1:
+            window[r0 - rows[0]:r1 - rows[0], c0 - cols[0]:c1 - cols[0]] = self.cells[r0:r1, c0:c1]
+        return bool(np.all(window[near] != OCCUPIED) if self.unknown_traversable
+                    else np.all(window[near] == FREE))
 
 
 class OccupancyGrid:
@@ -281,7 +287,8 @@ class OccupancyGrid:
             blockers += ('no_floor',)
         return OccupancySnapshot(self.session, revision, accepted_at, blockers,
                                  None if calibration is None else calibration.inflation_m,
-                                 origin, CELL_M, cells, floor_y)
+                                 origin, CELL_M, cells, floor_y,
+                                 getattr(calibration, 'unknown_traversable', False))
 
 
 def estimate_floor(levels: np.ndarray):

@@ -14,6 +14,7 @@ from backend.navigation import FollowerConfig
 
 class PrototypeGeometry(RoverCalibration):
     depth_confidence: ClassVar[int] = 1
+    unknown_traversable: ClassVar[bool] = True
     basis: Literal['operator_estimate'] = 'operator_estimate'
 
     @property
@@ -27,7 +28,7 @@ def prototype_geometry(length_m: float, width_m: float) -> PrototypeGeometry:
     return PrototypeGeometry(
         version=1, measured_by=None,
         footprint_length_m=length_m, footprint_width_m=width_m,
-        obstacle_min_m=.065, clearance_margin_m=.30,
+        obstacle_min_m=.065, clearance_margin_m=.1524,
         # Cover a camera anywhere within the estimated chassis rectangle.
         # These are uncertainty bounds, not a claim about its actual offset.
         camera_forward_m=length_m / 2, camera_left_m=width_m / 2,
@@ -41,6 +42,7 @@ class PrototypeActuation:
     stopping_distance_m = None
     warnings = (
         'Uncalibrated prototype: estimated chassis, forward-facing camera assumed.',
+        'Flat-terrain exploration may cross unseen floor; detected obstacles retain footprint clearance.',
         'PWM 60, matching phone manual defaults; actual speed and stopping distance are unverified.',
     )
 

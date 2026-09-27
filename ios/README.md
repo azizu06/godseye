@@ -58,6 +58,11 @@ The frozen [v1 interface](../docs/INTERFACES.md) is unchanged. Extra data uses H
 
 ## Validation
 
+Laptop rover control automatically reserves network bandwidth: live RGB-D targets
+10 Hz while pose updates remain 30 Hz, and bulk v2 uploads pause until control is
+disconnected. Native local recording keeps its selected cadence and quality.
+This avoids competing bulk uploads delaying the short-lived ESP permits.
+
 Run from the repository root:
 
 ```sh
