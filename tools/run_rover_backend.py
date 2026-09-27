@@ -23,6 +23,8 @@ def main():
                              'reduced toward baseline near obstacles, unknown floor and arrival; stopping distance unmeasured')
     parser.add_argument('--prototype-variable-arcs', action='store_true',
                         help='Enable variable inner-wheel power; requires paired updated phone/ESP firmware')
+    parser.add_argument('--prototype-clearance-m', type=float, default=.1524,
+                        help='Prototype margin beyond the footprint bound (default 0.1524 m = 6 in; 0 to 0.5)')
     parser.add_argument('--estimated-length-m', type=float)
     parser.add_argument('--estimated-width-m', type=float)
     parser.add_argument('--host', default='0.0.0.0')
@@ -68,7 +70,11 @@ def main():
             parser.error('--prototype-cruise-pwm must be above 60 and at most --prototype-max-pwm')
         actuation = PrototypeActuation(max_pwm=args.prototype_max_pwm, variable_arc_pwm=args.prototype_variable_arcs,
                                        cruise_pwm=args.prototype_cruise_pwm)
-        geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m)
+        if not 0 <= args.prototype_clearance_m <= .5:
+            parser.error('--prototype-clearance-m must be in [0, 0.5]')
+        geometry = prototype_geometry(args.estimated_length_m, args.estimated_width_m, args.prototype_clearance_m)
+        if args.prototype_clearance_m != .1524:
+            print(f'OPERATOR CLEARANCE: {args.prototype_clearance_m:.4f} m margin beyond the footprint bound.', flush=True)
         print('UNCALIBRATED PROTOTYPE: PWM 60–180 proportional forward/arc power, PWM 60 pivot; actual speed unmeasured.', flush=True)
         if args.prototype_cruise_pwm is not None:
             print(f'FASTER UNCALIBRATED CRUISE: forward/arc PWM up to {args.prototype_cruise_pwm} on clear, fresh map; '

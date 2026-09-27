@@ -27,11 +27,12 @@ class PrototypeGeometry(RoverCalibration):
         return tuple(reason for reason in super().blockers if reason != 'calibration_unverified')
 
 
-def prototype_geometry(length_m: float, width_m: float) -> PrototypeGeometry:
+def prototype_geometry(length_m: float, width_m: float, clearance_m: float = .1524) -> PrototypeGeometry:
+    """`clearance_m` is the operator-chosen margin beyond the footprint bound (default 6 in)."""
     return PrototypeGeometry(
         version=1, measured_by=None,
         footprint_length_m=length_m, footprint_width_m=width_m,
-        obstacle_min_m=.065, clearance_margin_m=.1524,
+        obstacle_min_m=.065, clearance_margin_m=clearance_m,
         # Cover a camera anywhere within the estimated chassis rectangle.
         # These are uncertainty bounds, not a claim about its actual offset.
         camera_forward_m=length_m / 2, camera_left_m=width_m / 2,
